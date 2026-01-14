@@ -1,0 +1,130 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gcontact-sync"
+version = "0.1.0"
+description = "Bidirectional Google Contacts synchronization between two accounts"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "GContact Sync", email = "gcontact-sync@example.com"}
+]
+keywords = ["google", "contacts", "sync", "synchronization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "google-api-python-client>=2.188.0",
+    "google-auth>=2.47.0",
+    "google-auth-oauthlib>=1.2.3",
+    "google-auth-httplib2>=0.2.0",
+    "click>=8.1.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "black>=24.0.0",
+    "isort>=5.13.0",
+    "flake8>=7.0.0",
+    "mypy>=1.8.0",
+    "types-requests>=2.31.0",
+]
+
+[project.scripts]
+gcontact-sync = "gcontact_sync.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/example/gcontact-sync"
+Documentation = "https://github.com/example/gcontact-sync#readme"
+Repository = "https://github.com/example/gcontact-sync.git"
+Issues = "https://github.com/example/gcontact-sync/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gcontact_sync*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["gcontact_sync"]
+skip = [".venv", "venv", ".git", "__pycache__"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = [
+    "venv",
+    ".venv",
+    "build",
+    "dist",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["gcontact_sync"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
