@@ -402,7 +402,13 @@ class TestContactToApiFormat:
 
 
 class TestContactMatchingKey:
-    """Tests for Contact.matching_key() method."""
+    """Tests for Contact.matching_key() method.
+
+    The matching key uses a multi-field fingerprint strategy:
+    1. If emails exist: name + sorted normalized emails
+    2. If phones exist (no emails): name + sorted normalized phones
+    3. If neither: name only with |name_only suffix
+    """
 
     def test_matching_key_name_and_email(self):
         """Test matching key with name and email."""
@@ -415,23 +421,40 @@ class TestContactMatchingKey:
 
         key = contact.matching_key()
 
-        assert '|' in key
+        assert '|emails:' in key
         assert 'johndoe' in key
-        assert 'johnexamplecom' in key
+        assert 'john@examplecom' in key
 
     def test_matching_key_name_only(self):
-        """Test matching key with name only (no email)."""
+        """Test matching key with name only (no email or phone)."""
         contact = Contact(
             resource_name='people/c123',
             etag='etag',
             display_name='John Doe',
-            emails=[]
+            emails=[],
+            phones=[]
         )
 
         key = contact.matching_key()
 
-        assert '|' not in key
-        assert key == 'johndoe'
+        # Without email or phone, uses name_only suffix
+        assert key == 'johndoe|name_only'
+
+    def test_matching_key_name_and_phone_no_email(self):
+        """Test matching key falls back to phone when no email."""
+        contact = Contact(
+            resource_name='people/c123',
+            etag='etag',
+            display_name='John Doe',
+            emails=[],
+            phones=['+1234567890']
+        )
+
+        key = contact.matching_key()
+
+        assert '|phones:' in key
+        assert 'johndoe' in key
+        assert '1234567890' in key
 
     def test_matching_key_normalizes_unicode(self):
         """Test that unicode characters are normalized."""
@@ -476,10 +499,9 @@ class TestContactMatchingKey:
 
         key = contact.matching_key()
 
-        # Special characters like apostrophe and hyphen should be removed
-        assert "'" not in key
-        assert '-' not in key
-        assert '.' not in key
+        # Special characters like apostrophe and hyphen should be removed from name
+        assert "'" not in key.split('|')[0]  # Check name part
+        assert '-' not in key.split('|')[0]
 
     def test_matching_key_preserves_at_symbol(self):
         """Test that @ symbol in email is preserved."""
@@ -494,22 +516,30 @@ class TestContactMatchingKey:
 
         assert '@' in key
 
-    def test_matching_key_uses_primary_email_only(self):
-        """Test that only the first email is used."""
-        contact = Contact(
+    def test_matching_key_uses_all_emails_sorted(self):
+        """Test that ALL emails are used, sorted for consistency."""
+        contact1 = Contact(
             resource_name='people/c123',
             etag='etag',
             display_name='Test',
             emails=['primary@example.com', 'secondary@example.com']
         )
+        contact2 = Contact(
+            resource_name='people/c456',
+            etag='etag2',
+            display_name='Test',
+            emails=['secondary@example.com', 'primary@example.com']
+        )
 
-        key = contact.matching_key()
-
-        assert 'primary' in key
-        assert 'secondary' not in key
+        # Both contacts should have the same matching key (sorted emails)
+        assert contact1.matching_key() == contact2.matching_key()
+        key = contact1.matching_key()
+        # Should contain both emails
+        assert 'primary@examplecom' in key
+        assert 'secondary@examplecom' in key
 
     def test_matching_key_empty_display_name(self):
-        """Test matching key with empty display name."""
+        """Test matching key with empty display name but has email."""
         contact = Contact(
             resource_name='people/c123',
             etag='etag',
@@ -519,7 +549,77 @@ class TestContactMatchingKey:
 
         key = contact.matching_key()
 
-        assert key == '|test@examplecom'
+        # Should have email and emails: prefix
+        assert '|emails:test@examplecom' in key
+
+    def test_matching_key_multiple_phones_sorted(self):
+        """Test that multiple phones are sorted for consistent matching."""
+        contact1 = Contact(
+            resource_name='people/c123',
+            etag='etag',
+            display_name='Test',
+            emails=[],
+            phones=['+1111111111', '+2222222222']
+        )
+        contact2 = Contact(
+            resource_name='people/c456',
+            etag='etag2',
+            display_name='Test',
+            emails=[],
+            phones=['+2222222222', '+1111111111']
+        )
+
+        # Both should match (phones sorted)
+        assert contact1.matching_key() == contact2.matching_key()
+
+
+class TestContactAlternateMatchingKeys:
+    """Tests for Contact.alternate_matching_keys() method."""
+
+    def test_alternate_keys_include_individual_emails(self):
+        """Test that alternate keys include individual email-based keys."""
+        contact = Contact(
+            resource_name='people/c123',
+            etag='etag',
+            display_name='John Doe',
+            emails=['john@example.com', 'jdoe@work.com']
+        )
+
+        alt_keys = contact.alternate_matching_keys()
+
+        # Should have individual email keys
+        assert any('email:john@examplecom' in key for key in alt_keys)
+        assert any('email:jdoe@workcom' in key for key in alt_keys)
+        # Should also have name+email combinations
+        assert any('johndoe|email:' in key for key in alt_keys)
+
+    def test_alternate_keys_include_individual_phones(self):
+        """Test that alternate keys include phone-based keys."""
+        contact = Contact(
+            resource_name='people/c123',
+            etag='etag',
+            display_name='John Doe',
+            phones=['+1234567890']
+        )
+
+        alt_keys = contact.alternate_matching_keys()
+
+        # Should have phone key
+        assert any('phone:1234567890' in key for key in alt_keys)
+
+    def test_alternate_keys_empty_for_no_contacts(self):
+        """Test that contact with no email or phone has empty alternate keys."""
+        contact = Contact(
+            resource_name='people/c123',
+            etag='etag',
+            display_name='John Doe',
+            emails=[],
+            phones=[]
+        )
+
+        alt_keys = contact.alternate_matching_keys()
+
+        assert alt_keys == []
 
 
 class TestContactContentHash:

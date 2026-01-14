@@ -373,7 +373,12 @@ def sync_command(ctx, dry_run: bool, full: bool, strategy: str):
             click.echo(f"Run: gcontact-sync auth --account {ACCOUNT_2}", err=True)
             sys.exit(1)
 
-        click.echo(click.style("Both accounts authenticated.", fg='green'))
+        # Get actual email addresses for better logging
+        account1_email = auth.get_account_email(ACCOUNT_1) or ACCOUNT_1
+        account2_email = auth.get_account_email(ACCOUNT_2) or ACCOUNT_2
+
+        click.echo(click.style(f"  {account1_email}", fg='green'))
+        click.echo(click.style(f"  {account2_email}", fg='green'))
 
         # Initialize components
         from gcontact_sync.api.people_api import PeopleAPI
@@ -390,13 +395,19 @@ def sync_command(ctx, dry_run: bool, full: bool, strategy: str):
         database = SyncDatabase(str(db_path))
         database.initialize()
 
-        # Create sync engine
+        # Create sync engine with account emails for better logging
         engine = SyncEngine(
             api1=api1,
             api2=api2,
             database=database,
-            conflict_strategy=conflict_strategy
+            conflict_strategy=conflict_strategy,
+            account1_email=account1_email,
+            account2_email=account2_email
         )
+
+        # Store account emails in context for summary display
+        ctx.obj['account1_email'] = account1_email
+        ctx.obj['account2_email'] = account2_email
 
         # Show sync configuration
         if verbose:
@@ -413,9 +424,12 @@ def sync_command(ctx, dry_run: bool, full: bool, strategy: str):
 
         result = engine.sync(dry_run=dry_run, full_sync=full)
 
-        # Display results
+        # Display results with actual email addresses
         click.echo("\n" + "=" * 50)
-        click.echo(result.summary())
+        click.echo(result.summary(
+            account1_label=account1_email,
+            account2_label=account2_email
+        ))
         click.echo("=" * 50)
 
         if result.has_changes():
@@ -427,7 +441,7 @@ def sync_command(ctx, dry_run: bool, full: bool, strategy: str):
 
                 # Show detailed changes if verbose
                 if verbose:
-                    _show_detailed_changes(result)
+                    _show_detailed_changes(result, account1_email, account2_email)
             else:
                 click.echo(
                     click.style("\nSync completed successfully!", fg='green')
@@ -465,47 +479,54 @@ def sync_command(ctx, dry_run: bool, full: bool, strategy: str):
         sys.exit(1)
 
 
-def _show_detailed_changes(result):
-    """Display detailed change information for dry-run mode."""
+def _show_detailed_changes(result, account1_label: str = ACCOUNT_1, account2_label: str = ACCOUNT_2):
+    """
+    Display detailed change information for dry-run mode.
+
+    Args:
+        result: The SyncResult containing changes to display
+        account1_label: Label for account 1 (email or 'account1')
+        account2_label: Label for account 2 (email or 'account2')
+    """
     click.echo("\n=== Detailed Changes ===")
 
     if result.to_create_in_account1:
-        click.echo(f"\nTo create in {ACCOUNT_1}:")
+        click.echo(f"\nTo create in {account1_label}:")
         for contact in result.to_create_in_account1[:10]:  # Limit display
             click.echo(f"  + {contact.display_name}")
         if len(result.to_create_in_account1) > 10:
             click.echo(f"  ... and {len(result.to_create_in_account1) - 10} more")
 
     if result.to_create_in_account2:
-        click.echo(f"\nTo create in {ACCOUNT_2}:")
+        click.echo(f"\nTo create in {account2_label}:")
         for contact in result.to_create_in_account2[:10]:
             click.echo(f"  + {contact.display_name}")
         if len(result.to_create_in_account2) > 10:
             click.echo(f"  ... and {len(result.to_create_in_account2) - 10} more")
 
     if result.to_update_in_account1:
-        click.echo(f"\nTo update in {ACCOUNT_1}:")
+        click.echo(f"\nTo update in {account1_label}:")
         for resource_name, contact in result.to_update_in_account1[:10]:
             click.echo(f"  ~ {contact.display_name}")
         if len(result.to_update_in_account1) > 10:
             click.echo(f"  ... and {len(result.to_update_in_account1) - 10} more")
 
     if result.to_update_in_account2:
-        click.echo(f"\nTo update in {ACCOUNT_2}:")
+        click.echo(f"\nTo update in {account2_label}:")
         for resource_name, contact in result.to_update_in_account2[:10]:
             click.echo(f"  ~ {contact.display_name}")
         if len(result.to_update_in_account2) > 10:
             click.echo(f"  ... and {len(result.to_update_in_account2) - 10} more")
 
     if result.to_delete_in_account1:
-        click.echo(f"\nTo delete in {ACCOUNT_1}:")
+        click.echo(f"\nTo delete in {account1_label}:")
         for resource_name in result.to_delete_in_account1[:10]:
             click.echo(f"  - {resource_name}")
         if len(result.to_delete_in_account1) > 10:
             click.echo(f"  ... and {len(result.to_delete_in_account1) - 10} more")
 
     if result.to_delete_in_account2:
-        click.echo(f"\nTo delete in {ACCOUNT_2}:")
+        click.echo(f"\nTo delete in {account2_label}:")
         for resource_name in result.to_delete_in_account2[:10]:
             click.echo(f"  - {resource_name}")
         if len(result.to_delete_in_account2) > 10:

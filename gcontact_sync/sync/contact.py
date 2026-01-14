@@ -203,30 +203,89 @@ class Contact:
         """
         Generate a normalized matching key for cross-account identification.
 
-        The key is based on normalized display name + primary email (if available).
-        This allows identifying the same contact across different accounts.
+        Uses a multi-field fingerprint strategy to robustly identify the same
+        contact across different accounts, even when fields are organized
+        differently (e.g., work vs. home email, different phone field types).
 
         Returns:
             Lowercase, normalized string key for matching
 
-        Key generation rules:
-            1. Normalize unicode characters (e.g., accents)
-            2. Convert to lowercase
-            3. Remove non-alphanumeric characters (except @)
-            4. Combine name and primary email with separator
+        Key generation strategy (in order of priority):
+            1. If emails exist: name + sorted normalized emails
+            2. If phones exist (no emails): name + sorted normalized phones
+            3. If neither: name only
+
+        This prevents duplicates by:
+            - Using ALL emails, not just the first one
+            - Sorting emails so order doesn't matter
+            - Matching regardless of email type (work/home/other)
+            - Using phone numbers as fallback identifiers
+            - Normalizing all values for consistent comparison
         """
         # Normalize and lowercase the display name
         name = self._normalize_string(self.display_name)
 
-        # Get primary email (first in list) if available
-        primary_email = ''
-        if self.emails:
-            primary_email = self._normalize_string(self.emails[0])
+        # Get all normalized emails, sorted for consistency
+        normalized_emails = sorted([
+            self._normalize_string(email)
+            for email in self.emails
+            if email and self._normalize_string(email)
+        ])
 
-        # Combine name and email
-        if primary_email:
-            return f"{name}|{primary_email}"
-        return name
+        # Get all normalized phone numbers, sorted for consistency
+        normalized_phones = sorted([
+            phone for phone in self._normalize_phones()
+            if phone  # Filter out empty strings
+        ])
+
+        # Build matching key with priority: name + emails > name + phones > name
+        if normalized_emails:
+            # Use all emails joined with comma, sorted for consistency
+            emails_str = ','.join(normalized_emails)
+            return f"{name}|emails:{emails_str}"
+        elif normalized_phones:
+            # Fall back to phone numbers if no emails
+            phones_str = ','.join(normalized_phones)
+            return f"{name}|phones:{phones_str}"
+        else:
+            # Last resort: name only (higher risk of false matches)
+            return f"{name}|name_only"
+
+    def alternate_matching_keys(self) -> List[str]:
+        """
+        Generate alternate matching keys for fuzzy duplicate detection.
+
+        These additional keys can be used to find potential duplicates when
+        the primary matching key doesn't match exactly. Useful for detecting
+        contacts that might be the same person but with slightly different data.
+
+        Returns:
+            List of alternate matching keys
+
+        Alternate keys include:
+            - Individual email addresses (for matching by any single email)
+            - Individual phone numbers (for matching by any single phone)
+            - Name + each individual email combination
+            - Name + each individual phone combination
+        """
+        keys: List[str] = []
+        name = self._normalize_string(self.display_name)
+
+        # Add individual email-based keys
+        for email in self.emails:
+            if email:
+                normalized_email = self._normalize_string(email)
+                if normalized_email:
+                    keys.append(f"email:{normalized_email}")
+                    keys.append(f"{name}|email:{normalized_email}")
+
+        # Add individual phone-based keys
+        for phone in self._normalize_phones():
+            if phone:
+                keys.append(f"phone:{phone}")
+                keys.append(f"{name}|phone:{phone}")
+
+        return keys
 
     def content_hash(self) -> str:
         """

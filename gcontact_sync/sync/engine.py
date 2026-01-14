@@ -80,20 +80,33 @@ class SyncResult:
             bool(self.to_delete_in_account2)
         )
 
-    def summary(self) -> str:
-        """Generate a human-readable summary of the sync result."""
+    def summary(
+        self,
+        account1_label: str = "Account 1",
+        account2_label: str = "Account 2"
+    ) -> str:
+        """
+        Generate a human-readable summary of the sync result.
+
+        Args:
+            account1_label: Label for account 1 (e.g., email address)
+            account2_label: Label for account 2 (e.g., email address)
+
+        Returns:
+            Formatted string summary of sync operations
+        """
         lines = [
             "Sync Summary:",
-            f"  Account 1: {self.stats.contacts_in_account1} contacts",
-            f"  Account 2: {self.stats.contacts_in_account2} contacts",
+            f"  {account1_label}: {self.stats.contacts_in_account1} contacts",
+            f"  {account2_label}: {self.stats.contacts_in_account2} contacts",
             "",
             "Changes to apply:",
-            f"  Create in Account 1: {len(self.to_create_in_account1)}",
-            f"  Create in Account 2: {len(self.to_create_in_account2)}",
-            f"  Update in Account 1: {len(self.to_update_in_account1)}",
-            f"  Update in Account 2: {len(self.to_update_in_account2)}",
-            f"  Delete in Account 1: {len(self.to_delete_in_account1)}",
-            f"  Delete in Account 2: {len(self.to_delete_in_account2)}",
+            f"  Create in {account1_label}: {len(self.to_create_in_account1)}",
+            f"  Create in {account2_label}: {len(self.to_create_in_account2)}",
+            f"  Update in {account1_label}: {len(self.to_update_in_account1)}",
+            f"  Update in {account2_label}: {len(self.to_update_in_account2)}",
+            f"  Delete in {account1_label}: {len(self.to_delete_in_account1)}",
+            f"  Delete in {account2_label}: {len(self.to_delete_in_account2)}",
         ]
 
         if self.conflicts:
@@ -113,7 +126,7 @@ class SyncEngine:
     ensuring both accounts contain identical contact sets after sync.
 
     Features:
-    - Bidirectional sync using matching keys (name + email)
+    - Bidirectional sync using matching keys (name + emails + phones)
     - Incremental sync using sync tokens
     - Conflict resolution with configurable strategy
     - Dry-run mode for previewing changes
@@ -125,7 +138,9 @@ class SyncEngine:
         engine = SyncEngine(
             api1=PeopleAPI(credentials1),
             api2=PeopleAPI(credentials2),
-            database=SyncDatabase('/path/to/sync.db')
+            database=SyncDatabase('/path/to/sync.db'),
+            account1_email='user1@gmail.com',
+            account2_email='user2@gmail.com'
         )
 
         # Analyze what needs to be synced
@@ -144,7 +159,9 @@ class SyncEngine:
         api1: PeopleAPI,
         api2: PeopleAPI,
         database: SyncDatabase,
-        conflict_strategy: ConflictStrategy = ConflictStrategy.LAST_MODIFIED_WINS
+        conflict_strategy: ConflictStrategy = ConflictStrategy.LAST_MODIFIED_WINS,
+        account1_email: Optional[str] = None,
+        account2_email: Optional[str] = None
     ):
         """
         Initialize the sync engine.
@@ -154,11 +171,30 @@ class SyncEngine:
             api2: PeopleAPI instance for account 2
             database: SyncDatabase instance for state persistence
             conflict_strategy: Strategy for resolving conflicts (default: last_modified_wins)
+            account1_email: Email address of account 1 (for logging)
+            account2_email: Email address of account 2 (for logging)
         """
         self.api1 = api1
         self.api2 = api2
         self.database = database
         self.conflict_resolver = ConflictResolver(strategy=conflict_strategy)
+        # Store account emails for better logging
+        self.account1_email = account1_email or ACCOUNT_1
+        self.account2_email = account2_email or ACCOUNT_2
+
+    def _get_account_label(self, account: int) -> str:
+        """
+        Get a human-readable label for an account.
+
+        Args:
+            account: Account number (1 or 2)
+
+        Returns:
+            Email address if available, otherwise 'account1' or 'account2'
+        """
+        if account == 1:
+            return self.account1_email
+        return self.account2_email
 
     def sync(self, dry_run: bool = False, full_sync: bool = False) -> SyncResult:
         """
@@ -215,8 +251,8 @@ class SyncEngine:
         result.stats.contacts_in_account2 = len(contacts2)
 
         logger.info(
-            f"Fetched {len(contacts1)} contacts from account 1, "
-            f"{len(contacts2)} contacts from account 2"
+            f"Fetched {len(contacts1)} contacts from {self.account1_email}, "
+            f"{len(contacts2)} contacts from {self.account2_email}"
         )
 
         # Build indexes by matching key
@@ -224,8 +260,8 @@ class SyncEngine:
         index2 = self._build_contact_index(contacts2)
 
         logger.debug(
-            f"Built indexes: {len(index1)} unique keys in account 1, "
-            f"{len(index2)} unique keys in account 2"
+            f"Built indexes: {len(index1)} unique keys in {self.account1_email}, "
+            f"{len(index2)} unique keys in {self.account2_email}"
         )
 
         # Get all unique matching keys
@@ -451,14 +487,14 @@ class SyncEngine:
             # Contact only in account 1 - create in account 2
             result.to_create_in_account2.append(contact1)
             logger.debug(
-                f"Will create in account 2: {contact1.display_name}"
+                f"Will create in {self.account2_email}: {contact1.display_name}"
             )
 
         elif contact2 and not contact1:
             # Contact only in account 2 - create in account 1
             result.to_create_in_account1.append(contact2)
             logger.debug(
-                f"Will create in account 1: {contact2.display_name}"
+                f"Will create in {self.account1_email}: {contact2.display_name}"
             )
 
         elif contact1 and contact2:
@@ -508,7 +544,7 @@ class SyncEngine:
                     (contact2.resource_name, contact1)
                 )
                 logger.debug(
-                    f"Will update in account 2: {contact1.display_name}"
+                    f"Will update in {self.account2_email}: {contact1.display_name}"
                 )
                 return
 
@@ -518,7 +554,7 @@ class SyncEngine:
                     (contact1.resource_name, contact2)
                 )
                 logger.debug(
-                    f"Will update in account 1: {contact2.display_name}"
+                    f"Will update in {self.account1_email}: {contact2.display_name}"
                 )
                 return
 
@@ -603,7 +639,7 @@ class SyncEngine:
                 if other_resource:
                     result.to_delete_in_account2.append(other_resource)
                     logger.debug(
-                        f"Will delete in account 2: {other_resource}"
+                        f"Will delete in {self.account2_email}: {other_resource}"
                     )
             else:
                 # Deleted in account 2 - delete in account 1
@@ -611,7 +647,7 @@ class SyncEngine:
                 if other_resource:
                     result.to_delete_in_account1.append(other_resource)
                     logger.debug(
-                        f"Will delete in account 1: {other_resource}"
+                        f"Will delete in {self.account1_email}: {other_resource}"
                     )
 
             # Remove the mapping
@@ -635,7 +671,8 @@ class SyncEngine:
             account: Account number (1 or 2)
             result: SyncResult to update with stats
         """
-        logger.info(f"Creating {len(contacts)} contacts in account {account}")
+        account_label = self._get_account_label(account)
+        logger.info(f"Creating {len(contacts)} contacts in {account_label}")
 
         try:
             # Use batch create for efficiency
@@ -664,7 +701,7 @@ class SyncEngine:
                     result.stats.created_in_account2 += 1
 
         except PeopleAPIError as e:
-            logger.error(f"Failed to create contacts in account {account}: {e}")
+            logger.error(f"Failed to create contacts in {account_label}: {e}")
             result.stats.errors += len(contacts)
             raise
 
@@ -686,7 +723,8 @@ class SyncEngine:
             account: Account number (1 or 2)
             result: SyncResult to update with stats
         """
-        logger.info(f"Updating {len(updates)} contacts in account {account}")
+        account_label = self._get_account_label(account)
+        logger.info(f"Updating {len(updates)} contacts in {account_label}")
 
         try:
             # Get current etags for the contacts being updated
@@ -741,7 +779,7 @@ class SyncEngine:
                         result.stats.updated_in_account2 += 1
 
         except PeopleAPIError as e:
-            logger.error(f"Failed to update contacts in account {account}: {e}")
+            logger.error(f"Failed to update contacts in {account_label}: {e}")
             result.stats.errors += len(updates)
             raise
 
@@ -763,7 +801,8 @@ class SyncEngine:
             account: Account number (1 or 2)
             result: SyncResult to update with stats
         """
-        logger.info(f"Deleting {len(resource_names)} contacts in account {account}")
+        account_label = self._get_account_label(account)
+        logger.info(f"Deleting {len(resource_names)} contacts in {account_label}")
 
         try:
             # Use batch delete for efficiency
@@ -775,7 +814,7 @@ class SyncEngine:
                 result.stats.deleted_in_account2 += deleted_count
 
         except PeopleAPIError as e:
-            logger.error(f"Failed to delete contacts in account {account}: {e}")
+            logger.error(f"Failed to delete contacts in {account_label}: {e}")
             result.stats.errors += len(resource_names)
             raise
 
