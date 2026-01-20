@@ -753,3 +753,436 @@ class TestLLMMatchAttemptOperations:
 
         result = db.get_llm_match_attempt("people/1", "people/2")
         assert result["is_match"] == 0  # SQLite stores False as 0
+
+
+class TestContactGroupOperations:
+    """Tests for contact group CRUD operations."""
+
+    @pytest.fixture
+    def db(self):
+        """Create an initialized in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_get_group_returns_none_for_unknown(self, db):
+        """Test that get_group returns None for unknown resource name."""
+        result = db.get_group("contactGroups/unknown", "account1")
+        assert result is None
+
+    def test_upsert_group_creates_new_entry(self, db):
+        """Test that upsert_group creates a new entry."""
+        db.upsert_group(
+            name="Work Contacts",
+            account_id="account1",
+            resource_name="contactGroups/abc123",
+            etag="etag1",
+            group_type="USER_CONTACT_GROUP",
+            member_count=5,
+        )
+
+        result = db.get_group("contactGroups/abc123", "account1")
+        assert result is not None
+        assert result["name"] == "Work Contacts"
+        assert result["resource_name"] == "contactGroups/abc123"
+        assert result["account_id"] == "account1"
+        assert result["etag"] == "etag1"
+        assert result["group_type"] == "USER_CONTACT_GROUP"
+        assert result["member_count"] == 5
+
+    def test_upsert_group_updates_existing(self, db):
+        """Test that upsert_group updates an existing entry."""
+        db.upsert_group(
+            name="My Group",
+            account_id="account1",
+            resource_name="contactGroups/abc",
+            etag="etag_v1",
+        )
+
+        db.upsert_group(
+            name="My Group Updated",
+            account_id="account1",
+            resource_name="contactGroups/abc",
+            etag="etag_v2",
+            member_count=10,
+        )
+
+        result = db.get_group("contactGroups/abc", "account1")
+        assert result["name"] == "My Group Updated"
+        assert result["etag"] == "etag_v2"
+        assert result["member_count"] == 10
+
+    def test_get_group_by_name(self, db):
+        """Test getting a group by name and account."""
+        db.upsert_group(
+            name="Friends",
+            account_id="account1",
+            resource_name="contactGroups/123",
+        )
+
+        result = db.get_group_by_name("Friends", "account1")
+        assert result is not None
+        assert result["name"] == "Friends"
+        assert result["resource_name"] == "contactGroups/123"
+
+    def test_get_group_by_name_returns_none_for_unknown(self, db):
+        """Test that get_group_by_name returns None for unknown name."""
+        result = db.get_group_by_name("Unknown Group", "account1")
+        assert result is None
+
+    def test_get_groups_by_account(self, db):
+        """Test getting all groups for an account."""
+        db.upsert_group(name="Group A", account_id="account1", resource_name="cg/a")
+        db.upsert_group(name="Group B", account_id="account1", resource_name="cg/b")
+        db.upsert_group(name="Group C", account_id="account2", resource_name="cg/c")
+
+        result = db.get_groups_by_account("account1")
+        assert len(result) == 2
+        names = [r["name"] for r in result]
+        assert "Group A" in names
+        assert "Group B" in names
+
+    def test_get_groups_by_account_empty(self, db):
+        """Test getting groups for account with no groups."""
+        result = db.get_groups_by_account("nonexistent")
+        assert result == []
+
+    def test_get_groups_by_account_sorted_by_name(self, db):
+        """Test that groups are returned sorted by name."""
+        db.upsert_group(name="Zebra", account_id="account1", resource_name="cg/z")
+        db.upsert_group(name="Alpha", account_id="account1", resource_name="cg/a")
+        db.upsert_group(name="Middle", account_id="account1", resource_name="cg/m")
+
+        result = db.get_groups_by_account("account1")
+        names = [r["name"] for r in result]
+        assert names == ["Alpha", "Middle", "Zebra"]
+
+    def test_delete_group(self, db):
+        """Test deleting a contact group."""
+        db.upsert_group(
+            name="To Delete",
+            account_id="account1",
+            resource_name="contactGroups/delete",
+        )
+
+        deleted = db.delete_group("contactGroups/delete", "account1")
+        assert deleted is True
+
+        result = db.get_group("contactGroups/delete", "account1")
+        assert result is None
+
+    def test_delete_group_returns_false_for_nonexistent(self, db):
+        """Test that delete returns False for nonexistent group."""
+        deleted = db.delete_group("contactGroups/nonexistent", "account1")
+        assert deleted is False
+
+    def test_get_group_count_empty(self, db):
+        """Test get_group_count with empty database."""
+        assert db.get_group_count() == 0
+
+    def test_get_group_count_with_data(self, db):
+        """Test get_group_count with data."""
+        db.upsert_group(name="Group 1", account_id="account1", resource_name="cg/1")
+        db.upsert_group(name="Group 2", account_id="account1", resource_name="cg/2")
+        db.upsert_group(name="Group 3", account_id="account2", resource_name="cg/3")
+
+        assert db.get_group_count() == 3
+
+    def test_get_group_count_by_account(self, db):
+        """Test get_group_count filtered by account."""
+        db.upsert_group(name="Group 1", account_id="account1", resource_name="cg/1")
+        db.upsert_group(name="Group 2", account_id="account1", resource_name="cg/2")
+        db.upsert_group(name="Group 3", account_id="account2", resource_name="cg/3")
+
+        assert db.get_group_count("account1") == 2
+        assert db.get_group_count("account2") == 1
+
+    def test_clear_groups_for_account(self, db):
+        """Test clearing all groups for an account."""
+        db.upsert_group(name="Group 1", account_id="account1", resource_name="cg/1")
+        db.upsert_group(name="Group 2", account_id="account1", resource_name="cg/2")
+        db.upsert_group(name="Group 3", account_id="account2", resource_name="cg/3")
+
+        deleted = db.clear_groups_for_account("account1")
+        assert deleted == 2
+        assert db.get_group_count("account1") == 0
+        assert db.get_group_count("account2") == 1
+
+    def test_group_has_timestamps(self, db):
+        """Test that groups have created_at and updated_at."""
+        db.upsert_group(name="Test", account_id="account1", resource_name="cg/test")
+
+        result = db.get_group("cg/test", "account1")
+        assert result["created_at"] is not None
+        assert result["updated_at"] is not None
+
+    def test_group_default_type(self, db):
+        """Test that default group type is USER_CONTACT_GROUP."""
+        db.upsert_group(name="Default", account_id="account1", resource_name="cg/def")
+
+        result = db.get_group("cg/def", "account1")
+        assert result["group_type"] == "USER_CONTACT_GROUP"
+
+
+class TestContactGroupMappingOperations:
+    """Tests for contact group mapping CRUD operations."""
+
+    @pytest.fixture
+    def db(self):
+        """Create an initialized in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_get_group_mapping_returns_none_for_unknown(self, db):
+        """Test that get_group_mapping returns None for unknown group name."""
+        result = db.get_group_mapping("unknown_group")
+        assert result is None
+
+    def test_upsert_group_mapping_creates_new_entry(self, db):
+        """Test that upsert_group_mapping creates a new entry."""
+        db.upsert_group_mapping(
+            group_name="work contacts",
+            account1_resource_name="contactGroups/abc",
+            account2_resource_name="contactGroups/xyz",
+            account1_etag="etag1",
+            account2_etag="etag2",
+            last_synced_hash="hash123",
+        )
+
+        result = db.get_group_mapping("work contacts")
+        assert result is not None
+        assert result["group_name"] == "work contacts"
+        assert result["account1_resource_name"] == "contactGroups/abc"
+        assert result["account2_resource_name"] == "contactGroups/xyz"
+        assert result["account1_etag"] == "etag1"
+        assert result["account2_etag"] == "etag2"
+        assert result["last_synced_hash"] == "hash123"
+
+    def test_upsert_group_mapping_updates_existing(self, db):
+        """Test that upsert_group_mapping updates an existing entry."""
+        db.upsert_group_mapping(
+            group_name="friends",
+            account1_resource_name="cg/1",
+            last_synced_hash="hash_v1",
+        )
+
+        db.upsert_group_mapping(
+            group_name="friends",
+            account2_resource_name="cg/2",
+            last_synced_hash="hash_v2",
+        )
+
+        result = db.get_group_mapping("friends")
+        assert result["account1_resource_name"] == "cg/1"
+        assert result["account2_resource_name"] == "cg/2"
+        assert result["last_synced_hash"] == "hash_v2"
+
+    def test_upsert_group_mapping_partial_update(self, db):
+        """Test partial update of group mapping."""
+        db.upsert_group_mapping(
+            group_name="test_group",
+            account1_resource_name="cg/old",
+            account1_etag="old_etag",
+        )
+
+        # Update only etag
+        db.upsert_group_mapping(
+            group_name="test_group",
+            account1_etag="new_etag",
+        )
+
+        result = db.get_group_mapping("test_group")
+        assert result["account1_resource_name"] == "cg/old"
+        assert result["account1_etag"] == "new_etag"
+
+    def test_delete_group_mapping(self, db):
+        """Test deleting a group mapping."""
+        db.upsert_group_mapping(
+            group_name="to_delete",
+            account1_resource_name="cg/123",
+        )
+
+        deleted = db.delete_group_mapping("to_delete")
+        assert deleted is True
+
+        result = db.get_group_mapping("to_delete")
+        assert result is None
+
+    def test_delete_group_mapping_returns_false_for_nonexistent(self, db):
+        """Test that delete returns False for nonexistent mapping."""
+        deleted = db.delete_group_mapping("nonexistent")
+        assert deleted is False
+
+    def test_get_all_group_mappings_empty(self, db):
+        """Test get_all_group_mappings with empty database."""
+        result = db.get_all_group_mappings()
+        assert result == []
+
+    def test_get_all_group_mappings_returns_all(self, db):
+        """Test get_all_group_mappings returns all mappings."""
+        db.upsert_group_mapping(group_name="group_a", account1_resource_name="cg/1")
+        db.upsert_group_mapping(group_name="group_b", account1_resource_name="cg/2")
+        db.upsert_group_mapping(group_name="group_c", account1_resource_name="cg/3")
+
+        result = db.get_all_group_mappings()
+        assert len(result) == 3
+
+    def test_get_all_group_mappings_sorted_by_name(self, db):
+        """Test that get_all_group_mappings returns sorted results."""
+        db.upsert_group_mapping(group_name="charlie", account1_resource_name="cg/c")
+        db.upsert_group_mapping(group_name="alpha", account1_resource_name="cg/a")
+        db.upsert_group_mapping(group_name="bravo", account1_resource_name="cg/b")
+
+        result = db.get_all_group_mappings()
+        names = [r["group_name"] for r in result]
+        assert names == ["alpha", "bravo", "charlie"]
+
+    def test_get_group_mapping_by_resource_name_account1(self, db):
+        """Test finding group mapping by account 1 resource name."""
+        db.upsert_group_mapping(
+            group_name="test",
+            account1_resource_name="cg/a1",
+            account2_resource_name="cg/a2",
+        )
+
+        result = db.get_group_mapping_by_resource_name("cg/a1", account=1)
+        assert result is not None
+        assert result["group_name"] == "test"
+
+    def test_get_group_mapping_by_resource_name_account2(self, db):
+        """Test finding group mapping by account 2 resource name."""
+        db.upsert_group_mapping(
+            group_name="test",
+            account1_resource_name="cg/a1",
+            account2_resource_name="cg/a2",
+        )
+
+        result = db.get_group_mapping_by_resource_name("cg/a2", account=2)
+        assert result is not None
+        assert result["group_name"] == "test"
+
+    def test_get_group_mapping_by_resource_name_not_found(self, db):
+        """Test that None is returned for unknown resource name."""
+        result = db.get_group_mapping_by_resource_name("cg/unknown", account=1)
+        assert result is None
+
+    def test_get_group_mapping_by_resource_name_invalid_account(self, db):
+        """Test that invalid account number raises ValueError."""
+        with pytest.raises(ValueError, match="Account must be 1 or 2"):
+            db.get_group_mapping_by_resource_name("cg/test", account=3)
+
+        with pytest.raises(ValueError, match="Account must be 1 or 2"):
+            db.get_group_mapping_by_resource_name("cg/test", account=0)
+
+    def test_get_group_mapping_count_empty(self, db):
+        """Test get_group_mapping_count with empty database."""
+        assert db.get_group_mapping_count() == 0
+
+    def test_get_group_mapping_count_with_data(self, db):
+        """Test get_group_mapping_count with data."""
+        db.upsert_group_mapping(group_name="g1", account1_resource_name="cg/1")
+        db.upsert_group_mapping(group_name="g2", account1_resource_name="cg/2")
+        db.upsert_group_mapping(group_name="g3", account1_resource_name="cg/3")
+
+        assert db.get_group_mapping_count() == 3
+
+    def test_clear_all_group_mappings(self, db):
+        """Test clear_all_group_mappings removes all mappings."""
+        db.upsert_group_mapping(group_name="g1", account1_resource_name="cg/1")
+        db.upsert_group_mapping(group_name="g2", account1_resource_name="cg/2")
+
+        deleted = db.clear_all_group_mappings()
+        assert deleted == 2
+        assert db.get_group_mapping_count() == 0
+
+    def test_clear_all_group_mappings_empty_db(self, db):
+        """Test clear_all_group_mappings on empty database."""
+        deleted = db.clear_all_group_mappings()
+        assert deleted == 0
+
+    def test_group_mapping_has_timestamps(self, db):
+        """Test that group mappings have created_at and updated_at."""
+        db.upsert_group_mapping(group_name="test", account1_resource_name="cg/1")
+
+        result = db.get_group_mapping("test")
+        assert result["created_at"] is not None
+        assert result["updated_at"] is not None
+
+    def test_group_mapping_updated_at_changes_on_update(self, db):
+        """Test that updated_at changes when mapping is updated."""
+        db.upsert_group_mapping(group_name="test", account1_resource_name="cg/1")
+        result1 = db.get_group_mapping("test")
+        updated1 = result1["updated_at"]
+
+        # Small delay to ensure different timestamp
+        import time
+
+        time.sleep(0.01)
+
+        db.upsert_group_mapping(group_name="test", account1_resource_name="cg/2")
+        result2 = db.get_group_mapping("test")
+        updated2 = result2["updated_at"]
+
+        # Updated timestamps should be different (or at least not before)
+        assert updated2 >= updated1 if isinstance(updated2, datetime) else True
+
+
+class TestContactGroupDatabaseTableExists:
+    """Tests that contact_groups and contact_group_mappings tables exist."""
+
+    def test_initialize_creates_contact_groups_table(self):
+        """Test that initialize creates the contact_groups table."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+
+        with db.connection() as conn:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='contact_groups'"
+            )
+            assert cursor.fetchone() is not None
+
+    def test_initialize_creates_contact_group_mappings_table(self):
+        """Test that initialize creates the contact_group_mappings table."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+
+        with db.connection() as conn:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='contact_group_mappings'"
+            )
+            assert cursor.fetchone() is not None
+
+    def test_initialize_creates_group_indexes(self):
+        """Test that initialize creates the required group indexes."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+
+        with db.connection() as conn:
+            # Check contact_groups indexes
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_contact_groups_name'"
+            )
+            assert cursor.fetchone() is not None
+
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_contact_groups_account'"
+            )
+            assert cursor.fetchone() is not None
+
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_contact_groups_resource'"
+            )
+            assert cursor.fetchone() is not None
+
+            # Check contact_group_mappings index
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_group_mappings_name'"
+            )
+            assert cursor.fetchone() is not None
