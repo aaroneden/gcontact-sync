@@ -20,6 +20,7 @@ from gcontact_sync.sync.conflict import (
     ConflictStrategy,
 )
 from gcontact_sync.sync.contact import Contact
+from gcontact_sync.sync.photo import download_photo, process_photo, PhotoError
 from gcontact_sync.utils.logging import setup_matching_logger
 
 logger = logging.getLogger(__name__)
@@ -1028,6 +1029,75 @@ class SyncEngine:
             # Remove the mapping
             self.database.delete_contact_mapping(matching_key)
 
+    def _sync_photo_for_contact(
+        self,
+        source_contact: Contact,
+        dest_resource_name: str,
+        dest_api: PeopleAPI,
+        account_label: str,
+    ) -> None:
+        """
+        Synchronize photo for a single contact.
+
+        Downloads photo from source contact and uploads to destination contact.
+        If source has no photo, deletes photo from destination if present.
+
+        Args:
+            source_contact: Contact with photo data (from source account)
+            dest_resource_name: Resource name in destination account
+            dest_api: PeopleAPI instance for destination account
+            account_label: Label for destination account (for logging)
+        """
+        try:
+            if source_contact.photo_url:
+                # Source has photo - download, process, and upload to destination
+                logger.debug(
+                    f"Syncing photo for {source_contact.display_name} "
+                    f"to {account_label}"
+                )
+
+                try:
+                    # Download photo from source URL
+                    photo_data = download_photo(source_contact.photo_url)
+
+                    # Process photo (validate, convert to JPEG, resize if needed)
+                    processed_photo = process_photo(photo_data)
+
+                    # Upload to destination contact
+                    dest_api.upload_photo(dest_resource_name, processed_photo)
+
+                    logger.info(
+                        f"Successfully synced photo for {source_contact.display_name} "
+                        f"to {account_label}"
+                    )
+
+                except PhotoError as e:
+                    logger.warning(
+                        f"Failed to sync photo for {source_contact.display_name}: {e}"
+                    )
+                    # Continue sync even if photo fails - don't break contact sync
+
+            else:
+                # Source has no photo - delete photo from destination if present
+                # This ensures photo deletions are propagated
+                try:
+                    dest_api.delete_photo(dest_resource_name)
+                    logger.debug(
+                        f"Deleted photo from {source_contact.display_name} "
+                        f"in {account_label}"
+                    )
+                except PeopleAPIError as e:
+                    # Ignore errors when deleting (photo may not exist)
+                    logger.debug(
+                        f"Could not delete photo for {source_contact.display_name}: {e}"
+                    )
+
+        except Exception as e:
+            # Catch any unexpected errors to prevent breaking the sync
+            logger.error(
+                f"Unexpected error syncing photo for {source_contact.display_name}: {e}"
+            )
+
     def _execute_creates(
         self, contacts: list[Contact], api: PeopleAPI, account: int, result: SyncResult
     ) -> None:
@@ -1070,6 +1140,14 @@ class SyncEngine:
                         last_synced_hash=content_hash,
                     )
                     result.stats.created_in_account2 += 1
+
+                # Sync photo after creating contact
+                self._sync_photo_for_contact(
+                    source_contact=original,
+                    dest_resource_name=created_contact.resource_name,
+                    dest_api=api,
+                    account_label=account_label,
+                )
 
         except PeopleAPIError as e:
             logger.error(f"Failed to create contacts in {account_label}: {e}")
@@ -1127,8 +1205,8 @@ class SyncEngine:
             if updates_with_etags:
                 updated = api.batch_update_contacts(updates_with_etags)
 
-                # Update mappings with new etags
-                for (_resource_name, source_contact), updated_contact in zip(
+                # Update mappings with new etags and sync photos
+                for (resource_name, source_contact), updated_contact in zip(
                     updates_with_etags, updated
                 ):
                     matching_key = source_contact.matching_key()
@@ -1148,6 +1226,19 @@ class SyncEngine:
                             last_synced_hash=content_hash,
                         )
                         result.stats.updated_in_account2 += 1
+
+                    # Sync photo after updating contact
+                    # Note: We need the original source contact from the updates list
+                    # to get the photo_url
+                    original_source = next(
+                        src for res, src in updates if res == resource_name
+                    )
+                    self._sync_photo_for_contact(
+                        source_contact=original_source,
+                        dest_resource_name=resource_name,
+                        dest_api=api,
+                        account_label=account_label,
+                    )
 
         except PeopleAPIError as e:
             logger.error(f"Failed to update contacts in {account_label}: {e}")
