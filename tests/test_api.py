@@ -1068,3 +1068,504 @@ class TestEdgeCases:
 
         # Should have been called (we're checking it doesn't error)
         api._service.people().updateContact.assert_called()
+
+
+class TestListContactGroups:
+    """Tests for list_contact_groups method."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_list_contact_groups_empty_result(self, api):
+        """Test list_contact_groups with empty response."""
+        api._service.contactGroups().list().execute.return_value = {
+            "contactGroups": [],
+            "nextSyncToken": "sync_token_123",
+        }
+
+        groups, sync_token = api.list_contact_groups()
+
+        assert groups == []
+        assert sync_token == "sync_token_123"
+
+    def test_list_contact_groups_returns_groups(self, api):
+        """Test list_contact_groups returns group dicts."""
+        api._service.contactGroups().list().execute.return_value = {
+            "contactGroups": [
+                {
+                    "resourceName": "contactGroups/abc123",
+                    "name": "Friends",
+                    "groupType": "USER_CONTACT_GROUP",
+                    "memberCount": 5,
+                },
+                {
+                    "resourceName": "contactGroups/def456",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                    "memberCount": 10,
+                },
+            ],
+            "nextSyncToken": "sync_token",
+        }
+
+        groups, sync_token = api.list_contact_groups()
+
+        assert len(groups) == 2
+        assert groups[0]["resourceName"] == "contactGroups/abc123"
+        assert groups[0]["name"] == "Friends"
+        assert groups[1]["resourceName"] == "contactGroups/def456"
+
+    def test_list_contact_groups_with_pagination(self, api):
+        """Test list_contact_groups handles pagination."""
+        # First page
+        response1 = {
+            "contactGroups": [
+                {
+                    "resourceName": "contactGroups/1",
+                    "name": "Group A",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            "nextPageToken": "page2",
+        }
+        # Second page
+        response2 = {
+            "contactGroups": [
+                {
+                    "resourceName": "contactGroups/2",
+                    "name": "Group B",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            "nextSyncToken": "final_token",
+        }
+
+        api._service.contactGroups().list().execute.side_effect = [
+            response1,
+            response2,
+        ]
+
+        groups, sync_token = api.list_contact_groups()
+
+        assert len(groups) == 2
+        assert sync_token == "final_token"
+
+    def test_list_contact_groups_with_sync_token(self, api):
+        """Test list_contact_groups uses provided sync token."""
+        api._service.contactGroups().list.return_value.execute.return_value = {
+            "contactGroups": [],
+            "nextSyncToken": "new_token",
+        }
+
+        api.list_contact_groups(sync_token="old_token")
+
+        # Verify list was called
+        api._service.contactGroups().list.assert_called()
+
+    def test_list_contact_groups_invalid_sync_token(self, api):
+        """Test list_contact_groups raises error on invalid sync token (400)."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 400
+
+        api._service.contactGroups().list().execute.side_effect = HttpError(
+            mock_resp, b"Invalid sync token"
+        )
+
+        with pytest.raises(PeopleAPIError, match="failed"):
+            api.list_contact_groups(sync_token="invalid_token")
+
+
+class TestGetContactGroup:
+    """Tests for get_contact_group method."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_get_contact_group_returns_group(self, api):
+        """Test get_contact_group returns a group dict."""
+        api._service.contactGroups().get().execute.return_value = {
+            "resourceName": "contactGroups/abc123",
+            "name": "Friends",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 5,
+        }
+
+        group = api.get_contact_group("contactGroups/abc123")
+
+        assert group["resourceName"] == "contactGroups/abc123"
+        assert group["name"] == "Friends"
+
+    def test_get_contact_group_with_members(self, api):
+        """Test get_contact_group with max_members parameter."""
+        api._service.contactGroups().get().execute.return_value = {
+            "resourceName": "contactGroups/abc123",
+            "name": "Friends",
+            "memberResourceNames": ["people/1", "people/2"],
+        }
+
+        group = api.get_contact_group("contactGroups/abc123", max_members=10)
+
+        assert group["resourceName"] == "contactGroups/abc123"
+        assert "memberResourceNames" in group
+
+    def test_get_contact_group_not_found(self, api):
+        """Test get_contact_group raises error when group not found."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+
+        api._service.contactGroups().get().execute.side_effect = HttpError(
+            mock_resp, b"Not found"
+        )
+
+        with pytest.raises(PeopleAPIError, match="failed"):
+            api.get_contact_group("contactGroups/nonexistent")
+
+
+class TestCreateContactGroup:
+    """Tests for create_contact_group method."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_create_contact_group_returns_created_group(self, api):
+        """Test create_contact_group returns the created group."""
+        api._service.contactGroups().create().execute.return_value = {
+            "resourceName": "contactGroups/new123",
+            "etag": "new_etag",
+            "name": "New Group",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        group = api.create_contact_group("New Group")
+
+        assert group["resourceName"] == "contactGroups/new123"
+        assert group["etag"] == "new_etag"
+        assert group["name"] == "New Group"
+
+    def test_create_contact_group_passes_correct_body(self, api):
+        """Test create_contact_group passes correct data to API."""
+        api._service.contactGroups().create().execute.return_value = {
+            "resourceName": "contactGroups/123",
+            "name": "Test Group",
+        }
+
+        api.create_contact_group("Test Group")
+
+        # Verify create was called
+        api._service.contactGroups().create.assert_called()
+
+    def test_create_contact_group_conflict_error(self, api):
+        """Test create_contact_group handles conflict error (409)."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 409
+
+        api._service.contactGroups().create().execute.side_effect = HttpError(
+            mock_resp, b"Conflict"
+        )
+
+        with pytest.raises(PeopleAPIError, match="failed"):
+            api.create_contact_group("Duplicate Name")
+
+
+class TestUpdateContactGroup:
+    """Tests for update_contact_group method."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_update_contact_group_returns_updated_group(self, api):
+        """Test update_contact_group returns the updated group."""
+        api._service.contactGroups().update().execute.return_value = {
+            "resourceName": "contactGroups/abc123",
+            "etag": "new_etag",
+            "name": "Updated Name",
+        }
+
+        group = api.update_contact_group("contactGroups/abc123", "Updated Name")
+
+        assert group["resourceName"] == "contactGroups/abc123"
+        assert group["etag"] == "new_etag"
+        assert group["name"] == "Updated Name"
+
+    def test_update_contact_group_with_etag(self, api):
+        """Test update_contact_group uses explicit etag when provided."""
+        api._service.contactGroups().update().execute.return_value = {
+            "resourceName": "contactGroups/abc123",
+            "etag": "new_etag",
+            "name": "Updated Name",
+        }
+
+        api.update_contact_group(
+            "contactGroups/abc123", "Updated Name", etag="explicit_etag"
+        )
+
+        # Should have been called (we're checking it doesn't error)
+        api._service.contactGroups().update.assert_called()
+
+    def test_update_contact_group_not_found(self, api):
+        """Test update_contact_group raises error when group not found."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+
+        api._service.contactGroups().update().execute.side_effect = HttpError(
+            mock_resp, b"Not found"
+        )
+
+        with pytest.raises(PeopleAPIError, match="failed"):
+            api.update_contact_group("contactGroups/nonexistent", "New Name")
+
+    def test_update_contact_group_conflict_error(self, api):
+        """Test update_contact_group handles conflict error (409)."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 409
+
+        api._service.contactGroups().update().execute.side_effect = HttpError(
+            mock_resp, b"Conflict"
+        )
+
+        with pytest.raises(PeopleAPIError, match="failed"):
+            api.update_contact_group("contactGroups/abc123", "New Name")
+
+
+class TestDeleteContactGroup:
+    """Tests for delete_contact_group method."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_delete_contact_group_returns_true(self, api):
+        """Test delete_contact_group returns True on success."""
+        api._service.contactGroups().delete().execute.return_value = {}
+
+        result = api.delete_contact_group("contactGroups/abc123")
+
+        assert result is True
+
+    def test_delete_contact_group_with_delete_contacts(self, api):
+        """Test delete_contact_group with delete_contacts flag."""
+        api._service.contactGroups().delete().execute.return_value = {}
+
+        result = api.delete_contact_group(
+            "contactGroups/abc123", delete_contacts=True
+        )
+
+        assert result is True
+        api._service.contactGroups().delete.assert_called()
+
+    def test_delete_contact_group_already_deleted_returns_true(self, api):
+        """Test delete_contact_group returns True when already deleted (404)."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+
+        api._service.contactGroups().delete().execute.side_effect = HttpError(
+            mock_resp, b"Not found"
+        )
+
+        result = api.delete_contact_group("contactGroups/abc123")
+
+        assert result is True
+
+
+class TestModifyGroupMembers:
+    """Tests for modify_group_members method."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_modify_group_members_add_members(self, api):
+        """Test modify_group_members adds members to group."""
+        api._service.contactGroups().members().modify().execute.return_value = {
+            "notFoundResourceNames": [],
+        }
+
+        result = api.modify_group_members(
+            "contactGroups/abc123",
+            add_resource_names=["people/1", "people/2"],
+        )
+
+        assert result == {"notFoundResourceNames": []}
+        api._service.contactGroups().members().modify.assert_called()
+
+    def test_modify_group_members_remove_members(self, api):
+        """Test modify_group_members removes members from group."""
+        api._service.contactGroups().members().modify().execute.return_value = {
+            "notFoundResourceNames": [],
+        }
+
+        result = api.modify_group_members(
+            "contactGroups/abc123",
+            remove_resource_names=["people/1", "people/2"],
+        )
+
+        assert result == {"notFoundResourceNames": []}
+
+    def test_modify_group_members_add_and_remove(self, api):
+        """Test modify_group_members adds and removes in one call."""
+        api._service.contactGroups().members().modify().execute.return_value = {
+            "notFoundResourceNames": [],
+            "canNotRemoveLastContactGroupResourceNames": [],
+        }
+
+        result = api.modify_group_members(
+            "contactGroups/abc123",
+            add_resource_names=["people/1"],
+            remove_resource_names=["people/2"],
+        )
+
+        assert "notFoundResourceNames" in result
+        assert "canNotRemoveLastContactGroupResourceNames" in result
+
+    def test_modify_group_members_empty_lists_raises_error(self, api):
+        """Test modify_group_members raises error when both lists are empty."""
+        with pytest.raises(ValueError, match="At least one of"):
+            api.modify_group_members("contactGroups/abc123")
+
+    def test_modify_group_members_none_lists_raises_error(self, api):
+        """Test modify_group_members raises error when both lists are None."""
+        with pytest.raises(ValueError, match="At least one of"):
+            api.modify_group_members(
+                "contactGroups/abc123",
+                add_resource_names=None,
+                remove_resource_names=None,
+            )
+
+    def test_modify_group_members_group_not_found(self, api):
+        """Test modify_group_members raises error when group not found."""
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+
+        api._service.contactGroups().members().modify().execute.side_effect = HttpError(
+            mock_resp, b"Not found"
+        )
+
+        with pytest.raises(PeopleAPIError, match="failed"):
+            api.modify_group_members(
+                "contactGroups/nonexistent",
+                add_resource_names=["people/1"],
+            )
+
+    def test_modify_group_members_returns_not_found_contacts(self, api):
+        """Test modify_group_members returns contacts not found."""
+        api._service.contactGroups().members().modify().execute.return_value = {
+            "notFoundResourceNames": ["people/nonexistent1", "people/nonexistent2"],
+        }
+
+        result = api.modify_group_members(
+            "contactGroups/abc123",
+            add_resource_names=["people/nonexistent1", "people/nonexistent2"],
+        )
+
+        assert result["notFoundResourceNames"] == [
+            "people/nonexistent1",
+            "people/nonexistent2",
+        ]
+
+
+class TestContactGroupsEdgeCases:
+    """Tests for edge cases in contact groups methods."""
+
+    @pytest.fixture
+    def api(self):
+        """Create a PeopleAPI instance with mocked service."""
+        mock_creds = MagicMock()
+        api = PeopleAPI(mock_creds)
+        api._service = MagicMock()
+        return api
+
+    def test_list_contact_groups_no_groups_key(self, api):
+        """Test list_contact_groups handles response without contactGroups key."""
+        api._service.contactGroups().list().execute.return_value = {
+            "nextSyncToken": "token"
+        }
+
+        groups, sync_token = api.list_contact_groups()
+
+        assert groups == []
+        assert sync_token == "token"
+
+    def test_get_contact_group_max_members_capped_at_1000(self, api):
+        """Test get_contact_group caps max_members at 1000."""
+        api._service.contactGroups().get().execute.return_value = {
+            "resourceName": "contactGroups/abc123",
+            "name": "Test",
+        }
+
+        # This should not error, max_members is capped internally
+        api.get_contact_group("contactGroups/abc123", max_members=2000)
+
+        api._service.contactGroups().get.assert_called()
+
+    def test_list_contact_groups_includes_system_groups(self, api):
+        """Test list_contact_groups includes system groups."""
+        api._service.contactGroups().list().execute.return_value = {
+            "contactGroups": [
+                {
+                    "resourceName": "contactGroups/myContacts",
+                    "name": "myContacts",
+                    "groupType": "SYSTEM_CONTACT_GROUP",
+                },
+                {
+                    "resourceName": "contactGroups/starred",
+                    "name": "starred",
+                    "groupType": "SYSTEM_CONTACT_GROUP",
+                },
+                {
+                    "resourceName": "contactGroups/abc123",
+                    "name": "Friends",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+            ],
+            "nextSyncToken": "token",
+        }
+
+        groups, _ = api.list_contact_groups()
+
+        assert len(groups) == 3
+        system_groups = [g for g in groups if g["groupType"] == "SYSTEM_CONTACT_GROUP"]
+        user_groups = [g for g in groups if g["groupType"] == "USER_CONTACT_GROUP"]
+        assert len(system_groups) == 2
+        assert len(user_groups) == 1
