@@ -34,6 +34,7 @@ from gcontact_sync.auth.google_auth import (
     AuthenticationError,
     GoogleAuth,
 )
+from gcontact_sync.config.generator import save_config_file
 from gcontact_sync.config.loader import ConfigError, ConfigLoader
 from gcontact_sync.sync.conflict import ConflictStrategy
 from gcontact_sync.utils.logging import get_logger, setup_logging
@@ -376,6 +377,55 @@ def status_command(ctx: click.Context) -> None:
     except Exception as e:
         logger.exception(f"Error getting status: {e}")
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# Init-Config Command
+# =============================================================================
+
+
+@cli.command("init-config")
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing configuration file if it exists.",
+)
+@click.pass_context
+def init_config_command(ctx: click.Context, force: bool) -> None:
+    """
+    Generate a default configuration file.
+
+    Creates a configuration file with all available options documented
+    and commented out. You can then uncomment and modify the options
+    you want to use.
+
+    Examples:
+
+        # Create config file (fails if already exists)
+        gcontact-sync init-config
+
+        # Overwrite existing config file
+        gcontact-sync init-config --force
+    """
+    logger = get_logger(__name__)
+    config_file = ctx.obj["config_file"]
+
+    click.echo(f"Creating configuration file: {config_file}")
+
+    success, error = save_config_file(config_file, overwrite=force)
+
+    if success:
+        click.echo(click.style("Configuration file created successfully!", fg="green"))
+        click.echo(f"\nLocation: {config_file}")
+        click.echo("\nNext steps:")
+        click.echo("1. Edit the file to uncomment and configure desired options")
+        click.echo("2. Run 'gcontact-sync --help' to see available commands")
+        logger.info(f"Created configuration file: {config_file}")
+    else:
+        click.echo(click.style(f"Error: {error}", fg="red"), err=True)
+        logger.error(f"Failed to create configuration file: {error}")
         sys.exit(1)
 
 
