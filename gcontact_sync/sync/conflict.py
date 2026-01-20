@@ -8,7 +8,6 @@ modified in both Google accounts since the last sync.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 
 from gcontact_sync.sync.contact import Contact
 
@@ -88,7 +87,7 @@ class ConflictResolver:
         self,
         contact1: Contact,
         contact2: Contact,
-        last_synced_hash: Optional[str] = None,
+        last_synced_hash: str | None = None,
     ) -> bool:
         """
         Determine if two contacts are in conflict.
@@ -247,7 +246,7 @@ class ConflictResolver:
 
     def compare_timestamps(
         self, contact1: Contact, contact2: Contact
-    ) -> tuple[Optional[datetime], Optional[datetime], int]:
+    ) -> tuple[datetime | None, datetime | None, int]:
         """
         Compare modification timestamps of two contacts.
 
@@ -284,7 +283,7 @@ class ConflictResolver:
         self,
         contact1: Contact,
         contact2: Contact,
-        last_synced_hash: Optional[str] = None,
+        last_synced_hash: str | None = None,
     ) -> tuple[bool, bool]:
         """
         Determine which accounts need to be updated for sync.

@@ -12,7 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -53,18 +53,19 @@ class Contact:
     etag: str  # Required for updates
     display_name: str
 
-    given_name: Optional[str] = None
-    family_name: Optional[str] = None
+    given_name: str | None = None
+    family_name: str | None = None
     emails: list[str] = field(default_factory=list)
     phones: list[str] = field(default_factory=list)
     organizations: list[str] = field(default_factory=list)
-    notes: Optional[str] = None
-    last_modified: Optional[datetime] = None
+    notes: str | None = None
+    last_modified: datetime | None = None
+    memberships: list[str] = field(default_factory=list)  # Contact group resource names
 
     # Photo fields
-    photo_url: Optional[str] = None
-    photo_data: Optional[bytes] = None
-    photo_etag: Optional[str] = None
+    photo_url: str | None = None
+    photo_data: bytes | None = None
+    photo_etag: str | None = None
 
     # Additional fields for sync tracking
     deleted: bool = False  # True if contact was deleted in source
@@ -127,6 +128,13 @@ class Contact:
         biographies = person.get("biographies", [])
         notes = biographies[0].get("value") if biographies else None
 
+        # Extract memberships (contact group resource names)
+        memberships = [
+            m.get("contactGroupMembership", {}).get("contactGroupResourceName", "")
+            for m in person.get("memberships", [])
+            if m.get("contactGroupMembership", {}).get("contactGroupResourceName")
+        ]
+
         # Extract last modified time from metadata
         last_modified = None
         metadata = person.get("metadata", {})
@@ -169,6 +177,7 @@ class Contact:
             organizations=organizations,
             notes=notes,
             last_modified=last_modified,
+            memberships=memberships,
             photo_url=photo_url,
             deleted=deleted,
         )
@@ -218,15 +227,17 @@ class Contact:
         if self.notes:
             person["biographies"] = [{"value": self.notes, "contentType": "TEXT_PLAIN"}]
 
+        # Add memberships (contact group assignments)
+        if self.memberships:
+            person["memberships"] = [
+                {"contactGroupMembership": {"contactGroupResourceName": m}}
+                for m in self.memberships
+            ]
+
         # Add photo information
         # Note: Photos are updated separately via updateContactPhoto endpoint
         if self.photo_url:
-            person["photos"] = [
-                {
-                    "url": self.photo_url,
-                    "metadata": {"primary": True}
-                }
-            ]
+            person["photos"] = [{"url": self.photo_url, "metadata": {"primary": True}}]
 
         return person
 
@@ -354,6 +365,7 @@ class Contact:
             f"phones:{','.join(sorted(self._normalize_phones()))}",
             f"organizations:{','.join(sorted(self.organizations))}",
             f"notes:{self.notes or ''}",
+            f"memberships:{','.join(sorted(self.memberships))}",
             f"photo_url:{self.photo_url or ''}",
         ]
 

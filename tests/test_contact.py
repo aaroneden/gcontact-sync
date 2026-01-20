@@ -1219,9 +1219,18 @@ class TestContactPhoto:
             "etag": "etag",
             "names": [{"displayName": "John Doe"}],
             "photos": [
-                {"url": "https://example.com/photo1.jpg", "metadata": {"primary": False}},
-                {"url": "https://example.com/photo2.jpg", "metadata": {"primary": True}},
-                {"url": "https://example.com/photo3.jpg", "metadata": {"primary": False}},
+                {
+                    "url": "https://example.com/photo1.jpg",
+                    "metadata": {"primary": False},
+                },
+                {
+                    "url": "https://example.com/photo2.jpg",
+                    "metadata": {"primary": True},
+                },
+                {
+                    "url": "https://example.com/photo3.jpg",
+                    "metadata": {"primary": False},
+                },
             ],
         }
 
@@ -1447,3 +1456,101 @@ class TestContactPhoto:
 
         # Photo URL should be preserved
         assert restored.photo_url == original.photo_url
+
+
+class TestContactMemberships:
+    """Tests for Contact memberships field handling."""
+
+    def test_memberships_field_parsed_from_api_response(self):
+        """Verify memberships are correctly extracted from API response."""
+        person = {
+            "resourceName": "people/123",
+            "etag": "abc",
+            "names": [{"displayName": "Test Person"}],
+            "memberships": [
+                {
+                    "contactGroupMembership": {
+                        "contactGroupResourceName": "contactGroups/group1"
+                    }
+                },
+                {
+                    "contactGroupMembership": {
+                        "contactGroupResourceName": "contactGroups/group2"
+                    }
+                },
+            ],
+        }
+        contact = Contact.from_api_response(person)
+        assert contact.memberships == ["contactGroups/group1", "contactGroups/group2"]
+
+    def test_memberships_field_empty_when_not_in_response(self):
+        """Verify memberships defaults to empty list."""
+        person = {
+            "resourceName": "people/123",
+            "etag": "abc",
+            "names": [{"displayName": "Test Person"}],
+        }
+        contact = Contact.from_api_response(person)
+        assert contact.memberships == []
+
+    def test_memberships_field_serialized_to_api_format(self):
+        """Verify memberships are correctly serialized to API format."""
+        contact = Contact(
+            resource_name="people/123",
+            etag="abc",
+            display_name="Test Person",
+            memberships=["contactGroups/group1", "contactGroups/group2"],
+        )
+        api_format = contact.to_api_format()
+        assert "memberships" in api_format
+        assert len(api_format["memberships"]) == 2
+        assert api_format["memberships"][0] == {
+            "contactGroupMembership": {
+                "contactGroupResourceName": "contactGroups/group1"
+            }
+        }
+
+    def test_memberships_not_serialized_when_empty(self):
+        """Verify empty memberships are not included in API format."""
+        contact = Contact(
+            resource_name="people/123",
+            etag="abc",
+            display_name="Test Person",
+            memberships=[],
+        )
+        api_format = contact.to_api_format()
+        assert "memberships" not in api_format
+
+    def test_content_hash_includes_memberships(self):
+        """Verify content hash changes when memberships change."""
+        contact1 = Contact(
+            resource_name="people/1",
+            etag="e1",
+            display_name="Test Person",
+            memberships=["contactGroups/a"],
+        )
+        contact2 = Contact(
+            resource_name="people/2",
+            etag="e2",
+            display_name="Test Person",
+            memberships=["contactGroups/b"],
+        )
+        # Different memberships should produce different hashes
+        assert contact1.content_hash() != contact2.content_hash()
+
+    def test_content_hash_stable_with_same_memberships(self):
+        """Verify content hash is stable for same memberships."""
+        contact1 = Contact(
+            resource_name="people/1",
+            etag="e1",
+            display_name="Test",
+            memberships=["contactGroups/a", "contactGroups/b"],
+        )
+        contact2 = Contact(
+            resource_name="people/2",
+            etag="e2",
+            display_name="Test",
+            memberships=["contactGroups/b", "contactGroups/a"],  # Different order
+        )
+        # Same memberships (different order) should produce same hash
+        assert contact1.content_hash() == contact2.content_hash()
