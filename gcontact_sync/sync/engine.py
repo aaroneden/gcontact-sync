@@ -821,6 +821,10 @@ class SyncEngine:
 
         Determines if update is needed and which direction.
 
+        This method detects all field changes including photos, since
+        content_hash() includes all syncable fields (names, emails,
+        phones, organizations, notes, and photo_url).
+
         Args:
             matching_key: The normalized matching key
             contact1: Contact from account 1
