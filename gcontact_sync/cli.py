@@ -48,6 +48,9 @@ VALID_ACCOUNTS = (ACCOUNT_1, ACCOUNT_2)
 # Default configuration directory
 DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
+# Default configuration file
+DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
+
 
 def validate_account(
     ctx: click.Context, param: click.Parameter, value: Optional[str]
@@ -69,6 +72,13 @@ def get_config_dir(config_dir: Optional[str]) -> Path:
     return DEFAULT_CONFIG_DIR
 
 
+def get_config_file(config_file: Optional[str]) -> Path:
+    """Get the configuration file path."""
+    if config_file:
+        return Path(config_file)
+    return DEFAULT_CONFIG_FILE
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="gcontact-sync")
 @click.option(
@@ -81,8 +91,15 @@ def get_config_dir(config_dir: Optional[str]) -> Path:
     envvar="GCONTACT_SYNC_CONFIG_DIR",
     help="Configuration directory path (default: ~/.gcontact-sync).",
 )
+@click.option(
+    "--config-file",
+    "-f",
+    type=click.Path(exists=False, file_okay=True, dir_okay=False),
+    envvar="GCONTACT_SYNC_CONFIG_FILE",
+    help="Configuration file path (default: ~/.gcontact-sync/config.yaml).",
+)
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str]) -> None:
+def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str], config_file: Optional[str]) -> None:
     """
     Bidirectional Google Contacts Sync.
 
@@ -95,6 +112,7 @@ def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str]) -> None:
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["config_dir"] = get_config_dir(config_dir)
+    ctx.obj["config_file"] = get_config_file(config_file)
 
     # Setup logging
     setup_logging(verbose=verbose, enable_file_logging=True)
