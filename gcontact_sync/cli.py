@@ -913,6 +913,272 @@ def list_groups_command(ctx: click.Context, account: str, show_all: bool) -> Non
         sys.exit(1)
 
 
+# =============================================================================
+# Create-Group Command
+# =============================================================================
+
+
+@cli.command("create-group")
+@click.argument("name")
+@click.option(
+    "--account",
+    "-a",
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to create group in (creates in both if not specified).",
+)
+@click.pass_context
+def create_group_command(ctx: click.Context, name: str, account: Optional[str]) -> None:
+    """
+    Create a new contact group.
+
+    Creates a contact group with the specified NAME. By default, the group
+    is created in both accounts. Use --account to create in only one account.
+
+    Examples:
+
+        # Create group in both accounts
+        gcontact-sync create-group "Work"
+
+        # Create group in specific account
+        gcontact-sync create-group "Family" --account account1
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+
+    # Determine which accounts to create in
+    accounts_to_create = [account] if account else list(VALID_ACCOUNTS)
+
+    try:
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        # Import API module
+        from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
+
+        created_count = 0
+        errors: list[str] = []
+
+        for acc in accounts_to_create:
+            # Check authentication
+            creds = auth.get_credentials(acc)
+            if not creds:
+                errors.append(f"{acc}: Not authenticated")
+                continue
+
+            # Get account email for display
+            account_email = auth.get_account_email(acc) or acc
+
+            click.echo(f"Creating group '{name}' in {account_email}...")
+
+            try:
+                api = PeopleAPI(credentials=creds)
+                result = api.create_contact_group(name)
+                resource_name = result.get("resourceName", "unknown")
+                click.echo(
+                    click.style(
+                        f"  Created: {resource_name}",
+                        fg="green",
+                    )
+                )
+                created_count += 1
+                logger.info(f"Created group '{name}' in {acc}: {resource_name}")
+
+            except PeopleAPIError as e:
+                error_msg = str(e)
+                if "already exists" in error_msg.lower():
+                    click.echo(
+                        click.style(
+                            f"  Group '{name}' already exists in {account_email}",
+                            fg="yellow",
+                        )
+                    )
+                else:
+                    errors.append(f"{account_email}: {error_msg}")
+                    click.echo(click.style(f"  Error: {error_msg}", fg="red"))
+
+        # Summary
+        click.echo()
+        if created_count > 0:
+            msg = f"Successfully created group '{name}' in {created_count} account(s)."
+            click.echo(click.style(msg, fg="green"))
+        elif not errors:
+            click.echo(
+                click.style(
+                    f"Group '{name}' already exists in all specified accounts.",
+                    fg="yellow",
+                )
+            )
+
+        if errors:
+            for error in errors:
+                click.echo(click.style(f"Error: {error}", fg="red"), err=True)
+            sys.exit(1)
+
+    except Exception as e:
+        logger.exception(f"Failed to create group: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# Delete-Group Command
+# =============================================================================
+
+
+@cli.command("delete-group")
+@click.argument("name")
+@click.option(
+    "--account",
+    "-a",
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to delete group from (deletes from both if not specified).",
+)
+@click.option(
+    "--delete-contacts",
+    is_flag=True,
+    help="Also delete all contacts in the group (default: preserve contacts).",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def delete_group_command(
+    ctx: click.Context,
+    name: str,
+    account: Optional[str],
+    delete_contacts: bool,
+    yes: bool,
+) -> None:
+    """
+    Delete a contact group.
+
+    Deletes the contact group with the specified NAME. By default, the group
+    is deleted from both accounts. Use --account to delete from only one account.
+
+    Contacts in the group are preserved by default (they remain in myContacts).
+    Use --delete-contacts to also delete all contacts in the group.
+
+    Examples:
+
+        # Delete group from both accounts
+        gcontact-sync delete-group "Old Group"
+
+        # Delete group from specific account
+        gcontact-sync delete-group "Work" --account account1
+
+        # Delete group and its contacts
+        gcontact-sync delete-group "Temp" --delete-contacts
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+
+    # Determine which accounts to delete from
+    accounts_to_delete = [account] if account else list(VALID_ACCOUNTS)
+
+    # Confirmation prompt
+    if not yes:
+        warning_msg = f"Delete group '{name}'"
+        if delete_contacts:
+            warning_msg += " AND all contacts in it"
+        if not account:
+            warning_msg += " from BOTH accounts"
+        else:
+            warning_msg += f" from {account}"
+        warning_msg += "?"
+
+        click.confirm(warning_msg, abort=True)
+
+    try:
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        # Import API module
+        from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
+        from gcontact_sync.sync.group import ContactGroup
+
+        deleted_count = 0
+        not_found_count = 0
+        errors: list[str] = []
+
+        for acc in accounts_to_delete:
+            # Check authentication
+            creds = auth.get_credentials(acc)
+            if not creds:
+                errors.append(f"{acc}: Not authenticated")
+                continue
+
+            # Get account email for display
+            account_email = auth.get_account_email(acc) or acc
+
+            click.echo(f"Deleting group '{name}' from {account_email}...")
+
+            try:
+                api = PeopleAPI(credentials=creds)
+
+                # First, find the group by name
+                groups_data, _ = api.list_contact_groups()
+                groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+                # Find matching group (case-insensitive)
+                target_group = None
+                for group in groups:
+                    if group.name.lower() == name.lower() and group.is_user_group():
+                        target_group = group
+                        break
+
+                if not target_group:
+                    click.echo(
+                        click.style(
+                            f"  Group '{name}' not found in {account_email}",
+                            fg="yellow",
+                        )
+                    )
+                    not_found_count += 1
+                    continue
+
+                # Delete the group
+                api.delete_contact_group(
+                    target_group.resource_name,
+                    delete_contacts=delete_contacts,
+                )
+                click.echo(
+                    click.style(
+                        f"  Deleted: {target_group.resource_name}",
+                        fg="green",
+                    )
+                )
+                deleted_count += 1
+                logger.info(
+                    f"Deleted group '{name}' from {acc}: {target_group.resource_name}"
+                )
+
+            except PeopleAPIError as e:
+                error_msg = str(e)
+                errors.append(f"{account_email}: {error_msg}")
+                click.echo(click.style(f"  Error: {error_msg}", fg="red"))
+
+        # Summary
+        click.echo()
+        if deleted_count > 0:
+            msg = f"Deleted group '{name}' from {deleted_count} account(s)."
+            click.echo(click.style(msg, fg="green"))
+        elif not_found_count == len(accounts_to_delete):
+            click.echo(
+                click.style(
+                    f"Group '{name}' was not found in any specified account.",
+                    fg="yellow",
+                )
+            )
+
+        if errors:
+            for error in errors:
+                click.echo(click.style(f"Error: {error}", fg="red"), err=True)
+            sys.exit(1)
+
+    except Exception as e:
+        logger.exception(f"Failed to delete group: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
