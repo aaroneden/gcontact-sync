@@ -698,7 +698,8 @@ def _show_debug_info(
     matched_groups = result.matched_groups
     if matched_groups or result.has_group_changes():
         click.echo(
-            f"\n{click.style('Matched Groups:', fg='green')} {len(matched_groups)} pairs"
+            f"\n{click.style('Matched Groups:', fg='green')} "
+            f"{len(matched_groups)} pairs"
         )
 
         if matched_groups:

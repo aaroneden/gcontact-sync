@@ -1183,6 +1183,6 @@ class TestContactGroupDatabaseTableExists:
             # Check contact_group_mappings index
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master "
-                "WHERE type='index' AND name='idx_group_mappings_name'"
+                "WHERE type='index' AND name='idx_grp_map_name'"
             )
             assert cursor.fetchone() is not None

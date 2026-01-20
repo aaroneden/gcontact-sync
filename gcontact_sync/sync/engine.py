@@ -101,7 +101,9 @@ class SyncResult:
     matched_contacts: list[tuple[Contact, Contact]] = field(default_factory=list)
 
     # Matched groups (for debug output): list of (group1, group2) pairs
-    matched_groups: list[tuple[ContactGroup, ContactGroup]] = field(default_factory=list)
+    matched_groups: list[tuple[ContactGroup, ContactGroup]] = field(
+        default_factory=list
+    )
 
     # Statistics
     stats: SyncStats = field(default_factory=SyncStats)
@@ -1100,8 +1102,8 @@ class SyncEngine:
                     f"Sync complete: "
                     f"groups (created={groups_created}, updated={groups_updated}, "
                     f"deleted={groups_deleted}), "
-                    f"contacts (created={contacts_created}, updated={contacts_updated}, "
-                    f"deleted={contacts_deleted})"
+                    f"contacts (created={contacts_created}, "
+                    f"updated={contacts_updated}, deleted={contacts_deleted})"
                 )
             else:
                 logger.info(

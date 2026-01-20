@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS contact_group_mappings (
     UNIQUE(group_name)
 );
 
-CREATE INDEX IF NOT EXISTS idx_group_mappings_name ON contact_group_mappings(group_name);
+CREATE INDEX IF NOT EXISTS idx_grp_map_name ON contact_group_mappings(group_name);
 """
 
 

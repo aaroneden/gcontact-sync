@@ -13,7 +13,6 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-
 # Group types as defined by Google People API
 GROUP_TYPE_UNSPECIFIED = "GROUP_TYPE_UNSPECIFIED"
 GROUP_TYPE_USER_CONTACT_GROUP = "USER_CONTACT_GROUP"
