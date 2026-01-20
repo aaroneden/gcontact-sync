@@ -203,6 +203,13 @@ class Contact:
         if self.notes:
             person["biographies"] = [{"value": self.notes, "contentType": "TEXT_PLAIN"}]
 
+        # Add memberships (contact group assignments)
+        if self.memberships:
+            person["memberships"] = [
+                {"contactGroupMembership": {"contactGroupResourceName": m}}
+                for m in self.memberships
+            ]
+
         return person
 
     def matching_key(self) -> str:
