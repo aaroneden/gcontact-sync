@@ -31,6 +31,9 @@ class Contact:
         organizations: List of organization names
         notes: Contact notes
         last_modified: Timestamp of last modification
+        photo_url: URL to contact's photo
+        photo_data: Binary photo data
+        photo_etag: ETag for photo version tracking
 
     Usage:
         # Create from API response
@@ -57,6 +60,11 @@ class Contact:
     organizations: list[str] = field(default_factory=list)
     notes: Optional[str] = None
     last_modified: Optional[datetime] = None
+
+    # Photo fields
+    photo_url: Optional[str] = None
+    photo_data: Optional[bytes] = None
+    photo_etag: Optional[str] = None
 
     # Additional fields for sync tracking
     deleted: bool = False  # True if contact was deleted in source
