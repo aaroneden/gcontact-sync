@@ -673,3 +673,441 @@ class SyncDatabase:
         """
         with self.connection() as conn:
             conn.execute("VACUUM")
+
+    # =========================================================================
+    # Contact Group Operations
+    # =========================================================================
+
+    def get_group(
+        self, resource_name: str, account_id: str
+    ) -> Optional[dict[str, Any]]:
+        """
+        Get a contact group by resource name and account.
+
+        Args:
+            resource_name: The Google resource name (e.g., 'contactGroups/123')
+            account_id: The account identifier (e.g., 'account1', 'account2')
+
+        Returns:
+            Dictionary with group details, or None if not found
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    name,
+                    resource_name,
+                    account_id,
+                    etag,
+                    group_type,
+                    member_count,
+                    created_at,
+                    updated_at
+                FROM contact_groups
+                WHERE resource_name = ? AND account_id = ?
+                """,
+                (resource_name, account_id),
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_group_by_name(
+        self, name: str, account_id: str
+    ) -> Optional[dict[str, Any]]:
+        """
+        Get a contact group by name and account.
+
+        Args:
+            name: The group name
+            account_id: The account identifier
+
+        Returns:
+            Dictionary with group details, or None if not found
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    name,
+                    resource_name,
+                    account_id,
+                    etag,
+                    group_type,
+                    member_count,
+                    created_at,
+                    updated_at
+                FROM contact_groups
+                WHERE name = ? AND account_id = ?
+                """,
+                (name, account_id),
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_groups_by_account(self, account_id: str) -> list[dict[str, Any]]:
+        """
+        Get all contact groups for an account.
+
+        Args:
+            account_id: The account identifier
+
+        Returns:
+            List of group dictionaries
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    name,
+                    resource_name,
+                    account_id,
+                    etag,
+                    group_type,
+                    member_count,
+                    created_at,
+                    updated_at
+                FROM contact_groups
+                WHERE account_id = ?
+                ORDER BY name
+                """,
+                (account_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def upsert_group(
+        self,
+        name: str,
+        account_id: str,
+        resource_name: Optional[str] = None,
+        etag: Optional[str] = None,
+        group_type: str = "USER_CONTACT_GROUP",
+        member_count: int = 0,
+    ) -> None:
+        """
+        Insert or update a contact group.
+
+        Args:
+            name: The group name
+            account_id: The account identifier
+            resource_name: Google resource name for the group
+            etag: ETag for the group
+            group_type: Group type (USER_CONTACT_GROUP or SYSTEM_CONTACT_GROUP)
+            member_count: Number of members in the group
+        """
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO contact_groups (
+                    name,
+                    resource_name,
+                    account_id,
+                    etag,
+                    group_type,
+                    member_count,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(resource_name, account_id) DO UPDATE SET
+                    name = excluded.name,
+                    etag = excluded.etag,
+                    group_type = excluded.group_type,
+                    member_count = excluded.member_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    name,
+                    resource_name,
+                    account_id,
+                    etag,
+                    group_type,
+                    member_count,
+                    datetime.utcnow(),
+                    datetime.utcnow(),
+                ),
+            )
+
+    def delete_group(self, resource_name: str, account_id: str) -> bool:
+        """
+        Delete a contact group.
+
+        Args:
+            resource_name: The Google resource name
+            account_id: The account identifier
+
+        Returns:
+            True if a group was deleted, False if not found
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM contact_groups WHERE resource_name = ? AND account_id = ?",
+                (resource_name, account_id),
+            )
+            return cursor.rowcount > 0
+
+    def get_group_count(self, account_id: Optional[str] = None) -> int:
+        """
+        Get the total number of contact groups.
+
+        Args:
+            account_id: Optional account to filter by
+
+        Returns:
+            Count of contact groups
+        """
+        with self.connection() as conn:
+            if account_id:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) FROM contact_groups WHERE account_id = ?",
+                    (account_id,),
+                )
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM contact_groups")
+            result: int = cursor.fetchone()[0]
+            return result
+
+    def clear_groups_for_account(self, account_id: str) -> int:
+        """
+        Delete all contact groups for an account.
+
+        Args:
+            account_id: The account identifier
+
+        Returns:
+            Number of groups deleted
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM contact_groups WHERE account_id = ?",
+                (account_id,),
+            )
+            return cursor.rowcount
+
+    # =========================================================================
+    # Contact Group Mapping Operations
+    # =========================================================================
+
+    def get_group_mapping(self, group_name: str) -> Optional[dict[str, Any]]:
+        """
+        Get group mapping by group name.
+
+        Args:
+            group_name: The normalized group name (matching key)
+
+        Returns:
+            Dictionary with mapping details, or None if not found
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    group_name,
+                    account1_resource_name,
+                    account2_resource_name,
+                    account1_etag,
+                    account2_etag,
+                    last_synced_hash,
+                    created_at,
+                    updated_at
+                FROM contact_group_mappings
+                WHERE group_name = ?
+                """,
+                (group_name,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def upsert_group_mapping(
+        self,
+        group_name: str,
+        account1_resource_name: Optional[str] = None,
+        account2_resource_name: Optional[str] = None,
+        account1_etag: Optional[str] = None,
+        account2_etag: Optional[str] = None,
+        last_synced_hash: Optional[str] = None,
+    ) -> None:
+        """
+        Insert or update a group mapping.
+
+        Args:
+            group_name: The normalized group name (matching key)
+            account1_resource_name: Google resource name for account 1
+            account2_resource_name: Google resource name for account 2
+            account1_etag: ETag for account 1's version
+            account2_etag: ETag for account 2's version
+            last_synced_hash: Content hash of last synced state
+        """
+        with self.connection() as conn:
+            # Check if mapping exists
+            cursor = conn.execute(
+                "SELECT id FROM contact_group_mappings WHERE group_name = ?",
+                (group_name,),
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                # Update existing mapping
+                updates: list[str] = []
+                params: list[str | datetime] = []
+
+                if account1_resource_name is not None:
+                    updates.append("account1_resource_name = ?")
+                    params.append(account1_resource_name)
+                if account2_resource_name is not None:
+                    updates.append("account2_resource_name = ?")
+                    params.append(account2_resource_name)
+                if account1_etag is not None:
+                    updates.append("account1_etag = ?")
+                    params.append(account1_etag)
+                if account2_etag is not None:
+                    updates.append("account2_etag = ?")
+                    params.append(account2_etag)
+                if last_synced_hash is not None:
+                    updates.append("last_synced_hash = ?")
+                    params.append(last_synced_hash)
+
+                if updates:
+                    updates.append("updated_at = ?")
+                    params.append(datetime.utcnow())
+                    params.append(group_name)
+
+                    update_sql = (
+                        f"UPDATE contact_group_mappings SET {', '.join(updates)} "  # nosec B608
+                        "WHERE group_name = ?"
+                    )
+                    conn.execute(update_sql, params)
+            else:
+                # Insert new mapping
+                conn.execute(
+                    """
+                    INSERT INTO contact_group_mappings (
+                        group_name,
+                        account1_resource_name,
+                        account2_resource_name,
+                        account1_etag,
+                        account2_etag,
+                        last_synced_hash,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        group_name,
+                        account1_resource_name,
+                        account2_resource_name,
+                        account1_etag,
+                        account2_etag,
+                        last_synced_hash,
+                        datetime.utcnow(),
+                        datetime.utcnow(),
+                    ),
+                )
+
+    def get_all_group_mappings(self) -> list[dict[str, Any]]:
+        """
+        Get all group mappings.
+
+        Returns:
+            List of all group mapping dictionaries
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    group_name,
+                    account1_resource_name,
+                    account2_resource_name,
+                    account1_etag,
+                    account2_etag,
+                    last_synced_hash,
+                    created_at,
+                    updated_at
+                FROM contact_group_mappings
+                ORDER BY group_name
+                """
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def delete_group_mapping(self, group_name: str) -> bool:
+        """
+        Delete a group mapping.
+
+        Args:
+            group_name: The normalized group name (matching key)
+
+        Returns:
+            True if a mapping was deleted, False if not found
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM contact_group_mappings WHERE group_name = ?",
+                (group_name,),
+            )
+            return cursor.rowcount > 0
+
+    def get_group_mapping_by_resource_name(
+        self, resource_name: str, account: int
+    ) -> Optional[dict[str, Any]]:
+        """
+        Get group mapping by resource name for a specific account.
+
+        Args:
+            resource_name: The Google resource name to search for
+            account: Account number (1 or 2)
+
+        Returns:
+            Group mapping dictionary or None if not found
+        """
+        column = f"account{account}_resource_name"
+        if account not in (1, 2):
+            raise ValueError("Account must be 1 or 2")
+
+        with self.connection() as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT
+                    group_name,
+                    account1_resource_name,
+                    account2_resource_name,
+                    account1_etag,
+                    account2_etag,
+                    last_synced_hash,
+                    created_at,
+                    updated_at
+                FROM contact_group_mappings
+                WHERE {column} = ?
+                """,  # nosec B608 - column is validated to be account1 or account2
+                (resource_name,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_group_mapping_count(self) -> int:
+        """
+        Get the total number of group mappings.
+
+        Returns:
+            Count of group mappings
+        """
+        with self.connection() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM contact_group_mappings")
+            result: int = cursor.fetchone()[0]
+            return result
+
+    def clear_all_group_mappings(self) -> int:
+        """
+        Delete all group mappings (use with caution).
+
+        Returns:
+            Number of mappings deleted
+        """
+        with self.connection() as conn:
+            cursor = conn.execute("DELETE FROM contact_group_mappings")
+            return cursor.rowcount
