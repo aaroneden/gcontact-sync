@@ -34,6 +34,7 @@ from gcontact_sync.auth.google_auth import (
     AuthenticationError,
     GoogleAuth,
 )
+from gcontact_sync.config.loader import ConfigError, ConfigLoader
 from gcontact_sync.sync.conflict import ConflictStrategy
 from gcontact_sync.utils.logging import get_logger, setup_logging
 
@@ -110,12 +111,40 @@ def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str], config_fil
     """
     # Initialize context
     ctx.ensure_object(dict)
-    ctx.obj["verbose"] = verbose
-    ctx.obj["config_dir"] = get_config_dir(config_dir)
-    ctx.obj["config_file"] = get_config_file(config_file)
+
+    # Resolve paths
+    resolved_config_dir = get_config_dir(config_dir)
+    resolved_config_file = get_config_file(config_file)
+
+    ctx.obj["config_dir"] = resolved_config_dir
+    ctx.obj["config_file"] = resolved_config_file
+
+    # Load configuration file
+    config = {}
+    try:
+        loader = ConfigLoader(config_dir=resolved_config_dir)
+        config = loader.load_from_file(resolved_config_file)
+        if config:
+            # Validate loaded config
+            loader.validate(config)
+    except ConfigError as e:
+        # Show error but don't fail - allow CLI to work without config file
+        click.echo(
+            click.style(f"Warning: Configuration error: {e}", fg="yellow"),
+            err=True
+        )
+        config = {}
+
+    # Store loaded config for commands to use
+    ctx.obj["config"] = config
+
+    # Merge verbose flag: CLI arg takes precedence over config file
+    # If verbose was not set via CLI (False is default) and config has it, use config value
+    effective_verbose = verbose or config.get("verbose", False)
+    ctx.obj["verbose"] = effective_verbose
 
     # Setup logging
-    setup_logging(verbose=verbose, enable_file_logging=True)
+    setup_logging(verbose=effective_verbose, enable_file_logging=True)
 
 
 # =============================================================================
