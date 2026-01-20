@@ -12,7 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -50,13 +50,14 @@ class Contact:
     etag: str  # Required for updates
     display_name: str
 
-    given_name: Optional[str] = None
-    family_name: Optional[str] = None
+    given_name: str | None = None
+    family_name: str | None = None
     emails: list[str] = field(default_factory=list)
     phones: list[str] = field(default_factory=list)
     organizations: list[str] = field(default_factory=list)
-    notes: Optional[str] = None
-    last_modified: Optional[datetime] = None
+    notes: str | None = None
+    last_modified: datetime | None = None
+    memberships: list[str] = field(default_factory=list)  # Contact group resource names
 
     # Additional fields for sync tracking
     deleted: bool = False  # True if contact was deleted in source
@@ -119,6 +120,13 @@ class Contact:
         biographies = person.get("biographies", [])
         notes = biographies[0].get("value") if biographies else None
 
+        # Extract memberships (contact group resource names)
+        memberships = [
+            m.get("contactGroupMembership", {}).get("contactGroupResourceName", "")
+            for m in person.get("memberships", [])
+            if m.get("contactGroupMembership", {}).get("contactGroupResourceName")
+        ]
+
         # Extract last modified time from metadata
         last_modified = None
         metadata = person.get("metadata", {})
@@ -148,6 +156,7 @@ class Contact:
             organizations=organizations,
             notes=notes,
             last_modified=last_modified,
+            memberships=memberships,
             deleted=deleted,
         )
 
@@ -193,6 +202,13 @@ class Contact:
         # Add notes as biography
         if self.notes:
             person["biographies"] = [{"value": self.notes, "contentType": "TEXT_PLAIN"}]
+
+        # Add memberships (contact group assignments)
+        if self.memberships:
+            person["memberships"] = [
+                {"contactGroupMembership": {"contactGroupResourceName": m}}
+                for m in self.memberships
+            ]
 
         return person
 
@@ -320,6 +336,7 @@ class Contact:
             f"phones:{','.join(sorted(self._normalize_phones()))}",
             f"organizations:{','.join(sorted(self.organizations))}",
             f"notes:{self.notes or ''}",
+            f"memberships:{','.join(sorted(self.memberships))}",
         ]
 
         content_string = "\n".join(content_parts)

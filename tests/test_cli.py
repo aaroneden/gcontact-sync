@@ -349,7 +349,7 @@ class TestSyncCommand:
         runner = CliRunner()
         result = runner.invoke(cli, ["sync", "--help"])
         assert result.exit_code == 0
-        assert "Synchronize contacts between accounts" in result.output
+        assert "Synchronize contacts and groups between accounts" in result.output
 
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")

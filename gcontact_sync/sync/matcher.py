@@ -114,7 +114,7 @@ class ContactMatcher:
 
     def __init__(
         self,
-        config: Optional[MatchConfig] = None,
+        config: MatchConfig | None = None,
         database: Optional["SyncDatabase"] = None,
     ):
         """
@@ -126,7 +126,7 @@ class ContactMatcher:
         """
         self.config = config or MatchConfig()
         self._database = database
-        self._llm_client: Optional[LLMMatcher] = None  # Lazy-loaded when needed
+        self._llm_client: LLMMatcher | None = None  # Lazy-loaded when needed
 
     def match(self, contact1: "Contact", contact2: "Contact") -> MatchResult:
         """

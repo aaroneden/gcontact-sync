@@ -12,7 +12,6 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -66,7 +65,7 @@ class GoogleAuth:
         creds = auth.get_credentials('account1')
     """
 
-    def __init__(self, config_dir: Optional[Path] = None):
+    def __init__(self, config_dir: Path | None = None):
         """
         Initialize the authentication manager.
 
@@ -126,7 +125,7 @@ class GoogleAuth:
             self.config_dir.mkdir(parents=True, mode=0o700)
             logger.debug(f"Created config directory: {self.config_dir}")
 
-    def _load_credentials(self, account_id: str) -> Optional[Credentials]:
+    def _load_credentials(self, account_id: str) -> Credentials | None:
         """
         Load credentials from token file if it exists.
 
@@ -153,7 +152,7 @@ class GoogleAuth:
             return None
 
     def _save_credentials(
-        self, account_id: str, creds: Credentials, email: Optional[str] = None
+        self, account_id: str, creds: Credentials, email: str | None = None
     ) -> None:
         """
         Save credentials to token file.
@@ -198,7 +197,7 @@ class GoogleAuth:
             logger.warning(f"Failed to refresh credentials: {e}")
             return False
 
-    def _fetch_user_email(self, creds: Credentials) -> Optional[str]:
+    def _fetch_user_email(self, creds: Credentials) -> str | None:
         """
         Fetch the authenticated user's email address from Google.
 
@@ -233,7 +232,7 @@ class GoogleAuth:
             logger.debug(f"Failed to fetch user email: {e}")
             return None
 
-    def get_credentials(self, account_id: str) -> Optional[Credentials]:
+    def get_credentials(self, account_id: str) -> Credentials | None:
         """
         Get valid credentials for an account if available.
 
@@ -342,7 +341,7 @@ class GoogleAuth:
 
     def get_both_credentials(
         self,
-    ) -> tuple[Optional[Credentials], Optional[Credentials]]:
+    ) -> tuple[Credentials | None, Credentials | None]:
         """
         Get credentials for both accounts.
 
@@ -445,7 +444,7 @@ class GoogleAuth:
 
         return status
 
-    def get_account_email(self, account_id: str) -> Optional[str]:
+    def get_account_email(self, account_id: str) -> str | None:
         """
         Get the email address associated with an authenticated account.
 
@@ -466,7 +465,7 @@ class GoogleAuth:
 
         try:
             token_data: dict[str, str] = json.loads(token_path.read_text())
-            email: Optional[str] = token_data.get("email")
+            email: str | None = token_data.get("email")
 
             # If email not stored, try to fetch it and update the token file
             if not email:
