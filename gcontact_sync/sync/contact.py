@@ -184,6 +184,8 @@ class Contact:
             - Does not include resourceName (set by Google on create)
             - Does not include etag (should be passed separately for updates)
             - Only includes non-empty fields
+            - Photos are included for informational purposes but must be
+              updated separately via the updateContactPhoto endpoint
         """
         person: dict[str, Any] = {}
 
@@ -215,6 +217,16 @@ class Contact:
         # Add notes as biography
         if self.notes:
             person["biographies"] = [{"value": self.notes, "contentType": "TEXT_PLAIN"}]
+
+        # Add photo information
+        # Note: Photos are updated separately via updateContactPhoto endpoint
+        if self.photo_url:
+            person["photos"] = [
+                {
+                    "url": self.photo_url,
+                    "metadata": {"primary": True}
+                }
+            ]
 
         return person
 
