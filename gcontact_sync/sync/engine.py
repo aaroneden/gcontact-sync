@@ -1895,6 +1895,97 @@ class SyncEngine:
                 # Continue with other groups instead of failing completely
                 continue
 
+    def _map_memberships(
+        self,
+        memberships: list[str],
+        source_account: int,
+        target_account: int,
+    ) -> list[str]:
+        """
+        Map contact group memberships from source account to target account.
+
+        When syncing a contact from one account to another, this method translates
+        group resource names (e.g., "contactGroups/abc123") from the source account
+        to the corresponding group resource names in the target account.
+
+        Uses the group_mapping table in the database to find corresponding groups
+        that have been synced between accounts.
+
+        Args:
+            memberships: List of group resource names from the source account
+            source_account: Account number where memberships originated (1 or 2)
+            target_account: Account number where contact is being synced to (1 or 2)
+
+        Returns:
+            List of mapped group resource names for the target account.
+            Groups that don't have a mapping (new groups, system groups) are skipped.
+
+        Example:
+            # Contact in account1 has memberships:
+            # ["contactGroups/abc123", "contactGroups/myContacts"]
+            #
+            # If group "abc123" in account1 maps to "xyz789" in account2:
+            mapped = engine._map_memberships(
+                memberships=["contactGroups/abc123", "contactGroups/myContacts"],
+                source_account=1,
+                target_account=2
+            )
+            # Returns: ["contactGroups/xyz789"]
+            # (myContacts is a system group, so it's skipped)
+        """
+        from gcontact_sync.sync.group import SYSTEM_GROUP_NAMES
+
+        mapped_memberships: list[str] = []
+        mlog = getattr(self, "_matching_logger", None)
+
+        if mlog:
+            mlog.debug(
+                f"Mapping {len(memberships)} memberships from account{source_account} "
+                f"to account{target_account}"
+            )
+
+        for group_resource in memberships:
+            # Skip system groups - they are account-specific and shouldn't be mapped
+            if group_resource in SYSTEM_GROUP_NAMES:
+                if mlog:
+                    mlog.debug(f"  Skipping system group: {group_resource}")
+                continue
+
+            # Look up the group mapping by the source account's resource name
+            mapping = self.database.get_group_mapping_by_resource_name(
+                group_resource, source_account
+            )
+
+            if mapping:
+                # Get the target account's resource name from the mapping
+                target_resource = mapping.get(f"account{target_account}_resource_name")
+                if target_resource:
+                    mapped_memberships.append(target_resource)
+                    if mlog:
+                        mlog.debug(
+                            f"  Mapped group: {group_resource} -> {target_resource}"
+                        )
+                else:
+                    # Mapping exists but target hasn't been synced yet
+                    # This can happen if group sync is still in progress
+                    if mlog:
+                        mlog.debug(
+                            f"  Group mapping found but no target resource: "
+                            f"{group_resource}"
+                        )
+            else:
+                # No mapping found - group may be new or a system group variant
+                if mlog:
+                    mlog.debug(f"  No mapping found for group: {group_resource}")
+
+        if mlog:
+            mlog.debug(
+                f"  Membership mapping result: {len(memberships)} source -> "
+                f"{len(mapped_memberships)} target"
+            )
+
+        return mapped_memberships
+
     def _apply_key_updates(self) -> None:
         """
         Apply pending matching key updates to the database.
