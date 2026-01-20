@@ -28,6 +28,7 @@ PERSON_FIELDS = ",".join(
         "organizations",
         "biographies",
         "metadata",
+        "memberships",
     ]
 )
 

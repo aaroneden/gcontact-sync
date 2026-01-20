@@ -57,6 +57,7 @@ class Contact:
     organizations: list[str] = field(default_factory=list)
     notes: Optional[str] = None
     last_modified: Optional[datetime] = None
+    memberships: list[str] = field(default_factory=list)  # Contact group resource names
 
     # Additional fields for sync tracking
     deleted: bool = False  # True if contact was deleted in source
@@ -119,6 +120,13 @@ class Contact:
         biographies = person.get("biographies", [])
         notes = biographies[0].get("value") if biographies else None
 
+        # Extract memberships (contact group resource names)
+        memberships = [
+            m.get("contactGroupMembership", {}).get("contactGroupResourceName", "")
+            for m in person.get("memberships", [])
+            if m.get("contactGroupMembership", {}).get("contactGroupResourceName")
+        ]
+
         # Extract last modified time from metadata
         last_modified = None
         metadata = person.get("metadata", {})
@@ -148,6 +156,7 @@ class Contact:
             organizations=organizations,
             notes=notes,
             last_modified=last_modified,
+            memberships=memberships,
             deleted=deleted,
         )
 
