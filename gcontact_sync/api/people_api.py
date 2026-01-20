@@ -28,6 +28,7 @@ PERSON_FIELDS = ",".join(
         "phoneNumbers",
         "organizations",
         "biographies",
+        "photos",
         "metadata",
         "memberships",
     ]
@@ -41,6 +42,7 @@ UPDATE_PERSON_FIELDS = ",".join(
         "phoneNumbers",
         "organizations",
         "biographies",
+        "photos",
     ]
 )
 
@@ -709,6 +711,95 @@ class PeopleAPI:
 
         logger.info(f"Found {len(deleted_resources)} deleted contacts")
         return deleted_resources, next_sync_token
+
+    # ========== Photo Methods ==========
+
+    def upload_photo(self, resource_name: str, photo_bytes: bytes) -> bool:
+        """
+        Upload a photo for a contact.
+
+        Args:
+            resource_name: Contact's resource name (e.g., "people/c12345")
+            photo_bytes: Raw photo data as bytes
+
+        Returns:
+            True if upload succeeded
+
+        Raises:
+            PeopleAPIError: If upload fails
+            ValueError: If resource_name or photo_bytes is missing
+        """
+        if not resource_name:
+            raise ValueError("resource_name is required")
+        if not photo_bytes:
+            raise ValueError("photo_bytes is required")
+
+        logger.debug(f"Uploading photo for contact: {resource_name}")
+
+        import base64
+
+        photo_base64 = base64.b64encode(photo_bytes).decode("utf-8")
+        body = {"photoBytes": photo_base64}
+
+        def execute_upload() -> Any:
+            return (
+                self.service.people()
+                .updateContactPhoto(resourceName=resource_name, body=body)
+                .execute()
+            )
+
+        try:
+            self._retry_with_backoff(execute_upload, f"upload_photo({resource_name})")
+            logger.info(f"Uploaded photo for contact: {resource_name}")
+            return True
+
+        except PeopleAPIError as e:
+            # Check if the underlying cause was a 404 (contact not found)
+            cause = e.__cause__
+            if cause and isinstance(cause, HttpError) and cause.resp.status == 404:
+                raise PeopleAPIError(f"Contact not found: {resource_name}") from e
+            raise
+
+    def delete_photo(self, resource_name: str) -> bool:
+        """
+        Delete a contact's photo.
+
+        Args:
+            resource_name: Contact's resource name (e.g., "people/c12345")
+
+        Returns:
+            True if deletion succeeded
+
+        Raises:
+            PeopleAPIError: If deletion fails (except 404, which returns True)
+            ValueError: If resource_name is missing
+        """
+        if not resource_name:
+            raise ValueError("resource_name is required")
+
+        logger.debug(f"Deleting photo for contact: {resource_name}")
+
+        def execute_delete_photo() -> Any:
+            return (
+                self.service.people()
+                .deleteContactPhoto(resourceName=resource_name)
+                .execute()
+            )
+
+        try:
+            self._retry_with_backoff(
+                execute_delete_photo, f"delete_photo({resource_name})"
+            )
+            logger.info(f"Deleted photo for contact: {resource_name}")
+            return True
+
+        except PeopleAPIError as e:
+            # Check if the underlying cause was a 404 (already deleted or no photo)
+            cause = e.__cause__
+            if cause and isinstance(cause, HttpError) and cause.resp.status == 404:
+                logger.debug(f"Photo already deleted or not found: {resource_name}")
+                return True
+            raise
 
     # ========== Contact Groups Methods ==========
 

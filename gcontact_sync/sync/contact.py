@@ -31,6 +31,9 @@ class Contact:
         organizations: List of organization names
         notes: Contact notes
         last_modified: Timestamp of last modification
+        photo_url: URL to contact's photo
+        photo_data: Binary photo data
+        photo_etag: ETag for photo version tracking
 
     Usage:
         # Create from API response
@@ -58,6 +61,11 @@ class Contact:
     notes: str | None = None
     last_modified: datetime | None = None
     memberships: list[str] = field(default_factory=list)  # Contact group resource names
+
+    # Photo fields
+    photo_url: str | None = None
+    photo_data: bytes | None = None
+    photo_etag: str | None = None
 
     # Additional fields for sync tracking
     deleted: bool = False  # True if contact was deleted in source
@@ -145,6 +153,19 @@ class Contact:
         # Check if contact is deleted
         deleted = person.get("metadata", {}).get("deleted", False)
 
+        # Extract photo information
+        photo_url = None
+        photos = person.get("photos", [])
+        if photos:
+            # Look for primary photo first
+            primary_photo = next(
+                (p for p in photos if p.get("metadata", {}).get("primary", False)),
+                None,
+            )
+            # Use primary photo if found, otherwise use first photo
+            photo = primary_photo if primary_photo else photos[0]
+            photo_url = photo.get("url")
+
         return cls(
             resource_name=person.get("resourceName", ""),
             etag=person.get("etag", ""),
@@ -157,6 +178,7 @@ class Contact:
             notes=notes,
             last_modified=last_modified,
             memberships=memberships,
+            photo_url=photo_url,
             deleted=deleted,
         )
 
@@ -171,6 +193,8 @@ class Contact:
             - Does not include resourceName (set by Google on create)
             - Does not include etag (should be passed separately for updates)
             - Only includes non-empty fields
+            - Photos are included for informational purposes but must be
+              updated separately via the updateContactPhoto endpoint
         """
         person: dict[str, Any] = {}
 
@@ -209,6 +233,11 @@ class Contact:
                 {"contactGroupMembership": {"contactGroupResourceName": m}}
                 for m in self.memberships
             ]
+
+        # Add photo information
+        # Note: Photos are updated separately via updateContactPhoto endpoint
+        if self.photo_url:
+            person["photos"] = [{"url": self.photo_url, "metadata": {"primary": True}}]
 
         return person
 
@@ -337,6 +366,7 @@ class Contact:
             f"organizations:{','.join(sorted(self.organizations))}",
             f"notes:{self.notes or ''}",
             f"memberships:{','.join(sorted(self.memberships))}",
+            f"photo_url:{self.photo_url or ''}",
         ]
 
         content_string = "\n".join(content_parts)

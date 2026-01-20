@@ -20,6 +20,7 @@ from gcontact_sync.sync.conflict import (
 )
 from gcontact_sync.sync.contact import Contact
 from gcontact_sync.sync.group import ContactGroup
+from gcontact_sync.sync.photo import PhotoError, download_photo, process_photo
 from gcontact_sync.utils.logging import setup_matching_logger
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,9 @@ class SyncStats:
     conflicts_resolved: int = 0
     skipped_invalid: int = 0
     errors: int = 0
+    photos_synced: int = 0
+    photos_deleted: int = 0
+    photos_failed: int = 0
 
     # Group statistics
     groups_in_account1: int = 0
@@ -209,6 +213,21 @@ class SyncResult:
 
         if self.stats.skipped_invalid:
             lines.append(f"  Skipped (invalid): {self.stats.skipped_invalid}")
+
+        # Add photo sync statistics if any photos were processed
+        if (
+            self.stats.photos_synced
+            or self.stats.photos_deleted
+            or self.stats.photos_failed
+        ):
+            lines.append("")
+            lines.append("Photo sync:")
+            if self.stats.photos_synced:
+                lines.append(f"  Photos synced: {self.stats.photos_synced}")
+            if self.stats.photos_deleted:
+                lines.append(f"  Photos deleted: {self.stats.photos_deleted}")
+            if self.stats.photos_failed:
+                lines.append(f"  Photos failed: {self.stats.photos_failed}")
 
         return "\n".join(lines)
 
@@ -1316,6 +1335,9 @@ class SyncEngine:
                 mlog.info(f"  phones: {contact1.phones}")
                 mlog.info(f"  ACTION: Will create in {self.account2_email}")
                 mlog.info("")
+            # Analyze photo for new contact creation
+            if contact1.photo_url:
+                result.stats.photos_synced += 1
 
         elif contact2 and not contact1:
             # Contact only in account 2 - create in account 1
@@ -1331,6 +1353,9 @@ class SyncEngine:
                 mlog.info(f"  phones: {contact2.phones}")
                 mlog.info(f"  ACTION: Will create in {self.account1_email}")
                 mlog.info("")
+            # Analyze photo for new contact creation
+            if contact2.photo_url:
+                result.stats.photos_synced += 1
 
         elif contact1 and contact2:
             # Contact exists in both - track as matched pair and check if sync needed
@@ -1360,6 +1385,10 @@ class SyncEngine:
         Analyze a contact that exists in both accounts.
 
         Determines if update is needed and which direction.
+
+        This method detects all field changes including photos, since
+        content_hash() includes all syncable fields (names, emails,
+        phones, organizations, notes, and photo_url).
 
         Args:
             matching_key: The normalized matching key
@@ -1410,6 +1439,8 @@ class SyncEngine:
                         "(account1 changed, account2 unchanged)"
                     )
                     mlog.info("")
+                # Analyze photo changes for dry-run stats
+                self._analyze_photo_change(contact1, contact2, result)
                 return
 
             elif contact2_changed and not contact1_changed:
@@ -1424,6 +1455,8 @@ class SyncEngine:
                         "(account2 changed, account1 unchanged)"
                     )
                     mlog.info("")
+                # Analyze photo changes for dry-run stats
+                self._analyze_photo_change(contact2, contact1, result)
                 return
 
         # Both changed or no previous hash - conflict resolution needed
@@ -1445,13 +1478,53 @@ class SyncEngine:
             result.to_update_in_account2.append((contact2.resource_name, contact1))
             if mlog:
                 mlog.info(f"  ACTION: Update in {self.account2_email} (account1 wins)")
+            # Analyze photo changes for dry-run stats
+            self._analyze_photo_change(contact1, contact2, result)
         else:
             result.to_update_in_account1.append((contact1.resource_name, contact2))
             if mlog:
                 mlog.info(f"  ACTION: Update in {self.account1_email} (account2 wins)")
+            # Analyze photo changes for dry-run stats
+            self._analyze_photo_change(contact2, contact1, result)
 
         if mlog:
             mlog.info("")
+
+    def _analyze_photo_change(
+        self,
+        source_contact: Contact,
+        dest_contact: Contact,
+        result: SyncResult,
+    ) -> None:
+        """
+        Analyze photo differences between source and destination contacts.
+
+        Updates statistics to reflect what photo operations would be performed.
+        This is called during the analyze phase to provide accurate dry-run stats.
+
+        Args:
+            source_contact: Contact with winning photo data (source of truth)
+            dest_contact: Contact to be updated with source photo
+            result: SyncResult to update with photo statistics
+        """
+        # Check if photos differ
+        if source_contact.photo_url != dest_contact.photo_url:
+            if source_contact.photo_url:
+                # Source has photo, destination doesn't (or has different photo)
+                # This will be a photo sync operation
+                result.stats.photos_synced += 1
+                logger.debug(
+                    f"Photo change detected for {source_contact.display_name}: "
+                    f"will sync photo"
+                )
+            elif dest_contact.photo_url:
+                # Source has no photo, but destination does
+                # This will be a photo deletion operation
+                result.stats.photos_deleted += 1
+                logger.debug(
+                    f"Photo change detected for {source_contact.display_name}: "
+                    f"will delete photo"
+                )
 
     def _analyze_existing_pair_with_mapping(
         self,
@@ -1564,6 +1637,88 @@ class SyncEngine:
             # Remove the mapping
             self.database.delete_contact_mapping(matching_key)
 
+    def _sync_photo_for_contact(
+        self,
+        source_contact: Contact,
+        dest_resource_name: str,
+        dest_api: PeopleAPI,
+        account_label: str,
+        result: SyncResult,
+    ) -> None:
+        """
+        Synchronize photo for a single contact.
+
+        Downloads photo from source contact and uploads to destination contact.
+        If source has no photo, deletes photo from destination if present.
+
+        Updates result statistics to track photo operation success/failure.
+
+        Args:
+            source_contact: Contact with photo data (from source account)
+            dest_resource_name: Resource name in destination account
+            dest_api: PeopleAPI instance for destination account
+            account_label: Label for destination account (for logging)
+            result: SyncResult to update with photo operation status
+        """
+        try:
+            if source_contact.photo_url:
+                # Source has photo - download, process, and upload to destination
+                logger.debug(
+                    f"Syncing photo for {source_contact.display_name} "
+                    f"to {account_label}"
+                )
+
+                try:
+                    # Download photo from source URL
+                    photo_data = download_photo(source_contact.photo_url)
+
+                    # Process photo (validate, convert to JPEG, resize if needed)
+                    processed_photo = process_photo(photo_data)
+
+                    # Upload to destination contact
+                    dest_api.upload_photo(dest_resource_name, processed_photo)
+
+                    logger.info(
+                        f"Successfully synced photo for {source_contact.display_name} "
+                        f"to {account_label}"
+                    )
+
+                except PhotoError as e:
+                    logger.warning(
+                        f"Failed to sync photo for {source_contact.display_name}: {e}"
+                    )
+                    # Track photo failure
+                    # Decrement photos_synced (was counted in analyze phase)
+                    # and increment photos_failed
+                    result.stats.photos_synced -= 1
+                    result.stats.photos_failed += 1
+                    # Continue sync even if photo fails - don't break contact sync
+
+            else:
+                # Source has no photo - delete photo from destination if present
+                # This ensures photo deletions are propagated
+                try:
+                    dest_api.delete_photo(dest_resource_name)
+                    logger.debug(
+                        f"Deleted photo from {source_contact.display_name} "
+                        f"in {account_label}"
+                    )
+                except PeopleAPIError as e:
+                    # Ignore errors when deleting (photo may not exist)
+                    logger.debug(
+                        f"Could not delete photo for {source_contact.display_name}: {e}"
+                    )
+
+        except Exception as e:
+            # Catch any unexpected errors to prevent breaking the sync
+            logger.error(
+                f"Unexpected error syncing photo for {source_contact.display_name}: {e}"
+            )
+            # Track as failed if we were attempting to sync a photo
+            if source_contact.photo_url:
+                result.stats.photos_synced -= 1
+                result.stats.photos_failed += 1
+
     def _execute_creates(
         self, contacts: list[Contact], api: PeopleAPI, account: int, result: SyncResult
     ) -> None:
@@ -1631,6 +1786,15 @@ class SyncEngine:
                     )
                     result.stats.created_in_account2 += 1
 
+                # Sync photo after creating contact
+                self._sync_photo_for_contact(
+                    source_contact=original,
+                    dest_resource_name=created_contact.resource_name,
+                    dest_api=api,
+                    account_label=account_label,
+                    result=result,
+                )
+
         except PeopleAPIError as e:
             logger.error(f"Failed to create contacts in {account_label}: {e}")
             result.stats.errors += len(contacts)
@@ -1696,8 +1860,8 @@ class SyncEngine:
             if updates_with_etags:
                 updated = api.batch_update_contacts(updates_with_etags)
 
-                # Update mappings with new etags
-                for (_resource_name, source_contact), updated_contact in zip(
+                # Update mappings with new etags and sync photos
+                for (resource_name, source_contact), updated_contact in zip(
                     updates_with_etags, updated, strict=True
                 ):
                     matching_key = source_contact.matching_key()
@@ -1717,6 +1881,20 @@ class SyncEngine:
                             last_synced_hash=content_hash,
                         )
                         result.stats.updated_in_account2 += 1
+
+                    # Sync photo after updating contact
+                    # Note: We need the original source contact from the updates list
+                    # to get the photo_url
+                    original_source = next(
+                        src for res, src in updates if res == resource_name
+                    )
+                    self._sync_photo_for_contact(
+                        source_contact=original_source,
+                        dest_resource_name=resource_name,
+                        dest_api=api,
+                        account_label=account_label,
+                        result=result,
+                    )
 
         except PeopleAPIError as e:
             logger.error(f"Failed to update contacts in {account_label}: {e}")

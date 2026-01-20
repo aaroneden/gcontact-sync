@@ -1185,6 +1185,279 @@ class TestContactMatchingWithDifferentEmailSets:
         assert contact1.matching_key() == contact2.matching_key()
 
 
+class TestContactPhoto:
+    """Tests for Contact photo functionality."""
+
+    def test_create_contact_with_photo_fields(self):
+        """Test creating a contact with photo fields."""
+        photo_data = b"fake_photo_data"
+        contact = Contact(
+            resource_name="people/c123",
+            etag="abc123",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+            photo_data=photo_data,
+            photo_etag="photo_etag_123",
+        )
+        assert contact.photo_url == "https://example.com/photo.jpg"
+        assert contact.photo_data == photo_data
+        assert contact.photo_etag == "photo_etag_123"
+
+    def test_contact_photo_default_values(self):
+        """Test that photo fields default to None."""
+        contact = Contact(
+            resource_name="people/c123", etag="abc123", display_name="John Doe"
+        )
+        assert contact.photo_url is None
+        assert contact.photo_data is None
+        assert contact.photo_etag is None
+
+    def test_from_api_response_with_primary_photo(self):
+        """Test extracting primary photo from API response."""
+        api_response = {
+            "resourceName": "people/c123",
+            "etag": "etag",
+            "names": [{"displayName": "John Doe"}],
+            "photos": [
+                {
+                    "url": "https://example.com/photo1.jpg",
+                    "metadata": {"primary": False},
+                },
+                {
+                    "url": "https://example.com/photo2.jpg",
+                    "metadata": {"primary": True},
+                },
+                {
+                    "url": "https://example.com/photo3.jpg",
+                    "metadata": {"primary": False},
+                },
+            ],
+        }
+
+        contact = Contact.from_api_response(api_response)
+
+        assert contact.photo_url == "https://example.com/photo2.jpg"
+
+    def test_from_api_response_with_no_primary_photo(self):
+        """Test extracting photo when no primary photo is specified."""
+        api_response = {
+            "resourceName": "people/c123",
+            "etag": "etag",
+            "names": [{"displayName": "John Doe"}],
+            "photos": [
+                {"url": "https://example.com/photo1.jpg"},
+                {"url": "https://example.com/photo2.jpg"},
+            ],
+        }
+
+        contact = Contact.from_api_response(api_response)
+
+        # Should use first photo when no primary is specified
+        assert contact.photo_url == "https://example.com/photo1.jpg"
+
+    def test_from_api_response_with_no_photos(self):
+        """Test API response with no photos."""
+        api_response = {
+            "resourceName": "people/c123",
+            "etag": "etag",
+            "names": [{"displayName": "John Doe"}],
+        }
+
+        contact = Contact.from_api_response(api_response)
+
+        assert contact.photo_url is None
+
+    def test_from_api_response_with_empty_photos_list(self):
+        """Test API response with empty photos list."""
+        api_response = {
+            "resourceName": "people/c123",
+            "etag": "etag",
+            "names": [{"displayName": "John Doe"}],
+            "photos": [],
+        }
+
+        contact = Contact.from_api_response(api_response)
+
+        assert contact.photo_url is None
+
+    def test_from_api_response_with_photo_missing_url(self):
+        """Test API response with photo entry that has no URL."""
+        api_response = {
+            "resourceName": "people/c123",
+            "etag": "etag",
+            "names": [{"displayName": "John Doe"}],
+            "photos": [
+                {"metadata": {"primary": True}},  # No URL field
+            ],
+        }
+
+        contact = Contact.from_api_response(api_response)
+
+        assert contact.photo_url is None
+
+    def test_to_api_format_with_photo_url(self):
+        """Test conversion to API format with photo URL."""
+        contact = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+        )
+
+        result = contact.to_api_format()
+
+        assert "photos" in result
+        assert len(result["photos"]) == 1
+        assert result["photos"][0]["url"] == "https://example.com/photo.jpg"
+        assert result["photos"][0]["metadata"]["primary"] is True
+
+    def test_to_api_format_without_photo_url(self):
+        """Test conversion to API format without photo URL."""
+        contact = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url=None,
+        )
+
+        result = contact.to_api_format()
+
+        assert "photos" not in result
+
+    def test_content_hash_includes_photo_url(self):
+        """Test that content hash includes photo URL."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo1.jpg",
+        )
+        contact2 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo2.jpg",
+        )
+
+        # Different photo URLs should produce different hashes
+        assert contact1.content_hash() != contact2.content_hash()
+
+    def test_content_hash_same_with_same_photo_url(self):
+        """Test that content hash is same with same photo URL."""
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+        )
+
+        # Same photo URL should produce same hash (resource_name/etag ignored)
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_content_hash_with_no_photo_url(self):
+        """Test that content hash works when photo_url is None."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url=None,
+        )
+        contact2 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="",
+        )
+
+        # None and empty string should produce same hash for photo_url
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_content_hash_excludes_photo_data(self):
+        """Test that content hash does not include photo_data (binary data)."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_data_1",
+        )
+        contact2 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_data_2",
+        )
+
+        # Different photo_data should not affect hash (only URL matters)
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_content_hash_excludes_photo_etag(self):
+        """Test that content hash does not include photo_etag (metadata)."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+            photo_etag="etag1",
+        )
+        contact2 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+            photo_etag="etag2",
+        )
+
+        # Different photo_etag should not affect hash
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_equality_with_different_photo_url(self):
+        """Test that contacts with different photo URLs are not equal."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo1.jpg",
+        )
+        contact2 = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo2.jpg",
+        )
+
+        assert contact1 != contact2
+
+    def test_roundtrip_conversion_with_photo(self):
+        """Test that photo survives API format roundtrip."""
+        original = Contact(
+            resource_name="people/c123",
+            etag="etag",
+            display_name="John Doe",
+            photo_url="https://example.com/photo.jpg",
+        )
+
+        # Convert to API format
+        api_format = original.to_api_format()
+
+        # Add back metadata that would come from API
+        api_format["resourceName"] = "people/new123"
+        api_format["etag"] = "new_etag"
+
+        # Convert back
+        restored = Contact.from_api_response(api_format)
+
+        # Photo URL should be preserved
+        assert restored.photo_url == original.photo_url
+
+
 class TestContactMemberships:
     """Tests for Contact memberships field handling."""
 
