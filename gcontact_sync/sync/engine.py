@@ -45,6 +45,9 @@ class SyncStats:
     conflicts_resolved: int = 0
     skipped_invalid: int = 0
     errors: int = 0
+    photos_synced: int = 0
+    photos_deleted: int = 0
+    photos_failed: int = 0
 
 
 @dataclass
@@ -119,6 +122,17 @@ class SyncResult:
 
         if self.stats.skipped_invalid:
             lines.append(f"  Skipped (invalid): {self.stats.skipped_invalid}")
+
+        # Add photo sync statistics if any photos were processed
+        if self.stats.photos_synced or self.stats.photos_deleted or self.stats.photos_failed:
+            lines.append("")
+            lines.append("Photo sync:")
+            if self.stats.photos_synced:
+                lines.append(f"  Photos synced: {self.stats.photos_synced}")
+            if self.stats.photos_deleted:
+                lines.append(f"  Photos deleted: {self.stats.photos_deleted}")
+            if self.stats.photos_failed:
+                lines.append(f"  Photos failed: {self.stats.photos_failed}")
 
         return "\n".join(lines)
 
