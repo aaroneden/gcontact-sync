@@ -791,6 +791,9 @@ class SyncEngine:
                 mlog.info(f"  phones: {contact1.phones}")
                 mlog.info(f"  ACTION: Will create in {self.account2_email}")
                 mlog.info("")
+            # Analyze photo for new contact creation
+            if contact1.photo_url:
+                result.stats.photos_synced += 1
 
         elif contact2 and not contact1:
             # Contact only in account 2 - create in account 1
@@ -806,6 +809,9 @@ class SyncEngine:
                 mlog.info(f"  phones: {contact2.phones}")
                 mlog.info(f"  ACTION: Will create in {self.account1_email}")
                 mlog.info("")
+            # Analyze photo for new contact creation
+            if contact2.photo_url:
+                result.stats.photos_synced += 1
 
         elif contact1 and contact2:
             # Contact exists in both - track as matched pair and check if sync needed
@@ -889,6 +895,8 @@ class SyncEngine:
                         "(account1 changed, account2 unchanged)"
                     )
                     mlog.info("")
+                # Analyze photo changes for dry-run stats
+                self._analyze_photo_change(contact1, contact2, result)
                 return
 
             elif contact2_changed and not contact1_changed:
@@ -903,6 +911,8 @@ class SyncEngine:
                         "(account2 changed, account1 unchanged)"
                     )
                     mlog.info("")
+                # Analyze photo changes for dry-run stats
+                self._analyze_photo_change(contact2, contact1, result)
                 return
 
         # Both changed or no previous hash - conflict resolution needed
@@ -924,13 +934,53 @@ class SyncEngine:
             result.to_update_in_account2.append((contact2.resource_name, contact1))
             if mlog:
                 mlog.info(f"  ACTION: Update in {self.account2_email} (account1 wins)")
+            # Analyze photo changes for dry-run stats
+            self._analyze_photo_change(contact1, contact2, result)
         else:
             result.to_update_in_account1.append((contact1.resource_name, contact2))
             if mlog:
                 mlog.info(f"  ACTION: Update in {self.account1_email} (account2 wins)")
+            # Analyze photo changes for dry-run stats
+            self._analyze_photo_change(contact2, contact1, result)
 
         if mlog:
             mlog.info("")
+
+    def _analyze_photo_change(
+        self,
+        source_contact: Contact,
+        dest_contact: Contact,
+        result: SyncResult,
+    ) -> None:
+        """
+        Analyze photo differences between source and destination contacts.
+
+        Updates statistics to reflect what photo operations would be performed.
+        This is called during the analyze phase to provide accurate dry-run stats.
+
+        Args:
+            source_contact: Contact with winning photo data (source of truth)
+            dest_contact: Contact to be updated with source photo
+            result: SyncResult to update with photo statistics
+        """
+        # Check if photos differ
+        if source_contact.photo_url != dest_contact.photo_url:
+            if source_contact.photo_url:
+                # Source has photo, destination doesn't (or has different photo)
+                # This will be a photo sync operation
+                result.stats.photos_synced += 1
+                logger.debug(
+                    f"Photo change detected for {source_contact.display_name}: "
+                    f"will sync photo"
+                )
+            elif dest_contact.photo_url:
+                # Source has no photo, but destination does
+                # This will be a photo deletion operation
+                result.stats.photos_deleted += 1
+                logger.debug(
+                    f"Photo change detected for {source_contact.display_name}: "
+                    f"will delete photo"
+                )
 
     def _analyze_existing_pair_with_mapping(
         self,
@@ -1049,6 +1099,7 @@ class SyncEngine:
         dest_resource_name: str,
         dest_api: PeopleAPI,
         account_label: str,
+        result: SyncResult,
     ) -> None:
         """
         Synchronize photo for a single contact.
@@ -1056,11 +1107,14 @@ class SyncEngine:
         Downloads photo from source contact and uploads to destination contact.
         If source has no photo, deletes photo from destination if present.
 
+        Updates result statistics to track photo operation success/failure.
+
         Args:
             source_contact: Contact with photo data (from source account)
             dest_resource_name: Resource name in destination account
             dest_api: PeopleAPI instance for destination account
             account_label: Label for destination account (for logging)
+            result: SyncResult to update with photo operation status
         """
         try:
             if source_contact.photo_url:
@@ -1089,6 +1143,11 @@ class SyncEngine:
                     logger.warning(
                         f"Failed to sync photo for {source_contact.display_name}: {e}"
                     )
+                    # Track photo failure
+                    # Decrement photos_synced (was counted in analyze phase)
+                    # and increment photos_failed
+                    result.stats.photos_synced -= 1
+                    result.stats.photos_failed += 1
                     # Continue sync even if photo fails - don't break contact sync
 
             else:
@@ -1111,6 +1170,10 @@ class SyncEngine:
             logger.error(
                 f"Unexpected error syncing photo for {source_contact.display_name}: {e}"
             )
+            # Track as failed if we were attempting to sync a photo
+            if source_contact.photo_url:
+                result.stats.photos_synced -= 1
+                result.stats.photos_failed += 1
 
     def _execute_creates(
         self, contacts: list[Contact], api: PeopleAPI, account: int, result: SyncResult
@@ -1161,6 +1224,7 @@ class SyncEngine:
                     dest_resource_name=created_contact.resource_name,
                     dest_api=api,
                     account_label=account_label,
+                    result=result,
                 )
 
         except PeopleAPIError as e:
@@ -1252,6 +1316,7 @@ class SyncEngine:
                         dest_resource_name=resource_name,
                         dest_api=api,
                         account_label=account_label,
+                        result=result,
                     )
 
         except PeopleAPIError as e:
