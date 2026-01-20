@@ -11,7 +11,7 @@ Provides YAML-based configuration file loading with support for:
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Type, Union
 
 import yaml
 
@@ -102,7 +102,7 @@ class ConfigLoader:
         config_path = self._get_config_path()
         return self.load_from_file(config_path)
 
-    def load_from_file(self, path: Path | str) -> Dict[str, Any]:
+    def load_from_file(self, path: Union[Path, str]) -> Dict[str, Any]:
         """
         Load configuration from a specific file.
 
@@ -126,7 +126,7 @@ class ConfigLoader:
             return {}
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 config = yaml.safe_load(f)
 
             # Handle empty files
@@ -146,7 +146,7 @@ class ConfigLoader:
 
         except yaml.YAMLError as e:
             raise ConfigError(f"Failed to parse YAML configuration file: {e}") from e
-        except (OSError, IOError) as e:
+        except OSError as e:
             raise ConfigError(f"Failed to read configuration file: {e}") from e
 
     def validate(self, config: Dict[str, Any]) -> None:
@@ -169,7 +169,7 @@ class ConfigLoader:
 
         # Define valid configuration keys and their expected types
         # This can be expanded as more configuration options are added
-        valid_keys = {
+        valid_keys: Dict[str, Union[Type[Any], Tuple[Type[Any], ...]]] = {
             # CLI options
             "dry_run": bool,
             "full": bool,
@@ -186,12 +186,17 @@ class ConfigLoader:
         for key, value in config.items():
             if key in valid_keys:
                 expected_type = valid_keys[key]
+                # Handle both single types and tuple of types for isinstance
                 if not isinstance(value, expected_type):
-                    type_name = (
-                        f"{expected_type[0].__name__} or {expected_type[1].__name__}"
-                        if isinstance(expected_type, tuple)
-                        else expected_type.__name__
-                    )
+                    # Format type name for error message
+                    if isinstance(expected_type, tuple):
+                        type_name = (
+                            f"{expected_type[0].__name__} or "
+                            f"{expected_type[1].__name__}"
+                        )
+                    else:
+                        # expected_type is a Type here, safe to access __name__
+                        type_name = expected_type.__name__  # type: ignore[union-attr]
                     raise ConfigError(
                         f"Invalid type for '{key}': expected {type_name}, "
                         f"got {type(value).__name__}"
@@ -199,7 +204,13 @@ class ConfigLoader:
 
         # Validate strategy value if present
         if "strategy" in config:
-            valid_strategies = ["account1", "account2", "newest", "manual"]
+            valid_strategies = [
+                "last_modified",
+                "newest",
+                "account1",
+                "account2",
+                "manual",
+            ]
             if config["strategy"] not in valid_strategies:
                 raise ConfigError(
                     f"Invalid strategy '{config['strategy']}'. "

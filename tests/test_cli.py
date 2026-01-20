@@ -764,25 +764,32 @@ class TestConfigIntegration:
             )
             assert result.exit_code == 0
 
-    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.cli.setup_logging")
-    def test_config_file_is_loaded(self, mock_setup_logging, mock_config_loader):
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    def test_config_file_is_loaded(self, mock_auth, mock_config_loader, mock_setup_logging):
         """Test that config file is loaded when present."""
         mock_loader = MagicMock()
         mock_loader.load_from_file.return_value = {"verbose": True}
         mock_loader.validate.return_value = None
         mock_config_loader.return_value = mock_loader
 
+        # Mock auth to return not authenticated
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.is_authenticated.return_value = False
+        mock_auth.return_value = mock_auth_instance
+
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["--help"])
+            result = runner.invoke(cli, ["status"])
             assert result.exit_code == 0
             # Verify config was loaded
             mock_loader.load_from_file.assert_called_once()
 
-    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.cli.setup_logging")
-    def test_invalid_config_file_shows_warning(self, mock_setup_logging, mock_config_loader):
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    def test_invalid_config_file_shows_warning(self, mock_auth, mock_config_loader, mock_setup_logging):
         """Test that invalid config file shows warning but doesn't crash."""
         from gcontact_sync.config.loader import ConfigError
 
@@ -790,12 +797,17 @@ class TestConfigIntegration:
         mock_loader.load_from_file.side_effect = ConfigError("Invalid YAML")
         mock_config_loader.return_value = mock_loader
 
+        # Mock auth to return not authenticated
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.is_authenticated.return_value = False
+        mock_auth.return_value = mock_auth_instance
+
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["--help"])
+            result = runner.invoke(cli, ["status"])
             assert result.exit_code == 0
             # Warning should be shown but command continues
-            assert "Warning" in result.output or "Invalid" in result.output
+            assert "Warning" in result.output or "Invalid YAML" in result.output
 
     @patch("gcontact_sync.cli.save_config_file")
     @patch("gcontact_sync.cli.setup_logging")
@@ -939,14 +951,20 @@ class TestConfigIntegration:
             call_kwargs = mock_engine.sync.call_args.kwargs
             assert call_kwargs.get("dry_run") is True
 
-    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.cli.setup_logging")
-    def test_custom_config_file_path(self, mock_setup_logging, mock_config_loader):
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    def test_custom_config_file_path(self, mock_auth, mock_config_loader, mock_setup_logging):
         """Test that custom config file path is used when specified."""
         mock_loader = MagicMock()
         mock_loader.load_from_file.return_value = {}
         mock_loader.validate.return_value = None
         mock_config_loader.return_value = mock_loader
+
+        # Mock auth to return not authenticated
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.is_authenticated.return_value = False
+        mock_auth.return_value = mock_auth_instance
 
         runner = CliRunner()
         with runner.isolated_filesystem():
@@ -954,7 +972,7 @@ class TestConfigIntegration:
             custom_config = Path("custom.yaml")
             custom_config.write_text("verbose: true\n")
 
-            result = runner.invoke(cli, ["--config-file", "custom.yaml", "--help"])
+            result = runner.invoke(cli, ["--config-file", "custom.yaml", "status"])
             assert result.exit_code == 0
             # Verify loader was called with custom path
             mock_loader.load_from_file.assert_called_once()

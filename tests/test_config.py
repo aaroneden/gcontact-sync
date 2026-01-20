@@ -528,16 +528,22 @@ class TestSaveConfigFile:
         assert error is None
         assert "existing content" != config_path.read_text()
 
-    def test_save_config_file_with_tilde_path(self, tmp_path):
+    def test_save_config_file_with_tilde_path(self, tmp_path, monkeypatch):
         """Test that save_config_file handles tilde paths."""
-        # Use tmp_path as fake home for testing
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            config_path = Path("~/config.yaml")
-            success, error = save_config_file(config_path)
+        # Patch HOME environment variable to use tmp_path
+        monkeypatch.setenv("HOME", str(tmp_path))
 
-            assert success is True
-            assert error is None
-            assert (tmp_path / "config.yaml").exists()
+        config_path = Path("~/test_config.yaml")
+        success, error = save_config_file(config_path)
+
+        assert success is True
+        assert error is None
+        # File should be created in the mocked home directory
+        assert (tmp_path / "test_config.yaml").exists()
+
+        # Verify the content is valid
+        content = (tmp_path / "test_config.yaml").read_text()
+        assert "Google Contacts Sync Configuration" in content
 
     @patch("pathlib.Path.write_text", side_effect=OSError("Permission denied"))
     def test_save_config_file_permission_error(self, mock_write, tmp_path):
