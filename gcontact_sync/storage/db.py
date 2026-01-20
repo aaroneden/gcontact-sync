@@ -54,6 +54,38 @@ CREATE TABLE IF NOT EXISTS llm_match_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_llm_attempts_contacts
     ON llm_match_attempts(contact1_resource_name, contact2_resource_name);
+
+CREATE TABLE IF NOT EXISTS contact_groups (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    resource_name TEXT,
+    account_id TEXT NOT NULL,
+    etag TEXT,
+    group_type TEXT NOT NULL DEFAULT 'USER_CONTACT_GROUP',
+    member_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(resource_name, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_groups_name ON contact_groups(name);
+CREATE INDEX IF NOT EXISTS idx_contact_groups_account ON contact_groups(account_id);
+CREATE INDEX IF NOT EXISTS idx_contact_groups_resource ON contact_groups(resource_name);
+
+CREATE TABLE IF NOT EXISTS contact_group_mappings (
+    id INTEGER PRIMARY KEY,
+    group_name TEXT NOT NULL,
+    account1_resource_name TEXT,
+    account2_resource_name TEXT,
+    account1_etag TEXT,
+    account2_etag TEXT,
+    last_synced_hash TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_mappings_name ON contact_group_mappings(group_name);
 """
 
 
