@@ -354,6 +354,7 @@ class Contact:
             f"phones:{','.join(sorted(self._normalize_phones()))}",
             f"organizations:{','.join(sorted(self.organizations))}",
             f"notes:{self.notes or ''}",
+            f"photo_url:{self.photo_url or ''}",
         ]
 
         content_string = "\n".join(content_parts)
