@@ -960,6 +960,8 @@ class SyncEngine:
         Execute the planned sync operations.
 
         Applies all changes from the analysis result to both accounts.
+        Groups are synced BEFORE contacts to ensure group mappings exist
+        when contact memberships need to be translated.
         Updates the database with new mappings and sync tokens.
 
         Args:
@@ -968,6 +970,65 @@ class SyncEngine:
         logger.info("Executing sync operations")
 
         try:
+            # === EXECUTE GROUP OPERATIONS FIRST ===
+            # Groups must be synced before contacts so membership mappings exist
+
+            # Create groups in account 1
+            if result.groups_to_create_in_account1:
+                self._execute_group_creates(
+                    result.groups_to_create_in_account1,
+                    self.api1,
+                    account=1,
+                    result=result,
+                )
+
+            # Create groups in account 2
+            if result.groups_to_create_in_account2:
+                self._execute_group_creates(
+                    result.groups_to_create_in_account2,
+                    self.api2,
+                    account=2,
+                    result=result,
+                )
+
+            # Update groups in account 1
+            if result.groups_to_update_in_account1:
+                self._execute_group_updates(
+                    result.groups_to_update_in_account1,
+                    self.api1,
+                    account=1,
+                    result=result,
+                )
+
+            # Update groups in account 2
+            if result.groups_to_update_in_account2:
+                self._execute_group_updates(
+                    result.groups_to_update_in_account2,
+                    self.api2,
+                    account=2,
+                    result=result,
+                )
+
+            # Delete groups in account 1
+            if result.groups_to_delete_in_account1:
+                self._execute_group_deletes(
+                    result.groups_to_delete_in_account1,
+                    self.api1,
+                    account=1,
+                    result=result,
+                )
+
+            # Delete groups in account 2
+            if result.groups_to_delete_in_account2:
+                self._execute_group_deletes(
+                    result.groups_to_delete_in_account2,
+                    self.api2,
+                    account=2,
+                    result=result,
+                )
+
+            # === EXECUTE CONTACT OPERATIONS ===
+
             # Create contacts in account 1
             if result.to_create_in_account1:
                 self._execute_creates(
@@ -1010,19 +1071,43 @@ class SyncEngine:
             # Update sync tokens
             self._update_sync_tokens()
 
-            created = (
+            # Calculate totals for logging
+            groups_created = (
+                result.stats.groups_created_in_account1
+                + result.stats.groups_created_in_account2
+            )
+            groups_updated = (
+                result.stats.groups_updated_in_account1
+                + result.stats.groups_updated_in_account2
+            )
+            groups_deleted = (
+                result.stats.groups_deleted_in_account1
+                + result.stats.groups_deleted_in_account2
+            )
+            contacts_created = (
                 result.stats.created_in_account1 + result.stats.created_in_account2
             )
-            updated = (
+            contacts_updated = (
                 result.stats.updated_in_account1 + result.stats.updated_in_account2
             )
-            deleted = (
+            contacts_deleted = (
                 result.stats.deleted_in_account1 + result.stats.deleted_in_account2
             )
-            logger.info(
-                f"Sync complete: created {created}, "
-                f"updated {updated}, deleted {deleted}"
-            )
+
+            # Log summary including groups if any group operations occurred
+            if groups_created or groups_updated or groups_deleted:
+                logger.info(
+                    f"Sync complete: "
+                    f"groups (created={groups_created}, updated={groups_updated}, "
+                    f"deleted={groups_deleted}), "
+                    f"contacts (created={contacts_created}, updated={contacts_updated}, "
+                    f"deleted={contacts_deleted})"
+                )
+            else:
+                logger.info(
+                    f"Sync complete: created {contacts_created}, "
+                    f"updated {contacts_updated}, deleted {contacts_deleted}"
+                )
 
         except Exception as e:
             logger.error(f"Sync execution failed: {e}")
@@ -1628,6 +1713,187 @@ class SyncEngine:
             logger.error(f"Failed to delete contacts in {account_label}: {e}")
             result.stats.errors += len(resource_names)
             raise
+
+    # =========================================================================
+    # Group Sync Execution Methods
+    # =========================================================================
+
+    def _execute_group_creates(
+        self,
+        groups: list[ContactGroup],
+        api: PeopleAPI,
+        account: int,
+        result: SyncResult,
+    ) -> None:
+        """
+        Execute group creation operations.
+
+        Creates groups one at a time (no batch API for groups).
+
+        Args:
+            groups: Groups to create
+            api: PeopleAPI instance for target account
+            account: Account number (1 or 2)
+            result: SyncResult to update with stats
+        """
+        account_label = self._get_account_label(account)
+        logger.info(f"Creating {len(groups)} groups in {account_label}")
+
+        for group in groups:
+            try:
+                # Create the group using the API
+                created_response = api.create_contact_group(group.name)
+
+                # Extract the created group info
+                created_resource_name = created_response.get("resourceName", "")
+                created_etag = created_response.get("etag", "")
+
+                # Get the matching key (normalized group name)
+                matching_key = group.matching_key()
+                content_hash = group.content_hash()
+
+                # Update the group mapping in the database
+                if account == 1:
+                    self.database.upsert_group_mapping(
+                        group_name=matching_key,
+                        account1_resource_name=created_resource_name,
+                        account1_etag=created_etag,
+                        last_synced_hash=content_hash,
+                    )
+                    result.stats.groups_created_in_account1 += 1
+                else:
+                    self.database.upsert_group_mapping(
+                        group_name=matching_key,
+                        account2_resource_name=created_resource_name,
+                        account2_etag=created_etag,
+                        last_synced_hash=content_hash,
+                    )
+                    result.stats.groups_created_in_account2 += 1
+
+                logger.debug(
+                    f"Created group '{group.name}' in {account_label}: "
+                    f"{created_resource_name}"
+                )
+
+            except PeopleAPIError as e:
+                logger.error(
+                    f"Failed to create group '{group.name}' in {account_label}: {e}"
+                )
+                result.stats.errors += 1
+                # Continue with other groups instead of failing completely
+                continue
+
+    def _execute_group_updates(
+        self,
+        updates: list[tuple[str, ContactGroup]],
+        api: PeopleAPI,
+        account: int,
+        result: SyncResult,
+    ) -> None:
+        """
+        Execute group update operations.
+
+        Updates groups one at a time (no batch API for groups).
+
+        Args:
+            updates: List of (resource_name, source_group) tuples
+            api: PeopleAPI instance for target account
+            account: Account number (1 or 2)
+            result: SyncResult to update with stats
+        """
+        account_label = self._get_account_label(account)
+        logger.info(f"Updating {len(updates)} groups in {account_label}")
+
+        for resource_name, source_group in updates:
+            try:
+                # Get current etag for optimistic locking
+                current_group = api.get_contact_group(resource_name)
+                current_etag = current_group.get("etag")
+
+                # Update the group with the source group's name
+                updated_response = api.update_contact_group(
+                    resource_name=resource_name,
+                    name=source_group.name,
+                    etag=current_etag,
+                )
+
+                # Extract the updated group info
+                updated_etag = updated_response.get("etag", "")
+
+                # Get the matching key and content hash
+                matching_key = source_group.matching_key()
+                content_hash = source_group.content_hash()
+
+                # Update the group mapping in the database
+                if account == 1:
+                    self.database.upsert_group_mapping(
+                        group_name=matching_key,
+                        account1_etag=updated_etag,
+                        last_synced_hash=content_hash,
+                    )
+                    result.stats.groups_updated_in_account1 += 1
+                else:
+                    self.database.upsert_group_mapping(
+                        group_name=matching_key,
+                        account2_etag=updated_etag,
+                        last_synced_hash=content_hash,
+                    )
+                    result.stats.groups_updated_in_account2 += 1
+
+                logger.debug(
+                    f"Updated group '{source_group.name}' in {account_label}"
+                )
+
+            except PeopleAPIError as e:
+                logger.error(
+                    f"Failed to update group '{source_group.name}' "
+                    f"in {account_label}: {e}"
+                )
+                result.stats.errors += 1
+                # Continue with other groups instead of failing completely
+                continue
+
+    def _execute_group_deletes(
+        self,
+        resource_names: list[str],
+        api: PeopleAPI,
+        account: int,
+        result: SyncResult,
+    ) -> None:
+        """
+        Execute group deletion operations.
+
+        Deletes groups one at a time (no batch API for groups).
+        Does not delete contacts within the group.
+
+        Args:
+            resource_names: Group resource names to delete
+            api: PeopleAPI instance for target account
+            account: Account number (1 or 2)
+            result: SyncResult to update with stats
+        """
+        account_label = self._get_account_label(account)
+        logger.info(f"Deleting {len(resource_names)} groups in {account_label}")
+
+        for resource_name in resource_names:
+            try:
+                # Delete the group (preserve contacts within it)
+                api.delete_contact_group(resource_name, delete_contacts=False)
+
+                if account == 1:
+                    result.stats.groups_deleted_in_account1 += 1
+                else:
+                    result.stats.groups_deleted_in_account2 += 1
+
+                logger.debug(f"Deleted group in {account_label}: {resource_name}")
+
+            except PeopleAPIError as e:
+                logger.error(
+                    f"Failed to delete group {resource_name} in {account_label}: {e}"
+                )
+                result.stats.errors += 1
+                # Continue with other groups instead of failing completely
+                continue
 
     def _apply_key_updates(self) -> None:
         """
