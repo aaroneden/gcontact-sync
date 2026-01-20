@@ -827,3 +827,99 @@ class PeopleAPI:
                     f"Contact group not found: {resource_name}"
                 ) from e
             raise
+
+    def create_contact_group(self, name: str) -> dict[str, Any]:
+        """
+        Create a new contact group.
+
+        Args:
+            name: Name for the new contact group
+
+        Returns:
+            Created contact group dict from API with resource_name and etag
+
+        Raises:
+            PeopleAPIError: If creation fails (e.g., 409 if name already exists)
+        """
+        logger.debug(f"Creating contact group: {name}")
+
+        body = {
+            "contactGroup": {
+                "name": name,
+            }
+        }
+
+        def execute_create() -> Any:
+            return self.service.contactGroups().create(body=body).execute()
+
+        try:
+            response = self._retry_with_backoff(
+                execute_create, f"create_contact_group({name})"
+            )
+            logger.info(
+                f"Created contact group: {response.get('resourceName')} ({name})"
+            )
+            return response
+        except HttpError as e:
+            if e.resp.status == 409:
+                raise PeopleAPIError(
+                    f"Contact group with name '{name}' already exists"
+                ) from e
+            raise
+
+    def update_contact_group(
+        self,
+        resource_name: str,
+        name: str,
+        etag: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Update an existing contact group.
+
+        Args:
+            resource_name: Group's resource name (e.g., "contactGroups/abc123")
+            name: New name for the contact group
+            etag: Etag for optimistic locking (optional but recommended)
+
+        Returns:
+            Updated contact group dict with new etag
+
+        Raises:
+            PeopleAPIError: If update fails (e.g., 404 not found, 409 conflict)
+        """
+        logger.debug(f"Updating contact group: {resource_name}")
+
+        body: dict[str, Any] = {
+            "contactGroup": {
+                "name": name,
+            },
+            "updateGroupFields": "name",
+        }
+
+        if etag:
+            body["contactGroup"]["etag"] = etag
+
+        def execute_update() -> Any:
+            return (
+                self.service.contactGroups()
+                .update(resourceName=resource_name, body=body)
+                .execute()
+            )
+
+        try:
+            response = self._retry_with_backoff(
+                execute_update, f"update_contact_group({resource_name})"
+            )
+            logger.info(f"Updated contact group: {resource_name} -> {name}")
+            return response
+        except HttpError as e:
+            if e.resp.status == 404:
+                raise PeopleAPIError(
+                    f"Contact group not found: {resource_name}"
+                ) from e
+            if e.resp.status == 409:
+                raise PeopleAPIError(
+                    f"Contact group {resource_name} was modified by another client. "
+                    f"Please refresh and try again."
+                ) from e
+            raise
