@@ -707,3 +707,123 @@ class PeopleAPI:
 
         logger.info(f"Found {len(deleted_resources)} deleted contacts")
         return deleted_resources, next_sync_token
+
+    # ========== Contact Groups Methods ==========
+
+    def list_contact_groups(
+        self, sync_token: Optional[str] = None
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """
+        List all contact groups for the authenticated user.
+
+        Returns both user-created groups and system groups (myContacts, starred).
+        System groups can be identified by their groupType field.
+
+        Args:
+            sync_token: Token from previous sync for incremental updates
+
+        Returns:
+            Tuple of (list of contact group dicts, new sync token or None)
+
+        Raises:
+            PeopleAPIError: If listing fails
+            RateLimitError: If rate limit exceeded
+
+        Note:
+            If sync_token is expired or invalid, API returns 400.
+            In this case, caller should retry without sync_token for full sync.
+        """
+        logger.debug(f"Listing contact groups (sync_token={bool(sync_token)})")
+
+        groups: list[dict[str, Any]] = []
+        page_token: Optional[str] = None
+        next_sync_token: Optional[str] = None
+
+        while True:
+            # Build request parameters
+            params: dict[str, Any] = {
+                "pageSize": self.page_size,
+                "groupFields": "name,groupType,memberCount,metadata",
+            }
+
+            if page_token:
+                params["pageToken"] = page_token
+
+            if sync_token:
+                params["syncToken"] = sync_token
+
+            # Execute request with retry
+            def execute_list(p: dict[str, Any] = params) -> Any:
+                return self.service.contactGroups().list(**p).execute()
+
+            try:
+                response = self._retry_with_backoff(
+                    execute_list, "list_contact_groups"
+                )
+            except HttpError as e:
+                # 400 can indicate invalid sync token for contact groups
+                if e.resp.status == 400 and sync_token:
+                    logger.warning(
+                        "Sync token may be invalid (400 error). "
+                        "Caller should perform full sync."
+                    )
+                    raise PeopleAPIError(
+                        "Sync token may be invalid. Please perform a full sync."
+                    ) from e
+                raise
+
+            # Parse contact groups from response
+            contact_groups = response.get("contactGroups", [])
+            groups.extend(contact_groups)
+
+            # Get next page token or sync token
+            page_token = response.get("nextPageToken")
+            next_sync_token = response.get("nextSyncToken")
+
+            if not page_token:
+                break
+
+        logger.info(f"Listed {len(groups)} contact groups")
+        return groups, next_sync_token
+
+    def get_contact_group(
+        self, resource_name: str, max_members: int = 0
+    ) -> dict[str, Any]:
+        """
+        Get a single contact group by resource name.
+
+        Args:
+            resource_name: Group's resource name (e.g., "contactGroups/abc123")
+            max_members: Maximum number of members to return (0 for none, max 1000)
+
+        Returns:
+            Contact group dict from API
+
+        Raises:
+            PeopleAPIError: If group not found or request fails
+        """
+        logger.debug(f"Getting contact group: {resource_name}")
+
+        # Build request parameters
+        params: dict[str, Any] = {
+            "resourceName": resource_name,
+            "groupFields": "name,groupType,memberCount,metadata",
+        }
+
+        if max_members > 0:
+            params["maxMembers"] = min(max_members, 1000)
+
+        def execute_get() -> Any:
+            return self.service.contactGroups().get(**params).execute()
+
+        try:
+            response = self._retry_with_backoff(
+                execute_get, f"get_contact_group({resource_name})"
+            )
+            return response
+        except HttpError as e:
+            if e.resp.status == 404:
+                raise PeopleAPIError(
+                    f"Contact group not found: {resource_name}"
+                ) from e
+            raise
