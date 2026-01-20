@@ -10,7 +10,8 @@ Provides a high-level interface to the Google People API for:
 
 import logging
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -196,8 +197,8 @@ class PeopleAPI:
         raise PeopleAPIError(f"{operation_name} failed after all retries")
 
     def list_contacts(
-        self, sync_token: Optional[str] = None, request_sync_token: bool = True
-    ) -> tuple[list[Contact], Optional[str]]:
+        self, sync_token: str | None = None, request_sync_token: bool = True
+    ) -> tuple[list[Contact], str | None]:
         """
         List all contacts or get changes since last sync.
 
@@ -222,8 +223,8 @@ class PeopleAPI:
         logger.debug(f"Listing contacts (sync_token={bool(sync_token)})")
 
         contacts: list[Contact] = []
-        page_token: Optional[str] = None
-        next_sync_token: Optional[str] = None
+        page_token: str | None = None
+        next_sync_token: str | None = None
 
         while True:
             # Build request parameters
@@ -344,8 +345,8 @@ class PeopleAPI:
     def update_contact(
         self,
         contact: Contact,
-        resource_name: Optional[str] = None,
-        etag: Optional[str] = None,
+        resource_name: str | None = None,
+        etag: str | None = None,
     ) -> Contact:
         """
         Update an existing contact.
@@ -618,7 +619,7 @@ class PeopleAPI:
         logger.info(f"Batch deleted {deleted_count} contacts")
         return deleted_count
 
-    def get_sync_token(self) -> Optional[str]:
+    def get_sync_token(self) -> str | None:
         """
         Get a sync token without fetching contacts.
 
@@ -642,13 +643,13 @@ class PeopleAPI:
 
         try:
             response = self._retry_with_backoff(execute_list, "get_sync_token")
-            token: Optional[str] = response.get("nextSyncToken")
+            token: str | None = response.get("nextSyncToken")
             return token
         except PeopleAPIError:
             logger.warning("Failed to get sync token")
             return None
 
-    def list_deleted_contacts(self, sync_token: str) -> tuple[list[str], Optional[str]]:
+    def list_deleted_contacts(self, sync_token: str) -> tuple[list[str], str | None]:
         """
         List contacts deleted since the given sync token.
 
@@ -664,8 +665,8 @@ class PeopleAPI:
         logger.debug("Listing deleted contacts")
 
         deleted_resources: list[str] = []
-        page_token: Optional[str] = None
-        next_sync_token: Optional[str] = None
+        page_token: str | None = None
+        next_sync_token: str | None = None
 
         while True:
             params: dict[str, Any] = {
@@ -712,8 +713,8 @@ class PeopleAPI:
     # ========== Contact Groups Methods ==========
 
     def list_contact_groups(
-        self, sync_token: Optional[str] = None
-    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        self, sync_token: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None]:
         """
         List all contact groups for the authenticated user.
 
@@ -737,8 +738,8 @@ class PeopleAPI:
         logger.debug(f"Listing contact groups (sync_token={bool(sync_token)})")
 
         groups: list[dict[str, Any]] = []
-        page_token: Optional[str] = None
-        next_sync_token: Optional[str] = None
+        page_token: str | None = None
+        next_sync_token: str | None = None
 
         while True:
             # Build request parameters
@@ -758,9 +759,7 @@ class PeopleAPI:
                 return self.service.contactGroups().list(**p).execute()
 
             try:
-                response = self._retry_with_backoff(
-                    execute_list, "list_contact_groups"
-                )
+                response = self._retry_with_backoff(execute_list, "list_contact_groups")
             except HttpError as e:
                 # 400 can indicate invalid sync token for contact groups
                 if e.resp.status == 400 and sync_token:
@@ -821,12 +820,10 @@ class PeopleAPI:
             response = self._retry_with_backoff(
                 execute_get, f"get_contact_group({resource_name})"
             )
-            return response
+            return dict(response)
         except HttpError as e:
             if e.resp.status == 404:
-                raise PeopleAPIError(
-                    f"Contact group not found: {resource_name}"
-                ) from e
+                raise PeopleAPIError(f"Contact group not found: {resource_name}") from e
             raise
 
     def create_contact_group(self, name: str) -> dict[str, Any]:
@@ -860,7 +857,7 @@ class PeopleAPI:
             logger.info(
                 f"Created contact group: {response.get('resourceName')} ({name})"
             )
-            return response
+            return dict(response)
         except HttpError as e:
             if e.resp.status == 409:
                 raise PeopleAPIError(
@@ -872,7 +869,7 @@ class PeopleAPI:
         self,
         resource_name: str,
         name: str,
-        etag: Optional[str] = None,
+        etag: str | None = None,
     ) -> dict[str, Any]:
         """
         Update an existing contact group.
@@ -912,12 +909,10 @@ class PeopleAPI:
                 execute_update, f"update_contact_group({resource_name})"
             )
             logger.info(f"Updated contact group: {resource_name} -> {name}")
-            return response
+            return dict(response)
         except HttpError as e:
             if e.resp.status == 404:
-                raise PeopleAPIError(
-                    f"Contact group not found: {resource_name}"
-                ) from e
+                raise PeopleAPIError(f"Contact group not found: {resource_name}") from e
             if e.resp.status == 409:
                 raise PeopleAPIError(
                     f"Contact group {resource_name} was modified by another client. "
@@ -976,8 +971,8 @@ class PeopleAPI:
     def modify_group_members(
         self,
         resource_name: str,
-        add_resource_names: Optional[list[str]] = None,
-        remove_resource_names: Optional[list[str]] = None,
+        add_resource_names: list[str] | None = None,
+        remove_resource_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Modify the members of a contact group.
@@ -1041,10 +1036,8 @@ class PeopleAPI:
                 f"Modified group members for {resource_name}: "
                 f"added {add_count}, removed {remove_count}"
             )
-            return response
+            return dict(response)
         except HttpError as e:
             if e.resp.status == 404:
-                raise PeopleAPIError(
-                    f"Contact group not found: {resource_name}"
-                ) from e
+                raise PeopleAPIError(f"Contact group not found: {resource_name}") from e
             raise

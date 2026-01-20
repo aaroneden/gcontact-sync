@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 # SQL Schema for sync state and contact mapping tables
 SCHEMA = """
@@ -115,7 +115,7 @@ class SyncDatabase:
             db_path: Path to SQLite database file, or ':memory:' for in-memory database
         """
         self.db_path = db_path
-        self._shared_connection: Optional[sqlite3.Connection] = None
+        self._shared_connection: sqlite3.Connection | None = None
 
     def _get_connection(self) -> sqlite3.Connection:
         """
@@ -185,7 +185,7 @@ class SyncDatabase:
     # Sync State Operations
     # =========================================================================
 
-    def get_sync_state(self, account_id: str) -> Optional[dict[str, Any]]:
+    def get_sync_state(self, account_id: str) -> dict[str, Any] | None:
         """
         Get sync state for an account.
 
@@ -211,8 +211,8 @@ class SyncDatabase:
     def update_sync_state(
         self,
         account_id: str,
-        sync_token: Optional[str] = None,
-        last_sync_at: Optional[datetime] = None,
+        sync_token: str | None = None,
+        last_sync_at: datetime | None = None,
     ) -> None:
         """
         Update or insert sync state for an account.
@@ -254,7 +254,7 @@ class SyncDatabase:
     # Contact Mapping Operations
     # =========================================================================
 
-    def get_contact_mapping(self, matching_key: str) -> Optional[dict[str, Any]]:
+    def get_contact_mapping(self, matching_key: str) -> dict[str, Any] | None:
         """
         Get contact mapping by matching key.
 
@@ -289,11 +289,11 @@ class SyncDatabase:
     def upsert_contact_mapping(
         self,
         matching_key: str,
-        account1_resource_name: Optional[str] = None,
-        account2_resource_name: Optional[str] = None,
-        account1_etag: Optional[str] = None,
-        account2_etag: Optional[str] = None,
-        last_synced_hash: Optional[str] = None,
+        account1_resource_name: str | None = None,
+        account2_resource_name: str | None = None,
+        account1_etag: str | None = None,
+        account2_etag: str | None = None,
+        last_synced_hash: str | None = None,
     ) -> None:
         """
         Insert or update a contact mapping.
@@ -481,7 +481,7 @@ class SyncDatabase:
         self,
         contact1_resource_name: str,
         contact2_resource_name: str,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Get cached LLM match decision for a contact pair.
 
@@ -678,9 +678,7 @@ class SyncDatabase:
     # Contact Group Operations
     # =========================================================================
 
-    def get_group(
-        self, resource_name: str, account_id: str
-    ) -> Optional[dict[str, Any]]:
+    def get_group(self, resource_name: str, account_id: str) -> dict[str, Any] | None:
         """
         Get a contact group by resource name and account.
 
@@ -713,9 +711,7 @@ class SyncDatabase:
                 return dict(row)
             return None
 
-    def get_group_by_name(
-        self, name: str, account_id: str
-    ) -> Optional[dict[str, Any]]:
+    def get_group_by_name(self, name: str, account_id: str) -> dict[str, Any] | None:
         """
         Get a contact group by name and account.
 
@@ -782,8 +778,8 @@ class SyncDatabase:
         self,
         name: str,
         account_id: str,
-        resource_name: Optional[str] = None,
-        etag: Optional[str] = None,
+        resource_name: str | None = None,
+        etag: str | None = None,
         group_type: str = "USER_CONTACT_GROUP",
         member_count: int = 0,
     ) -> None:
@@ -848,7 +844,7 @@ class SyncDatabase:
             )
             return cursor.rowcount > 0
 
-    def get_group_count(self, account_id: Optional[str] = None) -> int:
+    def get_group_count(self, account_id: str | None = None) -> int:
         """
         Get the total number of contact groups.
 
@@ -890,7 +886,7 @@ class SyncDatabase:
     # Contact Group Mapping Operations
     # =========================================================================
 
-    def get_group_mapping(self, group_name: str) -> Optional[dict[str, Any]]:
+    def get_group_mapping(self, group_name: str) -> dict[str, Any] | None:
         """
         Get group mapping by group name.
 
@@ -925,11 +921,11 @@ class SyncDatabase:
     def upsert_group_mapping(
         self,
         group_name: str,
-        account1_resource_name: Optional[str] = None,
-        account2_resource_name: Optional[str] = None,
-        account1_etag: Optional[str] = None,
-        account2_etag: Optional[str] = None,
-        last_synced_hash: Optional[str] = None,
+        account1_resource_name: str | None = None,
+        account2_resource_name: str | None = None,
+        account1_etag: str | None = None,
+        account2_etag: str | None = None,
+        last_synced_hash: str | None = None,
     ) -> None:
         """
         Insert or update a group mapping.
@@ -1052,7 +1048,7 @@ class SyncDatabase:
 
     def get_group_mapping_by_resource_name(
         self, resource_name: str, account: int
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Get group mapping by resource name for a specific account.
 

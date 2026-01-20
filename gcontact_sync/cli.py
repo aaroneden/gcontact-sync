@@ -23,7 +23,7 @@ Usage:
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import click
 
@@ -50,8 +50,8 @@ DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
 
 def validate_account(
-    ctx: click.Context, param: click.Parameter, value: Optional[str]
-) -> Optional[str]:
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
     """Validate account identifier for Click option."""
     if value is None:
         return value
@@ -62,7 +62,7 @@ def validate_account(
     return value
 
 
-def get_config_dir(config_dir: Optional[str]) -> Path:
+def get_config_dir(config_dir: str | None) -> Path:
     """Get the configuration directory path."""
     if config_dir:
         return Path(config_dir)
@@ -82,7 +82,7 @@ def get_config_dir(config_dir: Optional[str]) -> Path:
     help="Configuration directory path (default: ~/.gcontact-sync).",
 )
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str]) -> None:
+def cli(ctx: click.Context, verbose: bool, config_dir: str | None) -> None:
     """
     Bidirectional Google Contacts Sync.
 
@@ -704,7 +704,7 @@ def _show_debug_info(
 
         if matched_groups:
             group_sample_size = min(5, len(matched_groups))
-            group_sample = random.sample(matched_groups, group_sample_size)
+            group_sample = random.sample(matched_groups, group_sample_size)  # nosec B311
             click.echo(f"\nRandom sample of {group_sample_size} matched group pairs:")
             for group1, group2 in group_sample:
                 click.echo(f"\n  {click.style('Group Match:', fg='cyan')}")
@@ -741,7 +741,7 @@ def _show_debug_info(
 
     if matched:
         sample_size = min(5, len(matched))
-        sample = random.sample(matched, sample_size)
+        sample = random.sample(matched, sample_size)  # nosec B311
         click.echo(f"\nRandom sample of {sample_size} matched pairs:")
         for contact1, contact2 in sample:
             click.echo(f"\n  {click.style('Match:', fg='cyan')}")
@@ -751,12 +751,23 @@ def _show_debug_info(
                 click.echo(f"      Emails: {', '.join(contact1.emails[:2])}")
             if contact1.phones:
                 click.echo(f"      Phones: {', '.join(contact1.phones[:2])}")
+            if contact1.memberships:
+                # Show group names (strip contactGroups/ prefix for readability)
+                groups1 = [
+                    m.replace("contactGroups/", "") for m in contact1.memberships
+                ]
+                click.echo(f"      Groups: {', '.join(groups1[:3])}")
             click.echo(f"    {account2_label}:")
             click.echo(f"      Name: {contact2.display_name}")
             if contact2.emails:
                 click.echo(f"      Emails: {', '.join(contact2.emails[:2])}")
             if contact2.phones:
                 click.echo(f"      Phones: {', '.join(contact2.phones[:2])}")
+            if contact2.memberships:
+                groups2 = [
+                    m.replace("contactGroups/", "") for m in contact2.memberships
+                ]
+                click.echo(f"      Groups: {', '.join(groups2[:3])}")
 
     # Show unmatched contacts (to be created)
     unmatched_in_1 = result.to_create_in_account2  # Contacts only in account 1
@@ -770,7 +781,7 @@ def _show_debug_info(
 
     if unmatched_in_1:
         unmatched_sample_size_1 = min(5, len(unmatched_in_1))
-        unmatched_sample_1: list[Contact] = random.sample(
+        unmatched_sample_1: list[Contact] = random.sample(  # nosec B311
             unmatched_in_1, unmatched_sample_size_1
         )
         click.echo(
@@ -781,7 +792,7 @@ def _show_debug_info(
 
     if unmatched_in_2:
         unmatched_sample_size_2 = min(5, len(unmatched_in_2))
-        unmatched_sample_2: list[Contact] = random.sample(
+        unmatched_sample_2: list[Contact] = random.sample(  # nosec B311
             unmatched_in_2, unmatched_sample_size_2
         )
         click.echo(
@@ -796,7 +807,7 @@ def _show_debug_info(
             f"\n{click.style('Conflicts:', fg='magenta')} {len(result.conflicts)}"
         )
         conflict_sample_size = min(3, len(result.conflicts))
-        conflict_sample: list[ConflictResult] = random.sample(
+        conflict_sample: list[ConflictResult] = random.sample(  # nosec B311
             result.conflicts, conflict_sample_size
         )
         click.echo(f"\nSample of {conflict_sample_size} conflicts:")
@@ -883,7 +894,7 @@ def reset_command(ctx: click.Context, yes: bool) -> None:
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
-def clear_auth_command(ctx: click.Context, account: Optional[str], yes: bool) -> None:
+def clear_auth_command(ctx: click.Context, account: str | None, yes: bool) -> None:
     """
     Clear stored authentication credentials.
 
@@ -1048,7 +1059,7 @@ def list_groups_command(ctx: click.Context, account: str, show_all: bool) -> Non
     help="Account to create group in (creates in both if not specified).",
 )
 @click.pass_context
-def create_group_command(ctx: click.Context, name: str, account: Optional[str]) -> None:
+def create_group_command(ctx: click.Context, name: str, account: str | None) -> None:
     """
     Create a new contact group.
 
@@ -1164,7 +1175,7 @@ def create_group_command(ctx: click.Context, name: str, account: Optional[str]) 
 def delete_group_command(
     ctx: click.Context,
     name: str,
-    account: Optional[str],
+    account: str | None,
     delete_contacts: bool,
     yes: bool,
 ) -> None:

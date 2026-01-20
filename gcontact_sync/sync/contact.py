@@ -12,7 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -50,13 +50,13 @@ class Contact:
     etag: str  # Required for updates
     display_name: str
 
-    given_name: Optional[str] = None
-    family_name: Optional[str] = None
+    given_name: str | None = None
+    family_name: str | None = None
     emails: list[str] = field(default_factory=list)
     phones: list[str] = field(default_factory=list)
     organizations: list[str] = field(default_factory=list)
-    notes: Optional[str] = None
-    last_modified: Optional[datetime] = None
+    notes: str | None = None
+    last_modified: datetime | None = None
     memberships: list[str] = field(default_factory=list)  # Contact group resource names
 
     # Additional fields for sync tracking

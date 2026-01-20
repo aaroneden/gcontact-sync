@@ -6,11 +6,11 @@ content hashing, and comparison operations.
 """
 
 from gcontact_sync.sync.group import (
-    ContactGroup,
-    GROUP_TYPE_USER_CONTACT_GROUP,
     GROUP_TYPE_SYSTEM_CONTACT_GROUP,
     GROUP_TYPE_UNSPECIFIED,
+    GROUP_TYPE_USER_CONTACT_GROUP,
     SYSTEM_GROUP_NAMES,
+    ContactGroup,
 )
 
 

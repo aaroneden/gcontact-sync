@@ -8,7 +8,6 @@ handling contact creation, updates, deletions, and conflict resolution.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
 from gcontact_sync.auth.google_auth import ACCOUNT_1, ACCOUNT_2
@@ -173,33 +172,37 @@ class SyncResult:
 
         # Group changes (sync groups before contacts)
         if self.has_group_changes():
-            lines.extend([
-                "Group changes to apply:",
-                f"  Create groups in {account1_label}: "
-                f"{len(self.groups_to_create_in_account1)}",
-                f"  Create groups in {account2_label}: "
-                f"{len(self.groups_to_create_in_account2)}",
-                f"  Update groups in {account1_label}: "
-                f"{len(self.groups_to_update_in_account1)}",
-                f"  Update groups in {account2_label}: "
-                f"{len(self.groups_to_update_in_account2)}",
-                f"  Delete groups in {account1_label}: "
-                f"{len(self.groups_to_delete_in_account1)}",
-                f"  Delete groups in {account2_label}: "
-                f"{len(self.groups_to_delete_in_account2)}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "Group changes to apply:",
+                    f"  Create groups in {account1_label}: "
+                    f"{len(self.groups_to_create_in_account1)}",
+                    f"  Create groups in {account2_label}: "
+                    f"{len(self.groups_to_create_in_account2)}",
+                    f"  Update groups in {account1_label}: "
+                    f"{len(self.groups_to_update_in_account1)}",
+                    f"  Update groups in {account2_label}: "
+                    f"{len(self.groups_to_update_in_account2)}",
+                    f"  Delete groups in {account1_label}: "
+                    f"{len(self.groups_to_delete_in_account1)}",
+                    f"  Delete groups in {account2_label}: "
+                    f"{len(self.groups_to_delete_in_account2)}",
+                    "",
+                ]
+            )
 
         # Contact changes
-        lines.extend([
-            "Contact changes to apply:",
-            f"  Create in {account1_label}: {len(self.to_create_in_account1)}",
-            f"  Create in {account2_label}: {len(self.to_create_in_account2)}",
-            f"  Update in {account1_label}: {len(self.to_update_in_account1)}",
-            f"  Update in {account2_label}: {len(self.to_update_in_account2)}",
-            f"  Delete in {account1_label}: {len(self.to_delete_in_account1)}",
-            f"  Delete in {account2_label}: {len(self.to_delete_in_account2)}",
-        ])
+        lines.extend(
+            [
+                "Contact changes to apply:",
+                f"  Create in {account1_label}: {len(self.to_create_in_account1)}",
+                f"  Create in {account2_label}: {len(self.to_create_in_account2)}",
+                f"  Update in {account1_label}: {len(self.to_update_in_account1)}",
+                f"  Update in {account2_label}: {len(self.to_update_in_account2)}",
+                f"  Delete in {account1_label}: {len(self.to_delete_in_account1)}",
+                f"  Delete in {account2_label}: {len(self.to_delete_in_account2)}",
+            ]
+        )
 
         if self.conflicts:
             lines.append(f"  Conflicts resolved: {len(self.conflicts)}")
@@ -252,8 +255,8 @@ class SyncEngine:
         api2: PeopleAPI,
         database: SyncDatabase,
         conflict_strategy: ConflictStrategy = ConflictStrategy.LAST_MODIFIED_WINS,
-        account1_email: Optional[str] = None,
-        account2_email: Optional[str] = None,
+        account1_email: str | None = None,
+        account2_email: str | None = None,
         use_llm_matching: bool = True,
     ):
         """
@@ -674,8 +677,13 @@ class SyncEngine:
         for mapping in existing_mappings:
             res1 = mapping.get("account1_resource_name")
             res2 = mapping.get("account2_resource_name")
-            group_name = mapping.get("group_name")
+            group_name_val = mapping.get("group_name")
             last_synced_hash = mapping.get("last_synced_hash")
+
+            # Skip invalid mappings (should always have group_name)
+            if not group_name_val or not isinstance(group_name_val, str):
+                continue
+            group_name: str = group_name_val
 
             group1 = groups1_by_resource.get(res1) if res1 else None
             group2 = groups2_by_resource.get(res2) if res2 else None
@@ -815,7 +823,10 @@ class SyncEngine:
             List of ContactGroup objects (only user groups, not system groups)
         """
         try:
-            groups = api.list_contact_groups()
+            # API returns tuple of (list[dict], sync_token)
+            groups_data, _ = api.list_contact_groups()
+            # Convert raw dicts to ContactGroup objects
+            groups = [ContactGroup.from_api_response(g) for g in groups_data]
             # Filter to only syncable groups (user groups with names, not deleted)
             return [g for g in groups if g.is_syncable()]
         except PeopleAPIError as e:
@@ -864,9 +875,7 @@ class SyncEngine:
                     index[key] = group
                 else:
                     if mlog:
-                        mlog.debug(
-                            f"DUPLICATE KEY - keeping existing: {existing.name}"
-                        )
+                        mlog.debug(f"DUPLICATE KEY - keeping existing: {existing.name}")
             else:
                 index[key] = group
                 if mlog:
@@ -884,7 +893,7 @@ class SyncEngine:
         matching_key: str,
         group1: ContactGroup,
         group2: ContactGroup,
-        last_synced_hash: Optional[str],
+        last_synced_hash: str | None,
         result: SyncResult,
     ) -> None:
         """
@@ -1117,7 +1126,7 @@ class SyncEngine:
 
     def _fetch_contacts(
         self, api: PeopleAPI, account_id: str, full_sync: bool
-    ) -> tuple[list[Contact], Optional[str]]:
+    ) -> tuple[list[Contact], str | None]:
         """
         Fetch contacts from an account, optionally using sync token.
 
@@ -1274,8 +1283,8 @@ class SyncEngine:
     def _analyze_contact_pair(
         self,
         matching_key: str,
-        contact1: Optional[Contact],
-        contact2: Optional[Contact],
+        contact1: Contact | None,
+        contact2: Contact | None,
         result: SyncResult,
     ) -> None:
         """
@@ -1344,7 +1353,7 @@ class SyncEngine:
         matching_key: str,
         contact1: Contact,
         contact2: Contact,
-        last_synced_hash: Optional[str],
+        last_synced_hash: str | None,
         result: SyncResult,
     ) -> None:
         """
@@ -1449,8 +1458,8 @@ class SyncEngine:
         current_key: str,
         contact1: Contact,
         contact2: Contact,
-        last_synced_hash: Optional[str],
-        old_matching_key: Optional[str],
+        last_synced_hash: str | None,
+        old_matching_key: str | None,
         result: SyncResult,
     ) -> None:
         """
@@ -1561,7 +1570,8 @@ class SyncEngine:
         """
         Execute contact creation operations.
 
-        Uses batch operations for efficiency.
+        Uses batch operations for efficiency. Memberships are mapped from source
+        account to target account before creation.
 
         Args:
             contacts: Contacts to create
@@ -1573,11 +1583,34 @@ class SyncEngine:
         logger.info(f"Creating {len(contacts)} contacts in {account_label}")
 
         try:
+            # Map memberships from source account to target account
+            # If creating in account 1, source is account 2 (and vice versa)
+            source_account = 2 if account == 1 else 1
+            contacts_with_mapped_memberships = []
+            for contact in contacts:
+                mapped_memberships = self._map_memberships(
+                    contact.memberships, source_account, account
+                )
+                # Create new contact with mapped memberships
+                mapped_contact = Contact(
+                    resource_name=contact.resource_name,
+                    etag=contact.etag,
+                    display_name=contact.display_name,
+                    given_name=contact.given_name,
+                    family_name=contact.family_name,
+                    emails=contact.emails,
+                    phones=contact.phones,
+                    organizations=contact.organizations,
+                    notes=contact.notes,
+                    memberships=mapped_memberships,
+                )
+                contacts_with_mapped_memberships.append(mapped_contact)
+
             # Use batch create for efficiency
-            created = api.batch_create_contacts(contacts)
+            created = api.batch_create_contacts(contacts_with_mapped_memberships)
 
             # Update mappings with new resource names
-            for original, created_contact in zip(contacts, created):
+            for original, created_contact in zip(contacts, created, strict=True):
                 matching_key = original.matching_key()
                 content_hash = original.content_hash()
 
@@ -1613,7 +1646,8 @@ class SyncEngine:
         """
         Execute contact update operations.
 
-        Uses batch operations for efficiency.
+        Uses batch operations for efficiency. Memberships are mapped from source
+        account to target account before updating.
 
         Args:
             updates: List of (resource_name, source_contact) tuples
@@ -1624,12 +1658,19 @@ class SyncEngine:
         account_label = self._get_account_label(account)
         logger.info(f"Updating {len(updates)} contacts in {account_label}")
 
+        # Determine source account for membership mapping
+        source_account = 2 if account == 1 else 1
+
         try:
             # Get current etags for the contacts being updated
             updates_with_etags = []
             for resource_name, source_contact in updates:
                 try:
                     current = api.get_contact(resource_name)
+                    # Map memberships from source account to target account
+                    mapped_memberships = self._map_memberships(
+                        source_contact.memberships, source_account, account
+                    )
                     # Create a contact with source data but target's resource name
                     update_contact = Contact(
                         resource_name=resource_name,
@@ -1641,6 +1682,7 @@ class SyncEngine:
                         phones=source_contact.phones,
                         organizations=source_contact.organizations,
                         notes=source_contact.notes,
+                        memberships=mapped_memberships,
                     )
                     updates_with_etags.append((resource_name, update_contact))
                 except PeopleAPIError as e:
@@ -1656,7 +1698,7 @@ class SyncEngine:
 
                 # Update mappings with new etags
                 for (_resource_name, source_contact), updated_contact in zip(
-                    updates_with_etags, updated
+                    updates_with_etags, updated, strict=True
                 ):
                     matching_key = source_contact.matching_key()
                     content_hash = source_contact.content_hash()
@@ -1842,9 +1884,7 @@ class SyncEngine:
                     )
                     result.stats.groups_updated_in_account2 += 1
 
-                logger.debug(
-                    f"Updated group '{source_group.name}' in {account_label}"
-                )
+                logger.debug(f"Updated group '{source_group.name}' in {account_label}")
 
             except PeopleAPIError as e:
                 logger.error(

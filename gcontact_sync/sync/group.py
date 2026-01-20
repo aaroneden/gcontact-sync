@@ -11,7 +11,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 # Group types as defined by Google People API
 GROUP_TYPE_UNSPECIFIED = "GROUP_TYPE_UNSPECIFIED"
@@ -19,14 +19,16 @@ GROUP_TYPE_USER_CONTACT_GROUP = "USER_CONTACT_GROUP"
 GROUP_TYPE_SYSTEM_CONTACT_GROUP = "SYSTEM_CONTACT_GROUP"
 
 # System group resource names (these should not be synced)
-SYSTEM_GROUP_NAMES = frozenset({
-    "contactGroups/myContacts",
-    "contactGroups/starred",
-    "contactGroups/all",
-    "contactGroups/friends",
-    "contactGroups/family",
-    "contactGroups/coworkers",
-})
+SYSTEM_GROUP_NAMES = frozenset(
+    {
+        "contactGroups/myContacts",
+        "contactGroups/starred",
+        "contactGroups/all",
+        "contactGroups/friends",
+        "contactGroups/family",
+        "contactGroups/coworkers",
+    }
+)
 
 
 @dataclass
@@ -66,7 +68,7 @@ class ContactGroup:
     # Optional fields from API
     member_count: int = 0
     member_resource_names: list[str] = field(default_factory=list)
-    formatted_name: Optional[str] = None
+    formatted_name: str | None = None
 
     # Additional fields for sync tracking
     deleted: bool = False  # True if group was deleted in source
@@ -251,11 +253,7 @@ class ContactGroup:
         Returns:
             True if the group is valid for syncing
         """
-        return (
-            self.is_user_group()
-            and bool(self.name)
-            and not self.deleted
-        )
+        return self.is_user_group() and bool(self.name) and not self.deleted
 
     def __eq__(self, other: object) -> bool:
         """

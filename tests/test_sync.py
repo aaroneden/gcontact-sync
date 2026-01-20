@@ -98,6 +98,8 @@ def older_contact2():
 def mock_api1():
     """Create a mock PeopleAPI for account 1."""
     api = MagicMock(spec=PeopleAPI)
+    # Default return values for API methods
+    api.list_contact_groups.return_value = ([], None)
     return api
 
 
@@ -105,6 +107,8 @@ def mock_api1():
 def mock_api2():
     """Create a mock PeopleAPI for account 2."""
     api = MagicMock(spec=PeopleAPI)
+    # Default return values for API methods
+    api.list_contact_groups.return_value = ([], None)
     return api
 
 
@@ -1672,7 +1676,7 @@ class TestSyncEngineIntegration:
 @pytest.fixture
 def sample_group1():
     """Create a sample contact group for account 1."""
-    from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+    from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
     return ContactGroup(
         resource_name="contactGroups/abc123",
@@ -1686,7 +1690,7 @@ def sample_group1():
 @pytest.fixture
 def sample_group2():
     """Create a sample contact group for account 2 (same name, different resource)."""
-    from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+    from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
     return ContactGroup(
         resource_name="contactGroups/xyz789",
@@ -1700,7 +1704,7 @@ def sample_group2():
 @pytest.fixture
 def sample_system_group():
     """Create a sample system contact group."""
-    from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_SYSTEM_CONTACT_GROUP
+    from gcontact_sync.sync.group import GROUP_TYPE_SYSTEM_CONTACT_GROUP, ContactGroup
 
     return ContactGroup(
         resource_name="contactGroups/myContacts",
@@ -1709,6 +1713,42 @@ def sample_system_group():
         group_type=GROUP_TYPE_SYSTEM_CONTACT_GROUP,
         member_count=100,
     )
+
+
+@pytest.fixture
+def sample_group1_api_data():
+    """API response dict for sample_group1."""
+    return {
+        "resourceName": "contactGroups/abc123",
+        "etag": "etag_g1",
+        "name": "Family",
+        "groupType": "USER_CONTACT_GROUP",
+        "memberCount": 5,
+    }
+
+
+@pytest.fixture
+def sample_group2_api_data():
+    """API response dict for sample_group2."""
+    return {
+        "resourceName": "contactGroups/xyz789",
+        "etag": "etag_g2",
+        "name": "Family",
+        "groupType": "USER_CONTACT_GROUP",
+        "memberCount": 3,
+    }
+
+
+@pytest.fixture
+def sample_system_group_api_data():
+    """API response dict for system group."""
+    return {
+        "resourceName": "contactGroups/myContacts",
+        "etag": "etag_sys",
+        "name": "My Contacts",
+        "groupType": "SYSTEM_CONTACT_GROUP",
+        "memberCount": 100,
+    }
 
 
 # ==============================================================================
@@ -1828,8 +1868,8 @@ class TestSyncEngineGroupAnalysis:
         """Test analyze with empty group lists."""
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
 
         result = sync_engine.analyze()
 
@@ -1838,61 +1878,72 @@ class TestSyncEngineGroupAnalysis:
         assert not result.has_group_changes()
 
     def test_analyze_group_only_in_account1(
-        self, sync_engine, mock_api1, mock_api2, sample_group1
+        self, sync_engine, mock_api1, mock_api2, sample_group1, sample_group1_api_data
     ):
         """Test analyze when group exists only in account 1."""
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [sample_group1]
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([sample_group1_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
 
         result = sync_engine.analyze()
 
         assert len(result.groups_to_create_in_account2) == 1
-        assert result.groups_to_create_in_account2[0] == sample_group1
+        assert result.groups_to_create_in_account2[0].name == sample_group1.name
         assert len(result.groups_to_create_in_account1) == 0
 
     def test_analyze_group_only_in_account2(
-        self, sync_engine, mock_api1, mock_api2, sample_group2
+        self, sync_engine, mock_api1, mock_api2, sample_group2, sample_group2_api_data
     ):
         """Test analyze when group exists only in account 2."""
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = [sample_group2]
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([sample_group2_api_data], None)
 
         result = sync_engine.analyze()
 
         assert len(result.groups_to_create_in_account1) == 1
-        assert result.groups_to_create_in_account1[0] == sample_group2
+        assert result.groups_to_create_in_account1[0].name == sample_group2.name
         assert len(result.groups_to_create_in_account2) == 0
 
     def test_analyze_groups_matched_by_name(
-        self, sync_engine, mock_api1, mock_api2, sample_group1, sample_group2
+        self,
+        sync_engine,
+        mock_api1,
+        mock_api2,
+        sample_group1,
+        sample_group2,
+        sample_group1_api_data,
+        sample_group2_api_data,
     ):
         """Test analyze matches groups by name (matching key)."""
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [sample_group1]
-        mock_api2.list_contact_groups.return_value = [sample_group2]
+        mock_api1.list_contact_groups.return_value = ([sample_group1_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([sample_group2_api_data], None)
 
         result = sync_engine.analyze()
 
         # Groups with same name should be matched
         assert len(result.matched_groups) == 1
-        assert result.matched_groups[0] == (sample_group1, sample_group2)
+        assert result.matched_groups[0][0].name == sample_group1.name
+        assert result.matched_groups[0][1].name == sample_group2.name
         # No creates needed
         assert len(result.groups_to_create_in_account1) == 0
         assert len(result.groups_to_create_in_account2) == 0
 
     def test_analyze_skips_system_groups(
-        self, sync_engine, mock_api1, mock_api2, sample_system_group
+        self, sync_engine, mock_api1, mock_api2, sample_system_group_api_data
     ):
         """Test that analyze skips system groups."""
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [sample_system_group]
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = (
+            [sample_system_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = ([], None)
 
         result = sync_engine.analyze()
 
@@ -1904,25 +1955,23 @@ class TestSyncEngineGroupAnalysis:
         self, sync_engine, mock_api1, mock_api2
     ):
         """Test that group names are normalized for matching."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
-
-        group1 = ContactGroup(
-            resource_name="contactGroups/1",
-            etag="e1",
-            name="WORK",  # Uppercase
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
-        group2 = ContactGroup(
-            resource_name="contactGroups/2",
-            etag="e2",
-            name="work",  # Lowercase
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
+        group1_data = {
+            "resourceName": "contactGroups/1",
+            "etag": "e1",
+            "name": "WORK",  # Uppercase
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        group2_data = {
+            "resourceName": "contactGroups/2",
+            "etag": "e2",
+            "name": "work",  # Lowercase
+            "groupType": "USER_CONTACT_GROUP",
+        }
 
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [group1]
-        mock_api2.list_contact_groups.return_value = [group2]
+        mock_api1.list_contact_groups.return_value = ([group1_data], None)
+        mock_api2.list_contact_groups.return_value = ([group2_data], None)
 
         result = sync_engine.analyze()
 
@@ -1931,41 +1980,39 @@ class TestSyncEngineGroupAnalysis:
 
     def test_analyze_multiple_groups(self, sync_engine, mock_api1, mock_api2):
         """Test analyze with multiple groups."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
-
-        groups1 = [
-            ContactGroup(
-                resource_name="contactGroups/g1",
-                etag="e1",
-                name="Family",
-                group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-            ),
-            ContactGroup(
-                resource_name="contactGroups/g2",
-                etag="e2",
-                name="Work",
-                group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-            ),
+        groups1_data = [
+            {
+                "resourceName": "contactGroups/g1",
+                "etag": "e1",
+                "name": "Family",
+                "groupType": "USER_CONTACT_GROUP",
+            },
+            {
+                "resourceName": "contactGroups/g2",
+                "etag": "e2",
+                "name": "Work",
+                "groupType": "USER_CONTACT_GROUP",
+            },
         ]
-        groups2 = [
-            ContactGroup(
-                resource_name="contactGroups/g3",
-                etag="e3",
-                name="Family",
-                group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-            ),
-            ContactGroup(
-                resource_name="contactGroups/g4",
-                etag="e4",
-                name="Friends",
-                group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-            ),
+        groups2_data = [
+            {
+                "resourceName": "contactGroups/g3",
+                "etag": "e3",
+                "name": "Family",
+                "groupType": "USER_CONTACT_GROUP",
+            },
+            {
+                "resourceName": "contactGroups/g4",
+                "etag": "e4",
+                "name": "Friends",
+                "groupType": "USER_CONTACT_GROUP",
+            },
         ]
 
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = groups1
-        mock_api2.list_contact_groups.return_value = groups2
+        mock_api1.list_contact_groups.return_value = (groups1_data, None)
+        mock_api2.list_contact_groups.return_value = (groups2_data, None)
 
         result = sync_engine.analyze()
 
@@ -1999,7 +2046,7 @@ class TestSyncEngineGroupPairAnalysis:
 
     def test_group_content_differs_first_sync(self, sync_engine):
         """Test update when content differs on first sync (no last hash)."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
         group1 = ContactGroup(
             resource_name="contactGroups/1",
@@ -2015,7 +2062,9 @@ class TestSyncEngineGroupPairAnalysis:
         )
 
         result = SyncResult()
-        sync_engine._analyze_group_pair_for_updates("family", group1, group2, None, result)
+        sync_engine._analyze_group_pair_for_updates(
+            "family", group1, group2, None, result
+        )
 
         # First sync: account1 wins
         assert len(result.groups_to_update_in_account2) == 1
@@ -2023,7 +2072,7 @@ class TestSyncEngineGroupPairAnalysis:
 
     def test_group_only_account1_changed(self, sync_engine):
         """Test update when only account 1 changed from last sync."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
         original = ContactGroup(
             resource_name="contactGroups/orig",
@@ -2049,7 +2098,9 @@ class TestSyncEngineGroupPairAnalysis:
         )
 
         result = SyncResult()
-        sync_engine._analyze_group_pair_for_updates("family", group1, group2, last_hash, result)
+        sync_engine._analyze_group_pair_for_updates(
+            "family", group1, group2, last_hash, result
+        )
 
         # Account 1 changed, so update account 2
         assert len(result.groups_to_update_in_account2) == 1
@@ -2057,7 +2108,7 @@ class TestSyncEngineGroupPairAnalysis:
 
     def test_group_only_account2_changed(self, sync_engine):
         """Test update when only account 2 changed from last sync."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
         original = ContactGroup(
             resource_name="contactGroups/orig",
@@ -2083,7 +2134,9 @@ class TestSyncEngineGroupPairAnalysis:
         )
 
         result = SyncResult()
-        sync_engine._analyze_group_pair_for_updates("family", group1, group2, last_hash, result)
+        sync_engine._analyze_group_pair_for_updates(
+            "family", group1, group2, last_hash, result
+        )
 
         # Account 2 changed, so update account 1
         assert len(result.groups_to_update_in_account1) == 1
@@ -2091,7 +2144,7 @@ class TestSyncEngineGroupPairAnalysis:
 
     def test_group_both_changed_account1_wins(self, sync_engine):
         """Test update when both accounts changed (account1 wins)."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
         original = ContactGroup(
             resource_name="contactGroups/orig",
@@ -2116,7 +2169,9 @@ class TestSyncEngineGroupPairAnalysis:
         )
 
         result = SyncResult()
-        sync_engine._analyze_group_pair_for_updates("family", group1, group2, last_hash, result)
+        sync_engine._analyze_group_pair_for_updates(
+            "family", group1, group2, last_hash, result
+        )
 
         # Conflict: account1 wins, update account2
         assert len(result.groups_to_update_in_account2) == 1
@@ -2142,8 +2197,8 @@ class TestSyncEngineGroupExecution:
             "resourceName": "contactGroups/new1",
             "etag": "new_etag",
         }
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2164,8 +2219,8 @@ class TestSyncEngineGroupExecution:
             "resourceName": "contactGroups/new2",
             "etag": "new_etag",
         }
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2179,12 +2234,14 @@ class TestSyncEngineGroupExecution:
     ):
         """Test execute updates groups in account 1."""
         result = SyncResult()
-        result.groups_to_update_in_account1.append(("contactGroups/target1", sample_group2))
+        result.groups_to_update_in_account1.append(
+            ("contactGroups/target1", sample_group2)
+        )
 
         mock_api1.get_contact_group.return_value = {"etag": "current_etag"}
         mock_api1.update_contact_group.return_value = {"etag": "updated_etag"}
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2199,12 +2256,14 @@ class TestSyncEngineGroupExecution:
     ):
         """Test execute updates groups in account 2."""
         result = SyncResult()
-        result.groups_to_update_in_account2.append(("contactGroups/target2", sample_group1))
+        result.groups_to_update_in_account2.append(
+            ("contactGroups/target2", sample_group1)
+        )
 
         mock_api2.get_contact_group.return_value = {"etag": "current_etag"}
         mock_api2.update_contact_group.return_value = {"etag": "updated_etag"}
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2220,8 +2279,8 @@ class TestSyncEngineGroupExecution:
         result = SyncResult()
         result.groups_to_delete_in_account1.append("contactGroups/to_delete")
 
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2239,8 +2298,8 @@ class TestSyncEngineGroupExecution:
         result = SyncResult()
         result.groups_to_delete_in_account2.append("contactGroups/to_delete")
 
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2255,7 +2314,7 @@ class TestSyncEngineGroupExecution:
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
         """Test execute continues when group create fails."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
 
         group1 = ContactGroup(
             resource_name="contactGroups/1",
@@ -2278,8 +2337,8 @@ class TestSyncEngineGroupExecution:
             PeopleAPIError("Failed"),
             {"resourceName": "contactGroups/new", "etag": "e_new"},
         ]
-        mock_api1.list_contact_groups.return_value = []
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2347,6 +2406,7 @@ class TestSyncEngineMembershipMapping:
 
     def test_map_memberships_mixed(self, sync_engine, mock_database):
         """Test mapping mixed memberships (some mapped, some system, some unknown)."""
+
         def mock_get_mapping(resource_name, account):
             if resource_name == "contactGroups/abc123":
                 return {
@@ -2396,14 +2456,23 @@ class TestSyncEngineGroupDeletions:
     """Tests for group deletion propagation in SyncEngine."""
 
     def test_analyze_propagates_group_deletion_to_account2(
-        self, sync_engine, mock_api1, mock_api2, mock_database, sample_group1
+        self,
+        sync_engine,
+        mock_api1,
+        mock_api2,
+        mock_database,
+        sample_group1,
+        sample_group1_api_data,
     ):
         """Test that deleted group in account1 is propagated to account2."""
         # Group exists only in account1, but there's a mapping for account2
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [sample_group1]
-        mock_api2.list_contact_groups.return_value = []  # Group deleted in account2
+        mock_api1.list_contact_groups.return_value = ([sample_group1_api_data], None)
+        mock_api2.list_contact_groups.return_value = (
+            [],
+            None,
+        )  # Group deleted in account2
 
         # Existing mapping shows it was synced before
         mock_database.get_all_group_mappings.return_value = [
@@ -2424,13 +2493,22 @@ class TestSyncEngineGroupDeletions:
         assert "contactGroups/abc123" in result.groups_to_delete_in_account1
 
     def test_analyze_propagates_group_deletion_to_account1(
-        self, sync_engine, mock_api1, mock_api2, mock_database, sample_group2
+        self,
+        sync_engine,
+        mock_api1,
+        mock_api2,
+        mock_database,
+        sample_group2,
+        sample_group2_api_data,
     ):
         """Test that deleted group in account2 is propagated to account1."""
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = []  # Group deleted in account1
-        mock_api2.list_contact_groups.return_value = [sample_group2]
+        mock_api1.list_contact_groups.return_value = (
+            [],
+            None,
+        )  # Group deleted in account1
+        mock_api2.list_contact_groups.return_value = ([sample_group2_api_data], None)
 
         mock_database.get_all_group_mappings.return_value = [
             {
@@ -2471,19 +2549,17 @@ class TestGroupSyncIntegration:
         self, integration_engine, mock_api1, mock_api2, real_database
     ):
         """Test that group sync creates group mappings in database."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
-
-        group = ContactGroup(
-            resource_name="contactGroups/source",
-            etag="e1",
-            name="Test Group",
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
+        group_data = {
+            "resourceName": "contactGroups/source",
+            "etag": "e1",
+            "name": "Test Group",
+            "groupType": "USER_CONTACT_GROUP",
+        }
 
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [group]
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([group_data], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api2.create_contact_group.return_value = {
             "resourceName": "contactGroups/created",
             "etag": "e_new",
@@ -2500,19 +2576,17 @@ class TestGroupSyncIntegration:
         self, integration_engine, mock_api1, mock_api2, real_database
     ):
         """Test that dry run doesn't create group mappings."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
-
-        group = ContactGroup(
-            resource_name="contactGroups/source",
-            etag="e1",
-            name="Test Group",
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
+        group_data = {
+            "resourceName": "contactGroups/source",
+            "etag": "e1",
+            "name": "Test Group",
+            "groupType": "USER_CONTACT_GROUP",
+        }
 
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [group]
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([group_data], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
 
         result = integration_engine.sync(dry_run=True)
 
@@ -2528,26 +2602,24 @@ class TestGroupSyncIntegration:
         self, integration_engine, mock_api1, mock_api2, real_database
     ):
         """Test bidirectional group sync."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
-
         # Different groups in each account
-        group1 = ContactGroup(
-            resource_name="contactGroups/g1",
-            etag="e1",
-            name="Work",
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
-        group2 = ContactGroup(
-            resource_name="contactGroups/g2",
-            etag="e2",
-            name="Friends",
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
+        group1_data = {
+            "resourceName": "contactGroups/g1",
+            "etag": "e1",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        group2_data = {
+            "resourceName": "contactGroups/g2",
+            "etag": "e2",
+            "name": "Friends",
+            "groupType": "USER_CONTACT_GROUP",
+        }
 
         mock_api1.list_contacts.return_value = ([], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
-        mock_api1.list_contact_groups.return_value = [group1]
-        mock_api2.list_contact_groups.return_value = [group2]
+        mock_api1.list_contact_groups.return_value = ([group1_data], None)
+        mock_api2.list_contact_groups.return_value = ([group2_data], None)
 
         result = integration_engine.analyze()
 
@@ -2561,14 +2633,12 @@ class TestGroupSyncIntegration:
         self, integration_engine, mock_api1, mock_api2, real_database
     ):
         """Test that groups are synced before contacts."""
-        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
-
-        group = ContactGroup(
-            resource_name="contactGroups/work",
-            etag="e1",
-            name="Work",
-            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
-        )
+        group_data = {
+            "resourceName": "contactGroups/work",
+            "etag": "e1",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+        }
         contact = Contact(
             "people/1",
             "e1",
@@ -2577,8 +2647,8 @@ class TestGroupSyncIntegration:
             memberships=["contactGroups/work"],
         )
 
-        mock_api1.list_contact_groups.return_value = [group]
-        mock_api2.list_contact_groups.return_value = []
+        mock_api1.list_contact_groups.return_value = ([group_data], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
         mock_api1.list_contacts.return_value = ([contact], "token1")
         mock_api2.list_contacts.return_value = ([], "token2")
 
@@ -2597,3 +2667,201 @@ class TestGroupSyncIntegration:
         # Verify order by checking the calls
         mock_api2.create_contact_group.assert_called_once()
         mock_api2.batch_create_contacts.assert_called_once()
+
+
+# ==============================================================================
+# Membership Sync in Contact Operations Tests
+# ==============================================================================
+
+
+class TestMembershipSyncInContactOperations:
+    """Tests for membership mapping during contact create and update operations."""
+
+    def test_execute_creates_maps_memberships(
+        self, sync_engine, mock_api1, mock_api2, mock_database
+    ):
+        """Test that contact creation maps memberships to target account."""
+        # Contact from account 1 with a group membership
+        contact = Contact(
+            "people/1",
+            "e1",
+            "John Doe",
+            emails=["john@example.com"],
+            memberships=["contactGroups/abc123"],
+        )
+
+        result = SyncResult()
+        result.to_create_in_account2.append(contact)
+
+        # Set up group mapping: account1's abc123 -> account2's xyz789
+        def mock_get_mapping(resource_name, account):
+            if resource_name == "contactGroups/abc123" and account == 1:
+                return {
+                    "group_name": "family",
+                    "account1_resource_name": "contactGroups/abc123",
+                    "account2_resource_name": "contactGroups/xyz789",
+                }
+            return None
+
+        mock_database.get_group_mapping_by_resource_name.side_effect = mock_get_mapping
+
+        # Mock the API to return the created contact
+        mock_api2.batch_create_contacts.return_value = [
+            Contact("people/new", "e_new", "John Doe", emails=["john@example.com"])
+        ]
+
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        sync_engine.execute(result)
+
+        # Verify batch_create_contacts was called
+        mock_api2.batch_create_contacts.assert_called_once()
+        # Get the contacts that were passed to batch_create_contacts
+        created_contacts = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(created_contacts) == 1
+        # Verify memberships were mapped
+        assert created_contacts[0].memberships == ["contactGroups/xyz789"]
+
+    def test_execute_creates_maps_memberships_reverse(
+        self, sync_engine, mock_api1, mock_api2, mock_database
+    ):
+        """Test that contact creation maps memberships when creating in account 1."""
+        # Contact from account 2 with a group membership
+        contact = Contact(
+            "people/2",
+            "e2",
+            "Jane Doe",
+            emails=["jane@example.com"],
+            memberships=["contactGroups/xyz789"],
+        )
+
+        result = SyncResult()
+        result.to_create_in_account1.append(contact)
+
+        # Set up group mapping: account2's xyz789 -> account1's abc123
+        def mock_get_mapping(resource_name, account):
+            if resource_name == "contactGroups/xyz789" and account == 2:
+                return {
+                    "group_name": "family",
+                    "account1_resource_name": "contactGroups/abc123",
+                    "account2_resource_name": "contactGroups/xyz789",
+                }
+            return None
+
+        mock_database.get_group_mapping_by_resource_name.side_effect = mock_get_mapping
+
+        mock_api1.batch_create_contacts.return_value = [
+            Contact("people/new", "e_new", "Jane Doe", emails=["jane@example.com"])
+        ]
+
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        sync_engine.execute(result)
+
+        # Verify memberships were mapped to account1's group
+        created_contacts = mock_api1.batch_create_contacts.call_args[0][0]
+        assert created_contacts[0].memberships == ["contactGroups/abc123"]
+
+    def test_execute_updates_maps_memberships(
+        self, sync_engine, mock_api1, mock_api2, mock_database
+    ):
+        """Test that contact update maps memberships to target account."""
+        # Source contact from account 1 with a group membership
+        source_contact = Contact(
+            "people/1",
+            "e1",
+            "John Doe",
+            emails=["john@example.com"],
+            memberships=["contactGroups/abc123"],
+        )
+
+        result = SyncResult()
+        result.to_update_in_account2.append(("people/target2", source_contact))
+
+        # Set up group mapping
+        def mock_get_mapping(resource_name, account):
+            if resource_name == "contactGroups/abc123" and account == 1:
+                return {
+                    "group_name": "family",
+                    "account1_resource_name": "contactGroups/abc123",
+                    "account2_resource_name": "contactGroups/xyz789",
+                }
+            return None
+
+        mock_database.get_group_mapping_by_resource_name.side_effect = mock_get_mapping
+
+        # Mock get_contact to return current contact
+        mock_api2.get_contact.return_value = Contact(
+            "people/target2", "current_etag", "John Doe"
+        )
+        mock_api2.batch_update_contacts.return_value = [
+            Contact("people/target2", "new_etag", "John Doe")
+        ]
+
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        sync_engine.execute(result)
+
+        # Verify batch_update_contacts was called
+        mock_api2.batch_update_contacts.assert_called_once()
+        # Get the updates that were passed
+        updates = mock_api2.batch_update_contacts.call_args[0][0]
+        assert len(updates) == 1
+        # Verify memberships were mapped
+        _resource_name, updated_contact = updates[0]
+        assert updated_contact.memberships == ["contactGroups/xyz789"]
+
+    def test_execute_creates_excludes_unmapped_memberships(
+        self, sync_engine, mock_api1, mock_api2, mock_database
+    ):
+        """Test that unmapped memberships are excluded during contact creation."""
+        contact = Contact(
+            "people/1",
+            "e1",
+            "John Doe",
+            emails=["john@example.com"],
+            memberships=[
+                "contactGroups/abc123",  # Has mapping
+                "contactGroups/unknown",  # No mapping
+                "contactGroups/myContacts",  # System group
+            ],
+        )
+
+        result = SyncResult()
+        result.to_create_in_account2.append(contact)
+
+        # Only abc123 has a mapping
+        def mock_get_mapping(resource_name, account):
+            if resource_name == "contactGroups/abc123" and account == 1:
+                return {
+                    "group_name": "family",
+                    "account1_resource_name": "contactGroups/abc123",
+                    "account2_resource_name": "contactGroups/xyz789",
+                }
+            return None
+
+        mock_database.get_group_mapping_by_resource_name.side_effect = mock_get_mapping
+
+        mock_api2.batch_create_contacts.return_value = [
+            Contact("people/new", "e_new", "John Doe")
+        ]
+
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        sync_engine.execute(result)
+
+        created_contacts = mock_api2.batch_create_contacts.call_args[0][0]
+        # Only the mapped group should be included
+        assert created_contacts[0].memberships == ["contactGroups/xyz789"]

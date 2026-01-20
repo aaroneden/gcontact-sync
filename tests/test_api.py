@@ -1380,9 +1380,7 @@ class TestDeleteContactGroup:
         """Test delete_contact_group with delete_contacts flag."""
         api._service.contactGroups().delete().execute.return_value = {}
 
-        result = api.delete_contact_group(
-            "contactGroups/abc123", delete_contacts=True
-        )
+        result = api.delete_contact_group("contactGroups/abc123", delete_contacts=True)
 
         assert result is True
         api._service.contactGroups().delete.assert_called()

@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from gcontact_sync.storage.db import SyncDatabase
@@ -50,7 +50,7 @@ class LLMMatcher:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         database: Optional["SyncDatabase"] = None,
     ):
         """
@@ -61,10 +61,10 @@ class LLMMatcher:
             database: Optional SyncDatabase for caching LLM decisions.
         """
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self._client = None
+        self._client: Any = None
         self._database = database
 
-    def _get_client(self):  # type: ignore[no-untyped-def]
+    def _get_client(self) -> Any:
         """Lazy-load the Anthropic client. Returns anthropic.Anthropic instance."""
         if self._client is None:
             if not self.api_key:
@@ -322,7 +322,7 @@ Only include candidates that ARE matches. Empty array if no matches."""
 
     def _get_cached_decision(
         self, contact1: "Contact", contact2: "Contact"
-    ) -> Optional[LLMMatchDecision]:
+    ) -> LLMMatchDecision | None:
         """
         Check if we have a valid cached decision for this contact pair.
 
