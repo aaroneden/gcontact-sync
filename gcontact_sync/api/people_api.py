@@ -923,3 +923,127 @@ class PeopleAPI:
                     f"Please refresh and try again."
                 ) from e
             raise
+
+    def delete_contact_group(
+        self, resource_name: str, delete_contacts: bool = False
+    ) -> bool:
+        """
+        Delete a contact group.
+
+        Args:
+            resource_name: Group's resource name (e.g., "contactGroups/abc123")
+            delete_contacts: If True, also delete the contacts in the group.
+                           If False (default), contacts are preserved but
+                           removed from the group.
+
+        Returns:
+            True if deletion succeeded
+
+        Raises:
+            PeopleAPIError: If deletion fails (except 404, which returns True)
+
+        Note:
+            System groups (like myContacts) cannot be deleted.
+        """
+        logger.debug(f"Deleting contact group: {resource_name}")
+
+        def execute_delete() -> Any:
+            return (
+                self.service.contactGroups()
+                .delete(
+                    resourceName=resource_name,
+                    deleteContacts=delete_contacts,
+                )
+                .execute()
+            )
+
+        try:
+            self._retry_with_backoff(
+                execute_delete, f"delete_contact_group({resource_name})"
+            )
+            logger.info(f"Deleted contact group: {resource_name}")
+            return True
+
+        except PeopleAPIError as e:
+            # Check if the underlying cause was a 404 (already deleted)
+            cause = e.__cause__
+            if cause and isinstance(cause, HttpError) and cause.resp.status == 404:
+                logger.debug(f"Contact group already deleted: {resource_name}")
+                return True
+            raise
+
+    def modify_group_members(
+        self,
+        resource_name: str,
+        add_resource_names: Optional[list[str]] = None,
+        remove_resource_names: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Modify the members of a contact group.
+
+        Add or remove contacts from a group in a single operation.
+        This is more efficient than individual add/remove operations.
+
+        Args:
+            resource_name: Group's resource name (e.g., "contactGroups/abc123")
+            add_resource_names: List of contact resource names to add to the group
+                              (e.g., ["people/c12345", "people/c67890"])
+            remove_resource_names: List of contact resource names to remove from
+                                  the group
+
+        Returns:
+            Dict with 'canNotRemoveLastContactGroupResourceNames' list (contacts
+            that could not be removed because they must belong to at least one group)
+            and 'notFoundResourceNames' list (contacts that were not found)
+
+        Raises:
+            PeopleAPIError: If modification fails (e.g., 404 group not found)
+            ValueError: If both add and remove lists are empty
+
+        Note:
+            - A contact can be added to at most 25 groups
+            - System groups cannot be modified through this method
+            - Maximum of 1000 contacts can be added/removed per call
+        """
+        if not add_resource_names and not remove_resource_names:
+            raise ValueError(
+                "At least one of add_resource_names or remove_resource_names "
+                "must be provided"
+            )
+
+        add_count = len(add_resource_names) if add_resource_names else 0
+        remove_count = len(remove_resource_names) if remove_resource_names else 0
+        logger.debug(
+            f"Modifying group members for {resource_name}: "
+            f"adding {add_count}, removing {remove_count}"
+        )
+
+        body: dict[str, Any] = {}
+        if add_resource_names:
+            body["resourceNamesToAdd"] = add_resource_names
+        if remove_resource_names:
+            body["resourceNamesToRemove"] = remove_resource_names
+
+        def execute_modify() -> Any:
+            return (
+                self.service.contactGroups()
+                .members()
+                .modify(resourceName=resource_name, body=body)
+                .execute()
+            )
+
+        try:
+            response = self._retry_with_backoff(
+                execute_modify, f"modify_group_members({resource_name})"
+            )
+            logger.info(
+                f"Modified group members for {resource_name}: "
+                f"added {add_count}, removed {remove_count}"
+            )
+            return response
+        except HttpError as e:
+            if e.resp.status == 404:
+                raise PeopleAPIError(
+                    f"Contact group not found: {resource_name}"
+                ) from e
+            raise
