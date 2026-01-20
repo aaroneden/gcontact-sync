@@ -808,6 +808,111 @@ def clear_auth_command(ctx: click.Context, account: Optional[str], yes: bool) ->
         sys.exit(1)
 
 
+# =============================================================================
+# List-Groups Command
+# =============================================================================
+
+
+@cli.command("list-groups")
+@click.option(
+    "--account",
+    "-a",
+    required=True,
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to list groups from (account1 or account2).",
+)
+@click.option(
+    "--all",
+    "-A",
+    "show_all",
+    is_flag=True,
+    help="Show all groups including system groups.",
+)
+@click.pass_context
+def list_groups_command(ctx: click.Context, account: str, show_all: bool) -> None:
+    """
+    List contact groups for an account.
+
+    Displays all user-created contact groups (labels) for the specified
+    Google account. System groups (myContacts, starred) are hidden by default.
+
+    Examples:
+
+        # List groups for account1
+        gcontact-sync list-groups --account account1
+
+        # List all groups including system groups
+        gcontact-sync list-groups --account account1 --all
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    verbose = ctx.obj["verbose"]
+
+    try:
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        # Check authentication
+        creds = auth.get_credentials(account)
+        if not creds:
+            click.echo(
+                click.style(f"Error: {account} is not authenticated.", fg="red"),
+                err=True,
+            )
+            click.echo(f"Run: gcontact-sync auth --account {account}", err=True)
+            sys.exit(1)
+
+        # Get account email for display
+        account_email = auth.get_account_email(account) or account
+
+        click.echo(f"Listing contact groups for {account_email}...")
+        click.echo()
+
+        # Initialize API and list groups
+        from gcontact_sync.api.people_api import PeopleAPI
+        from gcontact_sync.sync.group import ContactGroup
+
+        api = PeopleAPI(credentials=creds)
+        groups_data, _ = api.list_contact_groups()
+
+        # Parse and filter groups
+        groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+        if not show_all:
+            # Filter to user groups only
+            groups = [g for g in groups if g.is_user_group()]
+
+        if not groups:
+            if show_all:
+                click.echo("No contact groups found.")
+            else:
+                click.echo("No user contact groups found.")
+                click.echo("Use --all to include system groups.")
+            return
+
+        # Display groups
+        click.echo(f"{'Name':<40} {'Type':<20} {'Members':<10}")
+        click.echo("-" * 70)
+
+        for group in sorted(groups, key=lambda g: g.name.lower()):
+            group_type = "User" if group.is_user_group() else "System"
+            click.echo(f"{group.name:<40} {group_type:<20} {group.member_count:<10}")
+
+        click.echo()
+        click.echo(f"Total: {len(groups)} group(s)")
+
+        if verbose:
+            click.echo()
+            click.echo("Resource names:")
+            for group in sorted(groups, key=lambda g: g.name.lower()):
+                click.echo(f"  {group.name}: {group.resource_name}")
+
+    except Exception as e:
+        logger.exception(f"Failed to list groups: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
