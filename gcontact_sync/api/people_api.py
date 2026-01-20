@@ -27,6 +27,7 @@ PERSON_FIELDS = ",".join(
         "phoneNumbers",
         "organizations",
         "biographies",
+        "photos",
         "metadata",
     ]
 )
@@ -39,6 +40,7 @@ UPDATE_PERSON_FIELDS = ",".join(
         "phoneNumbers",
         "organizations",
         "biographies",
+        "photos",
     ]
 )
 
