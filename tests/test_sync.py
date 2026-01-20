@@ -815,7 +815,7 @@ class TestSyncResult:
         assert "Sync Summary" in summary
         assert "Account 1: 50 contacts" in summary
         assert "Account 2: 45 contacts" in summary
-        assert "Changes to apply" in summary
+        assert "Contact changes to apply" in summary
 
     def test_summary_with_changes(self, sample_contact1, sample_contact2):
         """Test summary with various changes."""

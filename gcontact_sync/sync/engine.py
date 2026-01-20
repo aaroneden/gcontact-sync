@@ -20,6 +20,7 @@ from gcontact_sync.sync.conflict import (
     ConflictStrategy,
 )
 from gcontact_sync.sync.contact import Contact
+from gcontact_sync.sync.group import ContactGroup
 from gcontact_sync.utils.logging import setup_matching_logger
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class SyncStats:
     Tracks counts of all operations performed during sync.
     """
 
+    # Contact statistics
     contacts_in_account1: int = 0
     contacts_in_account2: int = 0
     created_in_account1: int = 0
@@ -45,13 +47,23 @@ class SyncStats:
     skipped_invalid: int = 0
     errors: int = 0
 
+    # Group statistics
+    groups_in_account1: int = 0
+    groups_in_account2: int = 0
+    groups_created_in_account1: int = 0
+    groups_created_in_account2: int = 0
+    groups_updated_in_account1: int = 0
+    groups_updated_in_account2: int = 0
+    groups_deleted_in_account1: int = 0
+    groups_deleted_in_account2: int = 0
+
 
 @dataclass
 class SyncResult:
     """
     Result of a sync operation.
 
-    Contains lists of contacts to sync and statistics.
+    Contains lists of contacts and groups to sync and statistics.
     """
 
     # Contacts to create in each account
@@ -62,9 +74,25 @@ class SyncResult:
     to_update_in_account1: list[tuple[str, Contact]] = field(default_factory=list)
     to_update_in_account2: list[tuple[str, Contact]] = field(default_factory=list)
 
-    # Resource names to delete
+    # Contact resource names to delete
     to_delete_in_account1: list[str] = field(default_factory=list)
     to_delete_in_account2: list[str] = field(default_factory=list)
+
+    # Groups to create in each account
+    groups_to_create_in_account1: list[ContactGroup] = field(default_factory=list)
+    groups_to_create_in_account2: list[ContactGroup] = field(default_factory=list)
+
+    # Groups to update (resource_name, source_group) pairs
+    groups_to_update_in_account1: list[tuple[str, ContactGroup]] = field(
+        default_factory=list
+    )
+    groups_to_update_in_account2: list[tuple[str, ContactGroup]] = field(
+        default_factory=list
+    )
+
+    # Group resource names to delete
+    groups_to_delete_in_account1: list[str] = field(default_factory=list)
+    groups_to_delete_in_account2: list[str] = field(default_factory=list)
 
     # Conflicts that were resolved
     conflicts: list[ConflictResult] = field(default_factory=list)
@@ -72,11 +100,44 @@ class SyncResult:
     # Matched contacts (for debug output): list of (contact1, contact2) pairs
     matched_contacts: list[tuple[Contact, Contact]] = field(default_factory=list)
 
+    # Matched groups (for debug output): list of (group1, group2) pairs
+    matched_groups: list[tuple[ContactGroup, ContactGroup]] = field(default_factory=list)
+
     # Statistics
     stats: SyncStats = field(default_factory=SyncStats)
 
     def has_changes(self) -> bool:
         """Check if there are any changes to apply."""
+        return (
+            # Contact changes
+            bool(self.to_create_in_account1)
+            or bool(self.to_create_in_account2)
+            or bool(self.to_update_in_account1)
+            or bool(self.to_update_in_account2)
+            or bool(self.to_delete_in_account1)
+            or bool(self.to_delete_in_account2)
+            # Group changes
+            or bool(self.groups_to_create_in_account1)
+            or bool(self.groups_to_create_in_account2)
+            or bool(self.groups_to_update_in_account1)
+            or bool(self.groups_to_update_in_account2)
+            or bool(self.groups_to_delete_in_account1)
+            or bool(self.groups_to_delete_in_account2)
+        )
+
+    def has_group_changes(self) -> bool:
+        """Check if there are any group changes to apply."""
+        return (
+            bool(self.groups_to_create_in_account1)
+            or bool(self.groups_to_create_in_account2)
+            or bool(self.groups_to_update_in_account1)
+            or bool(self.groups_to_update_in_account2)
+            or bool(self.groups_to_delete_in_account1)
+            or bool(self.groups_to_delete_in_account2)
+        )
+
+    def has_contact_changes(self) -> bool:
+        """Check if there are any contact changes to apply."""
         return (
             bool(self.to_create_in_account1)
             or bool(self.to_create_in_account2)
@@ -101,17 +162,42 @@ class SyncResult:
         """
         lines = [
             "Sync Summary:",
-            f"  {account1_label}: {self.stats.contacts_in_account1} contacts",
-            f"  {account2_label}: {self.stats.contacts_in_account2} contacts",
+            f"  {account1_label}: {self.stats.contacts_in_account1} contacts, "
+            f"{self.stats.groups_in_account1} groups",
+            f"  {account2_label}: {self.stats.contacts_in_account2} contacts, "
+            f"{self.stats.groups_in_account2} groups",
             "",
-            "Changes to apply:",
+        ]
+
+        # Group changes (sync groups before contacts)
+        if self.has_group_changes():
+            lines.extend([
+                "Group changes to apply:",
+                f"  Create groups in {account1_label}: "
+                f"{len(self.groups_to_create_in_account1)}",
+                f"  Create groups in {account2_label}: "
+                f"{len(self.groups_to_create_in_account2)}",
+                f"  Update groups in {account1_label}: "
+                f"{len(self.groups_to_update_in_account1)}",
+                f"  Update groups in {account2_label}: "
+                f"{len(self.groups_to_update_in_account2)}",
+                f"  Delete groups in {account1_label}: "
+                f"{len(self.groups_to_delete_in_account1)}",
+                f"  Delete groups in {account2_label}: "
+                f"{len(self.groups_to_delete_in_account2)}",
+                "",
+            ])
+
+        # Contact changes
+        lines.extend([
+            "Contact changes to apply:",
             f"  Create in {account1_label}: {len(self.to_create_in_account1)}",
             f"  Create in {account2_label}: {len(self.to_create_in_account2)}",
             f"  Update in {account1_label}: {len(self.to_update_in_account1)}",
             f"  Update in {account2_label}: {len(self.to_update_in_account2)}",
             f"  Delete in {account1_label}: {len(self.to_delete_in_account1)}",
             f"  Delete in {account2_label}: {len(self.to_delete_in_account2)}",
-        ]
+        ])
 
         if self.conflicts:
             lines.append(f"  Conflicts resolved: {len(self.conflicts)}")
@@ -250,9 +336,12 @@ class SyncEngine:
 
     def analyze(self, full_sync: bool = False) -> SyncResult:
         """
-        Analyze contacts in both accounts and determine sync operations.
+        Analyze groups and contacts in both accounts and determine sync operations.
 
-        Uses a multi-tier matching approach:
+        Groups are analyzed BEFORE contacts to ensure group mappings exist
+        when contact memberships need to be translated.
+
+        Uses a multi-tier matching approach for contacts:
         1. Fast key-based matching for exact matches
         2. Multi-tier fuzzy/LLM matching for remaining contacts
 
@@ -262,9 +351,13 @@ class SyncEngine:
         Returns:
             SyncResult containing all planned sync operations
         """
-        logger.info("Analyzing contacts for sync")
+        logger.info("Analyzing groups and contacts for sync")
 
         result = SyncResult()
+
+        # === ANALYZE GROUPS FIRST (before contacts) ===
+        # Groups must be synced first so memberships can be mapped correctly
+        self._analyze_groups(result)
 
         # Fetch contacts from both accounts
         contacts1, sync_token1 = self._fetch_contacts(self.api1, ACCOUNT_1, full_sync)
@@ -510,6 +603,357 @@ class SyncEngine:
                     break  # Move to next contact1
 
         return matches_found
+
+    # =========================================================================
+    # Group Sync Analysis Methods
+    # =========================================================================
+
+    def _analyze_groups(self, result: SyncResult) -> None:
+        """
+        Analyze contact groups in both accounts and determine sync operations.
+
+        Groups are synced BEFORE contacts to ensure group mappings exist
+        when contact memberships need to be translated.
+
+        Args:
+            result: SyncResult to populate with group sync operations
+        """
+        logger.info("Analyzing contact groups for sync")
+        mlog = getattr(self, "_matching_logger", None)
+
+        if mlog:
+            mlog.info("")
+            mlog.info("=" * 60)
+            mlog.info("GROUP SYNC ANALYSIS")
+            mlog.info("=" * 60)
+
+        # Fetch groups from both accounts
+        groups1 = self._fetch_groups(self.api1, ACCOUNT_1)
+        groups2 = self._fetch_groups(self.api2, ACCOUNT_2)
+
+        result.stats.groups_in_account1 = len(groups1)
+        result.stats.groups_in_account2 = len(groups2)
+
+        logger.info(
+            f"Fetched {len(groups1)} groups from {self.account1_email}, "
+            f"{len(groups2)} groups from {self.account2_email}"
+        )
+
+        if mlog:
+            mlog.info(f"Groups in {self.account1_email}: {len(groups1)}")
+            mlog.info(f"Groups in {self.account2_email}: {len(groups2)}")
+
+        # Build indexes by matching key (normalized name)
+        index1 = self._build_group_index(groups1, self.account1_email)
+        index2 = self._build_group_index(groups2, self.account2_email)
+
+        # Build lookup by resource_name for fast access
+        groups1_by_resource: dict[str, ContactGroup] = {
+            g.resource_name: g for g in groups1 if g.is_syncable()
+        }
+        groups2_by_resource: dict[str, ContactGroup] = {
+            g.resource_name: g for g in groups2 if g.is_syncable()
+        }
+
+        matched_from_1: set[str] = set()  # resource_names matched from account 1
+        matched_from_2: set[str] = set()  # resource_names matched from account 2
+
+        # === PHASE 0: Use existing database group mappings ===
+        if mlog:
+            mlog.info("")
+            mlog.info("-" * 40)
+            mlog.info("GROUP PHASE 0: DATABASE MAPPING LOOKUP")
+            mlog.info("-" * 40)
+
+        existing_mappings = self.database.get_all_group_mappings()
+        if mlog:
+            mlog.info(f"  Found {len(existing_mappings)} existing group mappings")
+
+        for mapping in existing_mappings:
+            res1 = mapping.get("account1_resource_name")
+            res2 = mapping.get("account2_resource_name")
+            group_name = mapping.get("group_name")
+            last_synced_hash = mapping.get("last_synced_hash")
+
+            group1 = groups1_by_resource.get(res1) if res1 else None
+            group2 = groups2_by_resource.get(res2) if res2 else None
+
+            if group1 and group2:
+                # Both groups still exist - they remain paired
+                matched_from_1.add(group1.resource_name)
+                matched_from_2.add(group2.resource_name)
+
+                if mlog:
+                    mlog.info(f"EXISTING GROUP PAIR: {group1.name}")
+                    mlog.info(f"  account1: {res1}")
+                    mlog.info(f"  account2: {res2}")
+
+                # Track as matched pair
+                result.matched_groups.append((group1, group2))
+
+                # Check if updates are needed
+                self._analyze_group_pair_for_updates(
+                    group_name, group1, group2, last_synced_hash, result
+                )
+
+            elif group1 and not group2:
+                # Group 2 was deleted - propagate deletion to account 1
+                if mlog:
+                    mlog.info(
+                        f"GROUP MAPPING ORPHANED (account2 deleted): {group1.name}"
+                    )
+                result.groups_to_delete_in_account1.append(group1.resource_name)
+                self.database.delete_group_mapping(group_name)
+
+            elif group2 and not group1:
+                # Group 1 was deleted - propagate deletion to account 2
+                if mlog:
+                    mlog.info(
+                        f"GROUP MAPPING ORPHANED (account1 deleted): {group2.name}"
+                    )
+                result.groups_to_delete_in_account2.append(group2.resource_name)
+                self.database.delete_group_mapping(group_name)
+
+        # === PHASE 1: Key-based matching for new groups ===
+        if mlog:
+            mlog.info("")
+            mlog.info("-" * 40)
+            mlog.info("GROUP PHASE 1: KEY-BASED MATCHING (new groups)")
+            mlog.info("-" * 40)
+
+        all_keys = set(index1.keys()) | set(index2.keys())
+
+        for key in all_keys:
+            group1 = index1.get(key)
+            group2 = index2.get(key)
+
+            # Skip groups already matched in Phase 0
+            if group1 and group1.resource_name in matched_from_1:
+                continue
+            if group2 and group2.resource_name in matched_from_2:
+                continue
+
+            if group1 and group2:
+                # Key-based match found for new groups
+                matched_from_1.add(group1.resource_name)
+                matched_from_2.add(group2.resource_name)
+                result.matched_groups.append((group1, group2))
+
+                if mlog:
+                    mlog.info(f"MATCHED GROUP (by key): {group1.name}")
+                    mlog.info(f"  account1: {group1.resource_name}")
+                    mlog.info(f"  account2: {group2.resource_name}")
+
+                # Check if updates are needed (first sync of this pair)
+                self._analyze_group_pair_for_updates(key, group1, group2, None, result)
+
+            elif group1 and not group2:
+                # Group only in account 1 - create in account 2
+                result.groups_to_create_in_account2.append(group1)
+                if mlog:
+                    mlog.info(f"NEW GROUP (account1 only): {group1.name}")
+                    mlog.info(f"  -> Will create in {self.account2_email}")
+
+            elif group2 and not group1:
+                # Group only in account 2 - create in account 1
+                result.groups_to_create_in_account1.append(group2)
+                if mlog:
+                    mlog.info(f"NEW GROUP (account2 only): {group2.name}")
+                    mlog.info(f"  -> Will create in {self.account1_email}")
+
+        # Log group sync summary
+        if mlog:
+            mlog.info("")
+            mlog.info("-" * 40)
+            mlog.info("GROUP MATCHING SUMMARY")
+            mlog.info(f"  Matched group pairs: {len(result.matched_groups)}")
+            mlog.info(
+                f"  Groups to create in account1: "
+                f"{len(result.groups_to_create_in_account1)}"
+            )
+            mlog.info(
+                f"  Groups to create in account2: "
+                f"{len(result.groups_to_create_in_account2)}"
+            )
+            mlog.info(
+                f"  Groups to update in account1: "
+                f"{len(result.groups_to_update_in_account1)}"
+            )
+            mlog.info(
+                f"  Groups to update in account2: "
+                f"{len(result.groups_to_update_in_account2)}"
+            )
+            mlog.info(
+                f"  Groups to delete in account1: "
+                f"{len(result.groups_to_delete_in_account1)}"
+            )
+            mlog.info(
+                f"  Groups to delete in account2: "
+                f"{len(result.groups_to_delete_in_account2)}"
+            )
+            mlog.info("-" * 40)
+            mlog.info("")
+
+        logger.info(
+            f"Group analysis complete: "
+            f"matched={len(result.matched_groups)}, "
+            f"to_create_in_1={len(result.groups_to_create_in_account1)}, "
+            f"to_create_in_2={len(result.groups_to_create_in_account2)}"
+        )
+
+    def _fetch_groups(self, api: PeopleAPI, account_id: str) -> list[ContactGroup]:
+        """
+        Fetch contact groups from an account.
+
+        Args:
+            api: PeopleAPI instance for the account
+            account_id: Account identifier
+
+        Returns:
+            List of ContactGroup objects (only user groups, not system groups)
+        """
+        try:
+            groups = api.list_contact_groups()
+            # Filter to only syncable groups (user groups with names, not deleted)
+            return [g for g in groups if g.is_syncable()]
+        except PeopleAPIError as e:
+            logger.error(f"Failed to fetch groups from {account_id}: {e}")
+            return []
+
+    def _build_group_index(
+        self, groups: list[ContactGroup], account_label: str = "unknown"
+    ) -> dict[str, ContactGroup]:
+        """
+        Build an index of groups by matching key (normalized name).
+
+        Args:
+            groups: List of groups to index
+            account_label: Label for the account (for logging)
+
+        Returns:
+            Dictionary mapping matching keys to groups
+        """
+        index: dict[str, ContactGroup] = {}
+        mlog = getattr(self, "_matching_logger", None)
+
+        if mlog:
+            mlog.debug(f"Building group index for {account_label}")
+            mlog.debug(f"Processing {len(groups)} groups")
+
+        for group in groups:
+            # Skip system groups and deleted groups
+            if not group.is_syncable():
+                if mlog:
+                    mlog.debug(f"SKIPPED (not syncable): {group.name}")
+                continue
+
+            key = group.matching_key()
+
+            # Handle duplicate keys (same group name normalized differently)
+            if key in index:
+                existing = index[key]
+                # Keep the one with more members or more recent update
+                if group.member_count > existing.member_count:
+                    if mlog:
+                        mlog.debug(
+                            f"DUPLICATE KEY - keeping one with more members: "
+                            f"{group.name} ({group.member_count} members)"
+                        )
+                    index[key] = group
+                else:
+                    if mlog:
+                        mlog.debug(
+                            f"DUPLICATE KEY - keeping existing: {existing.name}"
+                        )
+            else:
+                index[key] = group
+                if mlog:
+                    mlog.debug(f"  INDEXED: {group.name} -> key: {key}")
+
+        if mlog:
+            mlog.debug(
+                f"Group index complete: {len(index)} unique groups for {account_label}"
+            )
+
+        return index
+
+    def _analyze_group_pair_for_updates(
+        self,
+        matching_key: str,
+        group1: ContactGroup,
+        group2: ContactGroup,
+        last_synced_hash: Optional[str],
+        result: SyncResult,
+    ) -> None:
+        """
+        Analyze a matched group pair to determine if updates are needed.
+
+        For groups, the only modifiable field is the name. If names differ
+        and there's a previous sync hash, we can determine which side changed.
+
+        Args:
+            matching_key: The normalized group name (matching key)
+            group1: Group from account 1
+            group2: Group from account 2
+            last_synced_hash: Content hash from last sync (if available)
+            result: SyncResult to populate with update actions
+        """
+        mlog = getattr(self, "_matching_logger", None)
+        hash1 = group1.content_hash()
+        hash2 = group2.content_hash()
+
+        # Same content - no sync needed
+        if hash1 == hash2:
+            if mlog:
+                mlog.debug(f"  Group in sync: {group1.name}")
+            return
+
+        # Content differs - determine which side changed
+        if mlog:
+            mlog.info(f"  Group content differs: {group1.name} vs {group2.name}")
+            mlog.info(f"    hash1: {hash1[:16]}...")
+            mlog.info(f"    hash2: {hash2[:16]}...")
+            if last_synced_hash:
+                mlog.info(f"    last_synced: {last_synced_hash[:16]}...")
+
+        if last_synced_hash:
+            group1_changed = hash1 != last_synced_hash
+            group2_changed = hash2 != last_synced_hash
+
+            if group1_changed and not group2_changed:
+                # Only account 1 changed - update account 2
+                result.groups_to_update_in_account2.append(
+                    (group2.resource_name, group1)
+                )
+                if mlog:
+                    mlog.info(
+                        f"  -> Update in {self.account2_email} "
+                        "(account1 changed, account2 unchanged)"
+                    )
+            elif group2_changed and not group1_changed:
+                # Only account 2 changed - update account 1
+                result.groups_to_update_in_account1.append(
+                    (group1.resource_name, group2)
+                )
+                if mlog:
+                    mlog.info(
+                        f"  -> Update in {self.account1_email} "
+                        "(account2 changed, account1 unchanged)"
+                    )
+            else:
+                # Both changed or unclear - account1 wins (last-write-wins fallback)
+                result.groups_to_update_in_account2.append(
+                    (group2.resource_name, group1)
+                )
+                if mlog:
+                    mlog.info(
+                        "  -> Conflict: both changed, account1 wins (updating account2)"
+                    )
+        else:
+            # No previous hash - first sync, account1 wins as default
+            result.groups_to_update_in_account2.append((group2.resource_name, group1))
+            if mlog:
+                mlog.info("  -> First sync of pair, account1 wins (updating account2)")
 
     def execute(self, result: SyncResult) -> None:
         """
