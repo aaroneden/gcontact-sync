@@ -362,12 +362,13 @@ def sync_command(
     ctx: click.Context, dry_run: bool, full: bool, strategy: str, debug: bool
 ) -> None:
     """
-    Synchronize contacts between accounts.
+    Synchronize contacts and groups between accounts.
 
     Performs bidirectional sync to ensure both Google accounts have
-    identical contacts. Contacts only in one account are copied to
-    the other. Conflicting edits are resolved using the configured
-    strategy.
+    identical contacts and contact groups (labels). Groups are synced
+    first to ensure membership mappings work correctly. Contacts and
+    groups only in one account are copied to the other. Conflicting
+    edits are resolved using the configured strategy.
 
     Examples:
 
@@ -468,7 +469,7 @@ def sync_command(
 
         # Run sync
         mode = "Analyzing" if dry_run else "Synchronizing"
-        click.echo(f"\n{mode} contacts...")
+        click.echo(f"\n{mode} contacts and groups...")
 
         result = engine.sync(dry_run=dry_run, full_sync=full)
 
@@ -493,6 +494,7 @@ def sync_command(
                     _show_detailed_changes(result, account1_email, account2_email)
             else:
                 click.echo(click.style("\nSync completed successfully!", fg="green"))
+                # Contact stats
                 created = (
                     result.stats.created_in_account1 + result.stats.created_in_account2
                 )
@@ -502,10 +504,32 @@ def sync_command(
                 deleted = (
                     result.stats.deleted_in_account1 + result.stats.deleted_in_account2
                 )
-                logger.info(
-                    f"Sync completed: created {created}, "
-                    f"updated {updated}, deleted {deleted}"
+                # Group stats
+                groups_created = (
+                    result.stats.groups_created_in_account1
+                    + result.stats.groups_created_in_account2
                 )
+                groups_updated = (
+                    result.stats.groups_updated_in_account1
+                    + result.stats.groups_updated_in_account2
+                )
+                groups_deleted = (
+                    result.stats.groups_deleted_in_account1
+                    + result.stats.groups_deleted_in_account2
+                )
+                # Log summary including groups if any group operations occurred
+                if groups_created or groups_updated or groups_deleted:
+                    logger.info(
+                        f"Sync completed: groups (created={groups_created}, "
+                        f"updated={groups_updated}, deleted={groups_deleted}), "
+                        f"contacts (created={created}, updated={updated}, "
+                        f"deleted={deleted})"
+                    )
+                else:
+                    logger.info(
+                        f"Sync completed: created {created}, "
+                        f"updated {updated}, deleted {deleted}"
+                    )
 
                 if result.stats.errors > 0:
                     click.echo(
@@ -551,6 +575,62 @@ def _show_detailed_changes(
         account2_label: Label for account 2 (email or 'account2')
     """
     click.echo("\n=== Detailed Changes ===")
+
+    # Show group changes first (since groups sync before contacts)
+    if result.has_group_changes():
+        click.echo("\n--- Group Changes ---")
+
+        if result.groups_to_create_in_account1:
+            click.echo(f"\nGroups to create in {account1_label}:")
+            for group in result.groups_to_create_in_account1[:10]:
+                click.echo(f"  + {group.name}")
+            if len(result.groups_to_create_in_account1) > 10:
+                remaining = len(result.groups_to_create_in_account1) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_create_in_account2:
+            click.echo(f"\nGroups to create in {account2_label}:")
+            for group in result.groups_to_create_in_account2[:10]:
+                click.echo(f"  + {group.name}")
+            if len(result.groups_to_create_in_account2) > 10:
+                remaining = len(result.groups_to_create_in_account2) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_update_in_account1:
+            click.echo(f"\nGroups to update in {account1_label}:")
+            for _resource_name, group in result.groups_to_update_in_account1[:10]:
+                click.echo(f"  ~ {group.name}")
+            if len(result.groups_to_update_in_account1) > 10:
+                remaining = len(result.groups_to_update_in_account1) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_update_in_account2:
+            click.echo(f"\nGroups to update in {account2_label}:")
+            for _resource_name, group in result.groups_to_update_in_account2[:10]:
+                click.echo(f"  ~ {group.name}")
+            if len(result.groups_to_update_in_account2) > 10:
+                remaining = len(result.groups_to_update_in_account2) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_delete_in_account1:
+            click.echo(f"\nGroups to delete in {account1_label}:")
+            for resource_name in result.groups_to_delete_in_account1[:10]:
+                click.echo(f"  - {resource_name}")
+            if len(result.groups_to_delete_in_account1) > 10:
+                remaining = len(result.groups_to_delete_in_account1) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_delete_in_account2:
+            click.echo(f"\nGroups to delete in {account2_label}:")
+            for resource_name in result.groups_to_delete_in_account2[:10]:
+                click.echo(f"  - {resource_name}")
+            if len(result.groups_to_delete_in_account2) > 10:
+                remaining = len(result.groups_to_delete_in_account2) - 10
+                click.echo(f"  ... and {remaining} more")
+
+    # Show contact changes
+    if result.has_contact_changes():
+        click.echo("\n--- Contact Changes ---")
 
     if result.to_create_in_account1:
         click.echo(f"\nTo create in {account1_label}:")
@@ -613,6 +693,46 @@ def _show_debug_info(
     click.echo("\n" + "=" * 50)
     click.echo(click.style("DEBUG INFO", fg="cyan", bold=True))
     click.echo("=" * 50)
+
+    # Show group debug info first (since groups sync before contacts)
+    matched_groups = result.matched_groups
+    if matched_groups or result.has_group_changes():
+        click.echo(
+            f"\n{click.style('Matched Groups:', fg='green')} {len(matched_groups)} pairs"
+        )
+
+        if matched_groups:
+            group_sample_size = min(5, len(matched_groups))
+            group_sample = random.sample(matched_groups, group_sample_size)
+            click.echo(f"\nRandom sample of {group_sample_size} matched group pairs:")
+            for group1, group2 in group_sample:
+                click.echo(f"\n  {click.style('Group Match:', fg='cyan')}")
+                click.echo(f"    {account1_label}: {group1.name}")
+                click.echo(f"    {account2_label}: {group2.name}")
+
+        # Show unmatched groups
+        groups_in_1_only = result.groups_to_create_in_account2
+        groups_in_2_only = result.groups_to_create_in_account1
+
+        click.echo(
+            f"\n{click.style('Unmatched Groups:', fg='yellow')} "
+            f"{len(groups_in_1_only)} only in {account1_label}, "
+            f"{len(groups_in_2_only)} only in {account2_label}"
+        )
+
+        if groups_in_1_only:
+            click.echo(f"\nGroups only in {account1_label}:")
+            for group in groups_in_1_only[:5]:
+                click.echo(f"  - {group.name}")
+            if len(groups_in_1_only) > 5:
+                click.echo(f"  ... and {len(groups_in_1_only) - 5} more")
+
+        if groups_in_2_only:
+            click.echo(f"\nGroups only in {account2_label}:")
+            for group in groups_in_2_only[:5]:
+                click.echo(f"  - {group.name}")
+            if len(groups_in_2_only) > 5:
+                click.echo(f"  ... and {len(groups_in_2_only) - 5} more")
 
     # Show matched contacts sample
     matched = result.matched_contacts
