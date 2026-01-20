@@ -1,0 +1,130 @@
+# Google Contacts Sync Configuration Example
+# ===========================================
+#
+# This is an example configuration file showing all available options.
+# Copy this file to ~/.gcontact-sync/config.yaml and customize as needed.
+#
+# To get started:
+#   1. Run: gcontact-sync init-config
+#      This will create ~/.gcontact-sync/config.yaml with these defaults
+#   2. Edit the config file to uncomment and modify options
+#   3. Run gcontact-sync commands - CLI arguments will override config values
+#
+# Note: CLI arguments always take precedence over configuration file values.
+
+# Logging Options
+# ---------------
+
+# Enable verbose output with detailed logging
+# Useful for understanding what the sync process is doing
+# Default: false
+# CLI equivalent: --verbose or -v
+# verbose: true
+
+# Show debug information including sample matches and unmatched contacts
+# Provides detailed diagnostic output for troubleshooting
+# Default: false
+# CLI equivalent: --debug
+# debug: false
+
+
+# Sync Behavior
+# -------------
+
+# Preview changes without applying them (dry-run mode)
+# Useful for testing sync behavior before making actual changes
+# Default: false
+# CLI equivalent: --dry-run
+# dry_run: false
+
+# Force full sync by ignoring sync tokens
+# This will compare all contacts in both accounts instead of just changes
+# Use this if you suspect sync state is out of date
+# Default: false
+# CLI equivalent: --full
+# full: false
+
+# Conflict resolution strategy when the same contact is modified in both accounts
+# Options:
+#   - last_modified: Use the most recently modified version (recommended)
+#   - newest: Alias for last_modified
+#   - account1: Always prefer changes from account1
+#   - account2: Always prefer changes from account2
+#   - manual: Prompt for each conflict (not yet implemented)
+# Default: last_modified
+# CLI equivalent: --strategy <value>
+# strategy: last_modified
+
+
+# Advanced Options
+# ----------------
+
+# Custom configuration directory path
+# Default: ~/.gcontact-sync
+# Environment variable: GCONTACT_SYNC_CONFIG_DIR
+# CLI equivalent: --config-dir <path>
+# config_dir: /path/to/config
+
+# Similarity threshold for matching contacts (0.0 to 1.0)
+# Higher values require closer matches. Lower values may create false matches.
+# Default: 0.8 (not yet used in current implementation)
+# similarity_threshold: 0.8
+
+# Batch size for API operations
+# Number of contacts to process in a single batch
+# Default: 100 (not yet used in current implementation)
+# batch_size: 100
+
+
+# Example Configurations
+# ----------------------
+#
+# Conservative (preview before sync):
+#   dry_run: true
+#   verbose: true
+#   strategy: last_modified
+#
+# Production (automatic sync):
+#   dry_run: false
+#   verbose: false
+#   strategy: last_modified
+#
+# Debugging (detailed output):
+#   verbose: true
+#   debug: true
+#   dry_run: true
+#
+# Account preference (always trust account1):
+#   strategy: account1
+#   verbose: true
+
+
+# Quick Start Examples
+# --------------------
+#
+# 1. First-time setup:
+#    gcontact-sync auth --account account1
+#    gcontact-sync auth --account account2
+#    gcontact-sync sync --dry-run --verbose
+#
+# 2. Regular sync (with this config file):
+#    gcontact-sync sync
+#
+# 3. One-time override of config:
+#    gcontact-sync sync --strategy account1
+#    (This overrides the strategy set in this config)
+#
+# 4. Full resync:
+#    gcontact-sync sync --full --verbose
+
+
+# Security Notes
+# --------------
+#
+# - This config file contains sync preferences, NOT credentials
+# - OAuth credentials are stored separately in your config directory:
+#   - credentials.json (OAuth client credentials from Google Cloud Console)
+#   - token_account1.json (Generated after first auth - Account 1)
+#   - token_account2.json (Generated after first auth - Account 2)
+# - NEVER commit credentials to version control
+# - This example file is safe to commit and share (no secrets)
