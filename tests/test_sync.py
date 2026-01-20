@@ -1932,21 +1932,30 @@ class TestPhotoSync:
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
         """Test bidirectional sync with photo changes in both accounts."""
-        # Account 1: Contact A has photo, Contact B has no photo
+        # Account 1: Contact A has photo and is newer, Contact B has no photo and is older
         contact1a = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/john.jpg",
+            last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
         contact1b = Contact(
-            "people/2", "e2", "Jane Smith", emails=["jane@example.com"]
+            "people/2",
+            "e2",
+            "Jane Smith",
+            emails=["jane@example.com"],
+            last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
-        # Account 2: Contact A has no photo, Contact B has photo
+        # Account 2: Contact A has no photo and is older, Contact B has photo and is newer
         contact2a = Contact(
-            "people/3", "e3", "John Doe", emails=["john@example.com"]
+            "people/3",
+            "e3",
+            "John Doe",
+            emails=["john@example.com"],
+            last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
         contact2b = Contact(
             "people/4",
@@ -1954,6 +1963,7 @@ class TestPhotoSync:
             "Jane Smith",
             emails=["jane@example.com"],
             photo_url="https://example.com/jane.jpg",
+            last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
 
         mock_api1.list_contacts.return_value = ([contact1a, contact1b], "token1")
