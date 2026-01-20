@@ -145,6 +145,19 @@ class Contact:
         # Check if contact is deleted
         deleted = person.get("metadata", {}).get("deleted", False)
 
+        # Extract photo information
+        photo_url = None
+        photos = person.get("photos", [])
+        if photos:
+            # Look for primary photo first
+            primary_photo = next(
+                (p for p in photos if p.get("metadata", {}).get("primary", False)),
+                None,
+            )
+            # Use primary photo if found, otherwise use first photo
+            photo = primary_photo if primary_photo else photos[0]
+            photo_url = photo.get("url")
+
         return cls(
             resource_name=person.get("resourceName", ""),
             etag=person.get("etag", ""),
@@ -156,6 +169,7 @@ class Contact:
             organizations=organizations,
             notes=notes,
             last_modified=last_modified,
+            photo_url=photo_url,
             deleted=deleted,
         )
 
