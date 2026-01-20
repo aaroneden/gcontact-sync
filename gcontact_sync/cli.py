@@ -434,13 +434,35 @@ def sync_command(
     config_dir = ctx.obj["config_dir"]
     verbose = ctx.obj["verbose"]
 
+    # Get config from context
+    config = ctx.obj.get("config", {})
+
+    # Merge with config: CLI args take precedence
+    # For boolean flags, if CLI is True, use it; otherwise check config
+    effective_dry_run = dry_run or config.get("dry_run", False)
+    effective_full = full or config.get("full", False)
+    effective_debug = debug or config.get("debug", False)
+
+    # For strategy, use config default if CLI used default value
+    effective_strategy = strategy
+    if strategy == "last_modified" and "strategy" in config:
+        config_strategy = config["strategy"]
+        # Map config strategy names to CLI strategy names
+        strategy_mapping = {
+            "last_modified": "last_modified",
+            "newest": "last_modified",  # Alias for last_modified
+            "account1": "account1",
+            "account2": "account2",
+        }
+        effective_strategy = strategy_mapping.get(config_strategy, strategy)
+
     # Map strategy string to enum
     strategy_map = {
         "last_modified": ConflictStrategy.LAST_MODIFIED_WINS,
         "account1": ConflictStrategy.ACCOUNT1_WINS,
         "account2": ConflictStrategy.ACCOUNT2_WINS,
     }
-    conflict_strategy = strategy_map[strategy]
+    conflict_strategy = strategy_map[effective_strategy]
 
     try:
         # Initialize authentication
@@ -508,16 +530,16 @@ def sync_command(
         if verbose:
             click.echo("\nSync configuration:")
             click.echo(f"  Database: {db_path}")
-            click.echo(f"  Conflict strategy: {strategy}")
-            click.echo(f"  Full sync: {full}")
-            click.echo(f"  Dry run: {dry_run}")
+            click.echo(f"  Conflict strategy: {effective_strategy}")
+            click.echo(f"  Full sync: {effective_full}")
+            click.echo(f"  Dry run: {effective_dry_run}")
             click.echo()
 
         # Run sync
-        mode = "Analyzing" if dry_run else "Synchronizing"
+        mode = "Analyzing" if effective_dry_run else "Synchronizing"
         click.echo(f"\n{mode} contacts...")
 
-        result = engine.sync(dry_run=dry_run, full_sync=full)
+        result = engine.sync(dry_run=effective_dry_run, full_sync=effective_full)
 
         # Display results with actual email addresses
         click.echo("\n" + "=" * 50)
@@ -527,7 +549,7 @@ def sync_command(
         click.echo("=" * 50)
 
         if result.has_changes():
-            if dry_run:
+            if effective_dry_run:
                 click.echo(
                     click.style(
                         "\nDry run complete. No changes were made.", fg="yellow"
@@ -575,7 +597,7 @@ def sync_command(
                 click.echo(f"  {conflict.winner.display_name}: {conflict.reason}")
 
         # Show debug information if requested
-        if debug:
+        if effective_debug:
             _show_debug_info(result, account1_email, account2_email)
 
     except Exception as e:
