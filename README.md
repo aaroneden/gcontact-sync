@@ -5,15 +5,17 @@ A Python-based bidirectional synchronization system that keeps Google Contacts s
 ## Features
 
 - **Bidirectional Sync**: Automatically synchronize contacts between two Google accounts
-- **Conflict Resolution**: Last-modified-wins strategy for handling conflicting changes
+- **Multi-Tier Matching**: Deterministic, fuzzy, and optional LLM-assisted matching to identify contacts across accounts
+- **Change Detection**: Content hashing detects modifications and propagates updates automatically
+- **Deletion Sync**: Deleted contacts are automatically removed from the other account
+- **Conflict Resolution**: Last-modified-wins strategy (or configurable account preference) for conflicting changes
 - **Dry Run Mode**: Preview changes before applying them
 - **State Tracking**: SQLite-based state management for efficient incremental syncs
 - **CLI Interface**: Simple command-line interface for all operations
-- **Robust Matching**: Multi-field contact matching using names, emails, and phone numbers to prevent duplicates
 
 ## Requirements
 
-- Python 3.8 or higher
+- Python 3.9 or higher
 - [UV](https://docs.astral.sh/uv/) package manager (recommended) or pip
 - Google Cloud Project with People API enabled
 - OAuth 2.0 credentials (Desktop application type)
@@ -119,6 +121,7 @@ GContact Sync stores all configuration in `~/.gcontact-sync/` by default:
 | `GCONTACT_SYNC_CONFIG_DIR` | Override config directory location | `~/.gcontact-sync/` |
 | `GCONTACT_SYNC_LOG_LEVEL` | Set logging level | `INFO` |
 | `GCONTACT_SYNC_DEBUG` | Enable debug mode | `false` |
+| `ANTHROPIC_API_KEY` | API key for LLM-assisted matching (Tier 3) | None (LLM matching disabled) |
 
 ## Usage
 
@@ -196,23 +199,66 @@ uv run gcontact-sync status --help
 
 1. **Fetch Contacts**: Retrieve all contacts from both accounts using the Google People API
 2. **Build Index**: Create matching keys based on normalized contact data
-3. **Compare**: Identify contacts that exist in only one account or both
-4. **Resolve Conflicts**: For contacts in both accounts with different data, the last-modified version wins
-5. **Execute Changes**: Create missing contacts and update outdated ones
-6. **Track State**: Store sync tokens and mappings in SQLite for efficient future syncs
+3. **Match Contacts**: Use multi-tier matching to identify the same contact across accounts
+4. **Detect Changes**: Compare content hashes to determine what changed since last sync
+5. **Resolve Conflicts**: For contacts modified in both accounts, apply conflict resolution strategy
+6. **Execute Changes**: Create, update, or delete contacts as needed
+7. **Track State**: Store sync tokens, mappings, and content hashes in SQLite
 
-### Matching Strategy
+### Multi-Tier Matching System
 
-Contacts are matched between accounts using a robust multi-field fingerprint to prevent duplicates:
+Contacts are matched between accounts using a sophisticated multi-tier approach:
 
-1. **Primary matching**: Normalized display name
-2. **Email matching**: All email addresses (normalized, sorted) - regardless of type (work/home/other)
-3. **Phone matching**: All phone numbers (normalized to digits only, sorted)
+#### Tier 1: Deterministic Matching (High Confidence)
+- **Exact email match**: Any shared email address (normalized, case-insensitive)
+- **Exact phone match**: Any shared phone number (digits only, normalized)
+- **Exact name match**: Identical display names (normalized, case-insensitive)
+
+#### Tier 2: Fuzzy Matching (Medium Confidence)
+- **Similar name + shared email**: ≥85% name similarity (Jaro-Winkler) plus shared email
+- **Similar name + shared phone**: ≥85% name similarity plus shared phone
+- **Exact name, no identifiers**: ≥95% name match when neither contact has emails/phones
+
+#### Tier 3: LLM-Assisted Matching (Optional)
+For uncertain cases (70-85% name similarity, no shared identifiers):
+- Uses Claude API to analyze contact pairs
+- Considers name variations, nicknames, email domain patterns, organization context
+- Requires `ANTHROPIC_API_KEY` environment variable
+- Can be disabled via configuration
 
 This ensures:
 - The same person isn't duplicated even with different resource names
 - Contacts with emails in different fields (work vs. home) are still matched
-- Multiple phone numbers are considered in matching
+- Name variations like "Bob Smith" and "Robert Smith" can be matched
+- Edge cases are handled intelligently with LLM assistance
+
+### Change Detection
+
+The system uses **content hashing** to efficiently detect changes:
+
+- Each contact generates a SHA-256 hash of its syncable content (name, emails, phones, organizations, notes)
+- The hash from the last successful sync is stored in the database
+- On each sync, current hashes are compared against the stored hash
+
+This three-way comparison determines the appropriate action:
+
+| Account 1 | Account 2 | Action |
+|-----------|-----------|--------|
+| Changed | Unchanged | Update Account 2 with Account 1's data |
+| Unchanged | Changed | Update Account 1 with Account 2's data |
+| Changed | Changed | Apply conflict resolution strategy |
+| Unchanged | Unchanged | No action needed |
+
+### Deletion Propagation
+
+When you delete a contact in one account, the sync system automatically deletes it in the other:
+
+1. Google's People API marks deleted contacts with a `deleted` flag when using sync tokens
+2. The sync engine detects deleted contacts and looks up their mapping
+3. The corresponding contact in the other account is queued for deletion
+4. The database mapping is removed after successful deletion
+
+**Note**: Deletions only propagate for contacts that were previously synced (have a mapping in the database).
 
 ### Conflict Resolution
 
@@ -248,11 +294,13 @@ uv run pytest tests/test_sync.py -v
 
 ```bash
 # Format code
-uv run black gcontact_sync tests
-uv run isort gcontact_sync tests
+uv run ruff format gcontact_sync tests
 
-# Lint
-uv run flake8 gcontact_sync tests
+# Lint (check only)
+uv run ruff check gcontact_sync tests
+
+# Lint and auto-fix
+uv run ruff check --fix gcontact_sync tests
 
 # Type check
 uv run mypy gcontact_sync
@@ -273,7 +321,9 @@ gcontact-sync/
 │   ├── sync/
 │   │   ├── engine.py         # Core sync logic
 │   │   ├── contact.py        # Contact data model
-│   │   └── conflict.py       # Conflict resolution
+│   │   ├── conflict.py       # Conflict resolution strategies
+│   │   ├── matcher.py        # Multi-tier contact matching
+│   │   └── llm_matcher.py    # LLM-assisted matching (Tier 3)
 │   ├── storage/
 │   │   └── db.py             # SQLite state management
 │   └── utils/

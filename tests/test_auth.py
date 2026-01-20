@@ -7,9 +7,8 @@ and dual account support.
 
 import json
 import os
-from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,35 +29,35 @@ class TestGoogleAuthInitialization:
         """Test that default config dir is used when no argument provided."""
         with patch.dict(os.environ, {}, clear=True):
             # Remove GCONTACT_SYNC_CONFIG_DIR if it exists
-            os.environ.pop('GCONTACT_SYNC_CONFIG_DIR', None)
+            os.environ.pop("GCONTACT_SYNC_CONFIG_DIR", None)
             auth = GoogleAuth()
             assert auth.config_dir == DEFAULT_CONFIG_DIR
 
     def test_custom_config_dir_via_argument(self, tmp_path):
         """Test that custom config dir can be passed as argument."""
-        custom_dir = tmp_path / 'custom_config'
+        custom_dir = tmp_path / "custom_config"
         auth = GoogleAuth(config_dir=custom_dir)
         assert auth.config_dir == custom_dir
 
     def test_config_dir_from_environment_variable(self, tmp_path):
         """Test that config dir can be set via environment variable."""
-        env_dir = str(tmp_path / 'env_config')
-        with patch.dict(os.environ, {'GCONTACT_SYNC_CONFIG_DIR': env_dir}):
+        env_dir = str(tmp_path / "env_config")
+        with patch.dict(os.environ, {"GCONTACT_SYNC_CONFIG_DIR": env_dir}):
             auth = GoogleAuth()
             assert auth.config_dir == Path(env_dir)
 
     def test_argument_takes_precedence_over_environment(self, tmp_path):
         """Test that explicit argument takes precedence over env variable."""
-        arg_dir = tmp_path / 'arg_config'
-        env_dir = str(tmp_path / 'env_config')
-        with patch.dict(os.environ, {'GCONTACT_SYNC_CONFIG_DIR': env_dir}):
+        arg_dir = tmp_path / "arg_config"
+        env_dir = str(tmp_path / "env_config")
+        with patch.dict(os.environ, {"GCONTACT_SYNC_CONFIG_DIR": env_dir}):
             auth = GoogleAuth(config_dir=arg_dir)
             assert auth.config_dir == arg_dir
 
     def test_credentials_path_is_set(self, tmp_path):
         """Test that credentials path is set correctly."""
         auth = GoogleAuth(config_dir=tmp_path)
-        assert auth.credentials_path == tmp_path / 'credentials.json'
+        assert auth.credentials_path == tmp_path / "credentials.json"
 
 
 class TestAccountValidation:
@@ -82,12 +81,12 @@ class TestAccountValidation:
     def test_invalid_account_raises_error(self, auth):
         """Test that invalid account ID raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth._validate_account_id('account3')
+            auth._validate_account_id("account3")
 
     def test_invalid_account_empty_string(self, auth):
         """Test that empty string account ID raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth._validate_account_id('')
+            auth._validate_account_id("")
 
     def test_invalid_account_none(self, auth):
         """Test that None account ID raises ValueError."""
@@ -106,17 +105,17 @@ class TestTokenPathGeneration:
     def test_token_path_account1(self, auth, tmp_path):
         """Test token path for account1."""
         path = auth._get_token_path(ACCOUNT_1)
-        assert path == tmp_path / 'token_account1.json'
+        assert path == tmp_path / "token_account1.json"
 
     def test_token_path_account2(self, auth, tmp_path):
         """Test token path for account2."""
         path = auth._get_token_path(ACCOUNT_2)
-        assert path == tmp_path / 'token_account2.json'
+        assert path == tmp_path / "token_account2.json"
 
     def test_token_path_invalid_account(self, auth):
         """Test that invalid account raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth._get_token_path('invalid')
+            auth._get_token_path("invalid")
 
 
 class TestConfigDirCreation:
@@ -124,7 +123,7 @@ class TestConfigDirCreation:
 
     def test_ensure_config_dir_creates_directory(self, tmp_path):
         """Test that config dir is created if it doesn't exist."""
-        config_dir = tmp_path / 'new_config'
+        config_dir = tmp_path / "new_config"
         auth = GoogleAuth(config_dir=config_dir)
 
         assert not config_dir.exists()
@@ -133,7 +132,7 @@ class TestConfigDirCreation:
 
     def test_ensure_config_dir_sets_permissions(self, tmp_path):
         """Test that config dir is created with secure permissions."""
-        config_dir = tmp_path / 'secure_config'
+        config_dir = tmp_path / "secure_config"
         auth = GoogleAuth(config_dir=config_dir)
 
         auth._ensure_config_dir()
@@ -144,7 +143,7 @@ class TestConfigDirCreation:
 
     def test_ensure_config_dir_idempotent(self, tmp_path):
         """Test that ensure_config_dir can be called multiple times."""
-        config_dir = tmp_path / 'repeat_config'
+        config_dir = tmp_path / "repeat_config"
         auth = GoogleAuth(config_dir=config_dir)
 
         auth._ensure_config_dir()
@@ -166,18 +165,18 @@ class TestCredentialLoading:
         result = auth._load_credentials(ACCOUNT_1)
         assert result is None
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
+    @patch("gcontact_sync.auth.google_auth.Credentials")
     def test_load_credentials_from_file(self, mock_creds_class, auth, tmp_path):
         """Test loading credentials from existing token file."""
         # Create a valid token file
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_data = {
-            'token': 'test_token',
-            'refresh_token': 'test_refresh',
-            'token_uri': 'https://oauth2.googleapis.com/token',
-            'client_id': 'test_client',
-            'client_secret': 'test_secret',
-            'scopes': SCOPES
+            "token": "test_token",
+            "refresh_token": "test_refresh",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "test_client",
+            "client_secret": "test_secret",
+            "scopes": SCOPES,
         }
         token_path.write_text(json.dumps(token_data))
 
@@ -193,19 +192,21 @@ class TestCredentialLoading:
 
     def test_load_credentials_invalid_json(self, auth, tmp_path):
         """Test loading credentials from invalid JSON file."""
-        token_path = tmp_path / 'token_account1.json'
-        token_path.write_text('invalid json {{{')
+        token_path = tmp_path / "token_account1.json"
+        token_path.write_text("invalid json {{{")
 
         result = auth._load_credentials(ACCOUNT_1)
         assert result is None
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
+    @patch("gcontact_sync.auth.google_auth.Credentials")
     def test_load_credentials_value_error(self, mock_creds_class, auth, tmp_path):
         """Test loading credentials when Credentials raises ValueError."""
-        token_path = tmp_path / 'token_account1.json'
-        token_path.write_text('{}')
+        token_path = tmp_path / "token_account1.json"
+        token_path.write_text("{}")
 
-        mock_creds_class.from_authorized_user_file.side_effect = ValueError("Invalid token")
+        mock_creds_class.from_authorized_user_file.side_effect = ValueError(
+            "Invalid token"
+        )
 
         result = auth._load_credentials(ACCOUNT_1)
         assert result is None
@@ -226,7 +227,7 @@ class TestCredentialSaving:
 
         auth._save_credentials(ACCOUNT_1, mock_creds)
 
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         assert token_path.exists()
         assert token_path.read_text() == '{"token": "test"}'
 
@@ -237,13 +238,13 @@ class TestCredentialSaving:
 
         auth._save_credentials(ACCOUNT_1, mock_creds)
 
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         mode = token_path.stat().st_mode & 0o777
         assert mode == 0o600  # Owner read/write only
 
     def test_save_credentials_creates_config_dir(self, tmp_path):
         """Test that saving credentials creates config dir if needed."""
-        config_dir = tmp_path / 'new_dir'
+        config_dir = tmp_path / "new_dir"
         auth = GoogleAuth(config_dir=config_dir)
 
         mock_creds = MagicMock()
@@ -270,24 +271,24 @@ class TestCredentialRefresh:
         result = auth._refresh_credentials(mock_creds)
         assert result is False
 
-    @patch('gcontact_sync.auth.google_auth.Request')
+    @patch("gcontact_sync.auth.google_auth.Request")
     def test_refresh_credentials_success(self, mock_request_class, auth):
         """Test successful credential refresh."""
         mock_creds = MagicMock()
-        mock_creds.refresh_token = 'refresh_token'
+        mock_creds.refresh_token = "refresh_token"
 
         result = auth._refresh_credentials(mock_creds)
 
         assert result is True
         mock_creds.refresh.assert_called_once()
 
-    @patch('gcontact_sync.auth.google_auth.Request')
+    @patch("gcontact_sync.auth.google_auth.Request")
     def test_refresh_credentials_failure(self, mock_request_class, auth):
         """Test credential refresh failure."""
         from google.auth.exceptions import RefreshError
 
         mock_creds = MagicMock()
-        mock_creds.refresh_token = 'refresh_token'
+        mock_creds.refresh_token = "refresh_token"
         mock_creds.refresh.side_effect = RefreshError("Refresh failed")
 
         result = auth._refresh_credentials(mock_creds)
@@ -305,17 +306,17 @@ class TestGetCredentials:
     def test_get_credentials_invalid_account(self, auth):
         """Test get_credentials with invalid account raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth.get_credentials('invalid')
+            auth.get_credentials("invalid")
 
     def test_get_credentials_no_token_file(self, auth):
         """Test get_credentials returns None when no token file exists."""
         result = auth.get_credentials(ACCOUNT_1)
         assert result is None
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
+    @patch("gcontact_sync.auth.google_auth.Credentials")
     def test_get_credentials_valid_credentials(self, mock_creds_class, auth, tmp_path):
         """Test get_credentials returns valid credentials."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
@@ -326,17 +327,19 @@ class TestGetCredentials:
 
         assert result == mock_creds
 
-    @patch('gcontact_sync.auth.google_auth.Request')
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_get_credentials_expired_refreshes(self, mock_creds_class, mock_request, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Request")
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_get_credentials_expired_refreshes(
+        self, mock_creds_class, mock_request, auth, tmp_path
+    ):
         """Test get_credentials refreshes expired credentials."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
         mock_creds.valid = False
         mock_creds.expired = True
-        mock_creds.refresh_token = 'refresh_token'
+        mock_creds.refresh_token = "refresh_token"
         mock_creds.to_json.return_value = '{"refreshed": true}'
         mock_creds_class.from_authorized_user_file.return_value = mock_creds
 
@@ -345,19 +348,21 @@ class TestGetCredentials:
         mock_creds.refresh.assert_called_once()
         assert result == mock_creds
 
-    @patch('gcontact_sync.auth.google_auth.Request')
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_get_credentials_refresh_failure_returns_none(self, mock_creds_class, mock_request, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Request")
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_get_credentials_refresh_failure_returns_none(
+        self, mock_creds_class, mock_request, auth, tmp_path
+    ):
         """Test get_credentials returns None when refresh fails."""
         from google.auth.exceptions import RefreshError
 
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
         mock_creds.valid = False
         mock_creds.expired = True
-        mock_creds.refresh_token = 'refresh_token'
+        mock_creds.refresh_token = "refresh_token"
         mock_creds.refresh.side_effect = RefreshError("Failed")
         mock_creds_class.from_authorized_user_file.return_value = mock_creds
 
@@ -374,21 +379,25 @@ class TestAuthenticate:
         """Create a GoogleAuth instance with temp config dir."""
         auth = GoogleAuth(config_dir=tmp_path)
         # Create credentials file
-        creds_file = tmp_path / 'credentials.json'
-        creds_file.write_text(json.dumps({
-            'installed': {
-                'client_id': 'test_client',
-                'client_secret': 'test_secret',
-                'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-                'token_uri': 'https://oauth2.googleapis.com/token'
-            }
-        }))
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text(
+            json.dumps(
+                {
+                    "installed": {
+                        "client_id": "test_client",
+                        "client_secret": "test_secret",
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                    }
+                }
+            )
+        )
         return auth
 
     def test_authenticate_invalid_account(self, auth):
         """Test authenticate with invalid account raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth.authenticate('invalid')
+            auth.authenticate("invalid")
 
     def test_authenticate_missing_credentials_file(self, tmp_path):
         """Test authenticate raises FileNotFoundError when credentials missing."""
@@ -398,10 +407,12 @@ class TestAuthenticate:
         with pytest.raises(FileNotFoundError, match="OAuth credentials file not found"):
             auth.authenticate(ACCOUNT_1)
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_authenticate_uses_existing_credentials(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_authenticate_uses_existing_credentials(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test authenticate returns existing valid credentials."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "existing"}')
 
         mock_creds = MagicMock()
@@ -412,9 +423,11 @@ class TestAuthenticate:
 
         assert result == mock_creds
 
-    @patch('gcontact_sync.auth.google_auth.InstalledAppFlow')
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_authenticate_starts_oauth_flow(self, mock_creds_class, mock_flow_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.InstalledAppFlow")
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_authenticate_starts_oauth_flow(
+        self, mock_creds_class, mock_flow_class, auth, tmp_path
+    ):
         """Test authenticate starts OAuth flow when no credentials."""
         mock_creds_class.from_authorized_user_file.side_effect = FileNotFoundError()
 
@@ -430,11 +443,13 @@ class TestAuthenticate:
         mock_flow.run_local_server.assert_called_once_with(port=0)
         assert result == mock_new_creds
 
-    @patch('gcontact_sync.auth.google_auth.InstalledAppFlow')
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_authenticate_force_reauth(self, mock_creds_class, mock_flow_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.InstalledAppFlow")
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_authenticate_force_reauth(
+        self, mock_creds_class, mock_flow_class, auth, tmp_path
+    ):
         """Test authenticate with force_reauth ignores existing credentials."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "existing"}')
 
         mock_creds = MagicMock()
@@ -452,7 +467,7 @@ class TestAuthenticate:
         mock_flow.run_local_server.assert_called_once()
         assert result == mock_new_creds
 
-    @patch('gcontact_sync.auth.google_auth.InstalledAppFlow')
+    @patch("gcontact_sync.auth.google_auth.InstalledAppFlow")
     def test_authenticate_oauth_flow_failure(self, mock_flow_class, auth):
         """Test authenticate raises AuthenticationError on OAuth failure."""
         mock_flow = MagicMock()
@@ -476,10 +491,12 @@ class TestIsAuthenticated:
         result = auth.is_authenticated(ACCOUNT_1)
         assert result is False
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_is_authenticated_with_valid_credentials(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_is_authenticated_with_valid_credentials(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test is_authenticated returns True with valid credentials."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
@@ -492,7 +509,7 @@ class TestIsAuthenticated:
     def test_is_authenticated_invalid_account(self, auth):
         """Test is_authenticated with invalid account raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth.is_authenticated('invalid')
+            auth.is_authenticated("invalid")
 
 
 class TestGetBothCredentials:
@@ -508,10 +525,12 @@ class TestGetBothCredentials:
         result = auth.get_both_credentials()
         assert result == (None, None)
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_get_both_credentials_one_authenticated(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_get_both_credentials_one_authenticated(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test get_both_credentials with only one account authenticated."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
@@ -523,11 +542,13 @@ class TestGetBothCredentials:
         assert result[0] == mock_creds
         assert result[1] is None
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_get_both_credentials_both_authenticated(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_get_both_credentials_both_authenticated(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test get_both_credentials with both accounts authenticated."""
-        (tmp_path / 'token_account1.json').write_text('{"token": "test1"}')
-        (tmp_path / 'token_account2.json').write_text('{"token": "test2"}')
+        (tmp_path / "token_account1.json").write_text('{"token": "test1"}')
+        (tmp_path / "token_account2.json").write_text('{"token": "test2"}')
 
         mock_creds1 = MagicMock()
         mock_creds1.valid = True
@@ -535,7 +556,7 @@ class TestGetBothCredentials:
         mock_creds2.valid = True
 
         def side_effect(path, scopes):
-            if 'account1' in path:
+            if "account1" in path:
                 return mock_creds1
             return mock_creds2
 
@@ -554,22 +575,28 @@ class TestAuthenticateBoth:
     def auth(self, tmp_path):
         """Create a GoogleAuth instance with temp config dir."""
         auth = GoogleAuth(config_dir=tmp_path)
-        creds_file = tmp_path / 'credentials.json'
-        creds_file.write_text(json.dumps({
-            'installed': {
-                'client_id': 'test',
-                'client_secret': 'test',
-                'auth_uri': 'https://test.com/auth',
-                'token_uri': 'https://test.com/token'
-            }
-        }))
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text(
+            json.dumps(
+                {
+                    "installed": {
+                        "client_id": "test",
+                        "client_secret": "test",
+                        "auth_uri": "https://test.com/auth",
+                        "token_uri": "https://test.com/token",
+                    }
+                }
+            )
+        )
         return auth
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_authenticate_both_with_existing_credentials(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_authenticate_both_with_existing_credentials(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test authenticate_both with existing credentials."""
-        (tmp_path / 'token_account1.json').write_text('{"token": "test1"}')
-        (tmp_path / 'token_account2.json').write_text('{"token": "test2"}')
+        (tmp_path / "token_account1.json").write_text('{"token": "test1"}')
+        (tmp_path / "token_account2.json").write_text('{"token": "test2"}')
 
         mock_creds1 = MagicMock()
         mock_creds1.valid = True
@@ -577,7 +604,7 @@ class TestAuthenticateBoth:
         mock_creds2.valid = True
 
         def side_effect(path, scopes):
-            if 'account1' in path:
+            if "account1" in path:
                 return mock_creds1
             return mock_creds2
 
@@ -598,7 +625,7 @@ class TestClearCredentials:
 
     def test_clear_credentials_removes_file(self, auth, tmp_path):
         """Test clear_credentials removes token file."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         assert token_path.exists()
@@ -614,7 +641,7 @@ class TestClearCredentials:
     def test_clear_credentials_invalid_account(self, auth):
         """Test clear_credentials with invalid account raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth.clear_credentials('invalid')
+            auth.clear_credentials("invalid")
 
 
 class TestClearAllCredentials:
@@ -627,8 +654,8 @@ class TestClearAllCredentials:
 
     def test_clear_all_credentials_removes_both(self, auth, tmp_path):
         """Test clear_all_credentials removes both token files."""
-        token1 = tmp_path / 'token_account1.json'
-        token2 = tmp_path / 'token_account2.json'
+        token1 = tmp_path / "token_account1.json"
+        token2 = tmp_path / "token_account2.json"
         token1.write_text('{"token": "test1"}')
         token2.write_text('{"token": "test2"}')
 
@@ -640,7 +667,7 @@ class TestClearAllCredentials:
 
     def test_clear_all_credentials_partial(self, auth, tmp_path):
         """Test clear_all_credentials when only one file exists."""
-        token1 = tmp_path / 'token_account1.json'
+        token1 = tmp_path / "token_account1.json"
         token1.write_text('{"token": "test1"}')
 
         result = auth.clear_all_credentials()
@@ -665,29 +692,29 @@ class TestGetAuthStatus:
         """Test get_auth_status with no credentials."""
         status = auth.get_auth_status()
 
-        assert 'account1' in status
-        assert 'account2' in status
-        assert status['account1']['authenticated'] is False
-        assert status['account2']['authenticated'] is False
-        assert status['account1']['token_exists'] is False
-        assert status['account2']['token_exists'] is False
-        assert status['credentials_exist'] is False
-        assert status['config_dir'] == str(tmp_path)
+        assert "account1" in status
+        assert "account2" in status
+        assert status["account1"]["authenticated"] is False
+        assert status["account2"]["authenticated"] is False
+        assert status["account1"]["token_exists"] is False
+        assert status["account2"]["token_exists"] is False
+        assert status["credentials_exist"] is False
+        assert status["config_dir"] == str(tmp_path)
 
     def test_get_auth_status_with_credentials_file(self, auth, tmp_path):
         """Test get_auth_status when credentials.json exists."""
-        creds_file = tmp_path / 'credentials.json'
+        creds_file = tmp_path / "credentials.json"
         creds_file.write_text('{"installed": {}}')
 
         status = auth.get_auth_status()
 
-        assert status['credentials_exist'] is True
-        assert status['credentials_path'] == str(creds_file)
+        assert status["credentials_exist"] is True
+        assert status["credentials_path"] == str(creds_file)
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
+    @patch("gcontact_sync.auth.google_auth.Credentials")
     def test_get_auth_status_with_valid_token(self, mock_creds_class, auth, tmp_path):
         """Test get_auth_status with valid token file."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
@@ -696,9 +723,9 @@ class TestGetAuthStatus:
 
         status = auth.get_auth_status()
 
-        assert status['account1']['authenticated'] is True
-        assert status['account1']['token_exists'] is True
-        assert status['account1']['credentials_valid'] is True
+        assert status["account1"]["authenticated"] is True
+        assert status["account1"]["token_exists"] is True
+        assert status["account1"]["credentials_valid"] is True
 
 
 class TestGetAccountEmail:
@@ -716,27 +743,26 @@ class TestGetAccountEmail:
 
     def test_get_account_email_with_email(self, auth, tmp_path):
         """Test get_account_email returns email from token file."""
-        token_path = tmp_path / 'token_account1.json'
-        token_path.write_text(json.dumps({
-            'token': 'test',
-            'email': 'test@example.com'
-        }))
+        token_path = tmp_path / "token_account1.json"
+        token_path.write_text(
+            json.dumps({"token": "test", "email": "test@example.com"})
+        )
 
         result = auth.get_account_email(ACCOUNT_1)
-        assert result == 'test@example.com'
+        assert result == "test@example.com"
 
     def test_get_account_email_no_email_field(self, auth, tmp_path):
         """Test get_account_email returns None when no email in token."""
-        token_path = tmp_path / 'token_account1.json'
-        token_path.write_text(json.dumps({'token': 'test'}))
+        token_path = tmp_path / "token_account1.json"
+        token_path.write_text(json.dumps({"token": "test"}))
 
         result = auth.get_account_email(ACCOUNT_1)
         assert result is None
 
     def test_get_account_email_invalid_json(self, auth, tmp_path):
         """Test get_account_email returns None for invalid JSON."""
-        token_path = tmp_path / 'token_account1.json'
-        token_path.write_text('invalid json')
+        token_path = tmp_path / "token_account1.json"
+        token_path.write_text("invalid json")
 
         result = auth.get_account_email(ACCOUNT_1)
         assert result is None
@@ -744,7 +770,7 @@ class TestGetAccountEmail:
     def test_get_account_email_invalid_account(self, auth):
         """Test get_account_email with invalid account raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_id"):
-            auth.get_account_email('invalid')
+            auth.get_account_email("invalid")
 
 
 class TestAuthenticationErrorException:
@@ -765,16 +791,16 @@ class TestModuleConstants:
 
     def test_scopes_includes_contacts(self):
         """Test that SCOPES includes contacts permission."""
-        assert 'https://www.googleapis.com/auth/contacts' in SCOPES
+        assert "https://www.googleapis.com/auth/contacts" in SCOPES
 
     def test_account_constants(self):
         """Test account ID constants."""
-        assert ACCOUNT_1 == 'account1'
-        assert ACCOUNT_2 == 'account2'
+        assert ACCOUNT_1 == "account1"
+        assert ACCOUNT_2 == "account2"
 
     def test_default_config_dir(self):
         """Test default config directory is in home."""
-        assert DEFAULT_CONFIG_DIR == Path.home() / '.gcontact-sync'
+        assert Path.home() / ".gcontact-sync" == DEFAULT_CONFIG_DIR
 
 
 class TestEdgeCases:
@@ -785,10 +811,12 @@ class TestEdgeCases:
         """Create a GoogleAuth instance with temp config dir."""
         return GoogleAuth(config_dir=tmp_path)
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_credentials_invalid_but_not_expired(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_credentials_invalid_but_not_expired(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test handling of invalid but not expired credentials."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
@@ -800,10 +828,12 @@ class TestEdgeCases:
         result = auth.get_credentials(ACCOUNT_1)
         assert result is None
 
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_credentials_expired_no_refresh_token(self, mock_creds_class, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_credentials_expired_no_refresh_token(
+        self, mock_creds_class, auth, tmp_path
+    ):
         """Test handling of expired credentials without refresh token."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "test"}')
 
         mock_creds = MagicMock()
@@ -841,17 +871,19 @@ class TestEdgeCases:
         auth = GoogleAuth(config_dir=str(tmp_path))
         assert isinstance(auth.config_dir, Path)
 
-    @patch('gcontact_sync.auth.google_auth.Request')
-    @patch('gcontact_sync.auth.google_auth.Credentials')
-    def test_refresh_saves_updated_credentials(self, mock_creds_class, mock_request, auth, tmp_path):
+    @patch("gcontact_sync.auth.google_auth.Request")
+    @patch("gcontact_sync.auth.google_auth.Credentials")
+    def test_refresh_saves_updated_credentials(
+        self, mock_creds_class, mock_request, auth, tmp_path
+    ):
         """Test that refreshed credentials are saved."""
-        token_path = tmp_path / 'token_account1.json'
+        token_path = tmp_path / "token_account1.json"
         token_path.write_text('{"token": "old"}')
 
         mock_creds = MagicMock()
         mock_creds.valid = False
         mock_creds.expired = True
-        mock_creds.refresh_token = 'refresh'
+        mock_creds.refresh_token = "refresh"
         mock_creds.to_json.return_value = '{"token": "refreshed"}'
         mock_creds_class.from_authorized_user_file.return_value = mock_creds
 

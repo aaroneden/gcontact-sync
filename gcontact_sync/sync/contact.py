@@ -12,7 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -47,14 +47,14 @@ class Contact:
     """
 
     resource_name: str  # Google's unique ID (e.g., "people/c12345")
-    etag: str           # Required for updates
+    etag: str  # Required for updates
     display_name: str
 
     given_name: Optional[str] = None
     family_name: Optional[str] = None
-    emails: List[str] = field(default_factory=list)
-    phones: List[str] = field(default_factory=list)
-    organizations: List[str] = field(default_factory=list)
+    emails: list[str] = field(default_factory=list)
+    phones: list[str] = field(default_factory=list)
+    organizations: list[str] = field(default_factory=list)
     notes: Optional[str] = None
     last_modified: Optional[datetime] = None
 
@@ -62,7 +62,7 @@ class Contact:
     deleted: bool = False  # True if contact was deleted in source
 
     @classmethod
-    def from_api_response(cls, person: Dict[str, Any]) -> 'Contact':
+    def from_api_response(cls, person: dict[str, Any]) -> "Contact":
         """
         Create a Contact from a Google People API response.
 
@@ -72,77 +72,74 @@ class Contact:
         Returns:
             Contact instance populated from the API response
 
-        Example API response structure:
+        Example API response structure::
+
             {
                 'resourceName': 'people/c12345',
                 'etag': 'abc123',
-                'names': [{'displayName': 'John Doe', 'givenName': 'John', 'familyName': 'Doe'}],
+                'names': [{'displayName': 'John Doe', ...}],
                 'emailAddresses': [{'value': 'john@example.com'}],
                 'phoneNumbers': [{'value': '+1234567890'}],
                 'organizations': [{'name': 'Acme Corp'}],
                 'biographies': [{'value': 'Some notes'}],
-                'metadata': {'sources': [{'updateTime': '2024-01-01T00:00:00Z'}]}
+                'metadata': {'sources': [{'updateTime': '...'}]}
             }
         """
         # Extract name fields
-        names = person.get('names', [{}])
+        names = person.get("names", [{}])
         primary_name = names[0] if names else {}
 
-        display_name = primary_name.get('displayName', '')
-        given_name = primary_name.get('givenName')
-        family_name = primary_name.get('familyName')
+        display_name = primary_name.get("displayName", "")
+        given_name = primary_name.get("givenName")
+        family_name = primary_name.get("familyName")
 
         # If no display name, construct from given/family names
         if not display_name and (given_name or family_name):
             parts = [p for p in [given_name, family_name] if p]
-            display_name = ' '.join(parts)
+            display_name = " ".join(parts)
 
         # Extract email addresses
         emails = [
-            e.get('value', '')
-            for e in person.get('emailAddresses', [])
-            if e.get('value')
+            e.get("value", "")
+            for e in person.get("emailAddresses", [])
+            if e.get("value")
         ]
 
         # Extract phone numbers
         phones = [
-            p.get('value', '')
-            for p in person.get('phoneNumbers', [])
-            if p.get('value')
+            p.get("value", "") for p in person.get("phoneNumbers", []) if p.get("value")
         ]
 
         # Extract organizations
         organizations = [
-            o.get('name', '')
-            for o in person.get('organizations', [])
-            if o.get('name')
+            o.get("name", "") for o in person.get("organizations", []) if o.get("name")
         ]
 
         # Extract notes from biographies
-        biographies = person.get('biographies', [])
-        notes = biographies[0].get('value') if biographies else None
+        biographies = person.get("biographies", [])
+        notes = biographies[0].get("value") if biographies else None
 
         # Extract last modified time from metadata
         last_modified = None
-        metadata = person.get('metadata', {})
-        sources = metadata.get('sources', [])
+        metadata = person.get("metadata", {})
+        sources = metadata.get("sources", [])
         if sources:
-            update_time = sources[0].get('updateTime')
+            update_time = sources[0].get("updateTime")
             if update_time:
                 try:
                     # Parse ISO format timestamp
                     # Handle both 'Z' suffix and timezone offset
-                    update_time = update_time.replace('Z', '+00:00')
+                    update_time = update_time.replace("Z", "+00:00")
                     last_modified = datetime.fromisoformat(update_time)
                 except (ValueError, TypeError):
                     pass
 
         # Check if contact is deleted
-        deleted = person.get('metadata', {}).get('deleted', False)
+        deleted = person.get("metadata", {}).get("deleted", False)
 
         return cls(
-            resource_name=person.get('resourceName', ''),
-            etag=person.get('etag', ''),
+            resource_name=person.get("resourceName", ""),
+            etag=person.get("etag", ""),
             display_name=display_name,
             given_name=given_name,
             family_name=family_name,
@@ -154,7 +151,7 @@ class Contact:
             deleted=deleted,
         )
 
-    def to_api_format(self) -> Dict[str, Any]:
+    def to_api_format(self) -> dict[str, Any]:
         """
         Convert Contact to Google People API format for create/update operations.
 
@@ -166,36 +163,36 @@ class Contact:
             - Does not include etag (should be passed separately for updates)
             - Only includes non-empty fields
         """
-        person: Dict[str, Any] = {}
+        person: dict[str, Any] = {}
 
         # Add names if available
         if self.given_name or self.family_name or self.display_name:
-            name_entry: Dict[str, str] = {}
+            name_entry: dict[str, str] = {}
             if self.given_name:
-                name_entry['givenName'] = self.given_name
+                name_entry["givenName"] = self.given_name
             if self.family_name:
-                name_entry['familyName'] = self.family_name
+                name_entry["familyName"] = self.family_name
             # Only add displayName if no given/family name
             if self.display_name and not (self.given_name or self.family_name):
-                name_entry['displayName'] = self.display_name
+                name_entry["displayName"] = self.display_name
             if name_entry:
-                person['names'] = [name_entry]
+                person["names"] = [name_entry]
 
         # Add email addresses
         if self.emails:
-            person['emailAddresses'] = [{'value': e} for e in self.emails]
+            person["emailAddresses"] = [{"value": e} for e in self.emails]
 
         # Add phone numbers
         if self.phones:
-            person['phoneNumbers'] = [{'value': p} for p in self.phones]
+            person["phoneNumbers"] = [{"value": p} for p in self.phones]
 
         # Add organizations
         if self.organizations:
-            person['organizations'] = [{'name': o} for o in self.organizations]
+            person["organizations"] = [{"name": o} for o in self.organizations]
 
         # Add notes as biography
         if self.notes:
-            person['biographies'] = [{'value': self.notes, 'contentType': 'TEXT_PLAIN'}]
+            person["biographies"] = [{"value": self.notes, "contentType": "TEXT_PLAIN"}]
 
         return person
 
@@ -203,55 +200,67 @@ class Contact:
         """
         Generate a normalized matching key for cross-account identification.
 
-        Uses a multi-field fingerprint strategy to robustly identify the same
+        Uses a single-identifier strategy to robustly identify the same
         contact across different accounts, even when fields are organized
-        differently (e.g., work vs. home email, different phone field types).
+        differently (e.g., work vs. home email, different phone field types,
+        or one account has more emails than the other).
 
         Returns:
             Lowercase, normalized string key for matching
 
         Key generation strategy (in order of priority):
-            1. If emails exist: name + sorted normalized emails
-            2. If phones exist (no emails): name + sorted normalized phones
+            1. If emails exist: name + first email (alphabetically sorted)
+            2. If phones exist (no emails): name + first phone (sorted)
             3. If neither: name only
 
         This prevents duplicates by:
-            - Using ALL emails, not just the first one
-            - Sorting emails so order doesn't matter
-            - Matching regardless of email type (work/home/other)
+            - Using the FIRST email (alphabetically) for consistent matching
+            - Matching contacts even when one account has additional emails
+            - Sorting ensures same "primary" email is chosen in both accounts
             - Using phone numbers as fallback identifiers
             - Normalizing all values for consistent comparison
+
+        Note:
+            Using only the first email (instead of all) allows contacts to
+            match even when one account has additional emails that the other
+            doesn't have. This is the common case in contact sync scenarios.
         """
         # Normalize and lowercase the display name
         name = self._normalize_string(self.display_name)
 
         # Get all normalized emails, sorted for consistency
-        normalized_emails = sorted([
-            self._normalize_string(email)
-            for email in self.emails
-            if email and self._normalize_string(email)
-        ])
+        normalized_emails = sorted(
+            [
+                self._normalize_string(email)
+                for email in self.emails
+                if email and self._normalize_string(email)
+            ]
+        )
 
         # Get all normalized phone numbers, sorted for consistency
-        normalized_phones = sorted([
-            phone for phone in self._normalize_phones()
-            if phone  # Filter out empty strings
-        ])
+        normalized_phones = sorted(
+            [
+                phone
+                for phone in self._normalize_phones()
+                if phone  # Filter out empty strings
+            ]
+        )
 
-        # Build matching key with priority: name + emails > name + phones > name
+        # Priority: name + first email > name + first phone > name only
         if normalized_emails:
-            # Use all emails joined with comma, sorted for consistency
-            emails_str = ','.join(normalized_emails)
-            return f"{name}|emails:{emails_str}"
+            # Use FIRST email only (sorted alphabetically for consistency)
+            # This allows matching when accounts have different email sets
+            first_email = normalized_emails[0]
+            return f"{name}|email:{first_email}"
         elif normalized_phones:
-            # Fall back to phone numbers if no emails
-            phones_str = ','.join(normalized_phones)
-            return f"{name}|phones:{phones_str}"
+            # Fall back to first phone number if no emails
+            first_phone = normalized_phones[0]
+            return f"{name}|phone:{first_phone}"
         else:
             # Last resort: name only (higher risk of false matches)
             return f"{name}|name_only"
 
-    def alternate_matching_keys(self) -> List[str]:
+    def alternate_matching_keys(self) -> list[str]:
         """
         Generate alternate matching keys for fuzzy duplicate detection.
 
@@ -268,7 +277,7 @@ class Contact:
             - Name + each individual email combination
             - Name + each individual phone combination
         """
-        keys: List[str] = []
+        keys: list[str] = []
         name = self._normalize_string(self.display_name)
 
         # Add individual email-based keys
@@ -313,10 +322,10 @@ class Contact:
             f"notes:{self.notes or ''}",
         ]
 
-        content_string = '\n'.join(content_parts)
+        content_string = "\n".join(content_parts)
 
         # Generate SHA-256 hash
-        return hashlib.sha256(content_string.encode('utf-8')).hexdigest()
+        return hashlib.sha256(content_string.encode("utf-8")).hexdigest()
 
     def _normalize_string(self, value: str) -> str:
         """
@@ -329,31 +338,28 @@ class Contact:
             Normalized lowercase string with special characters removed
         """
         if not value:
-            return ''
+            return ""
 
         # Normalize unicode (decompose accents, etc.)
-        normalized = unicodedata.normalize('NFKD', value)
+        normalized = unicodedata.normalize("NFKD", value)
 
         # Remove combining characters (accents)
-        normalized = ''.join(
-            c for c in normalized
-            if not unicodedata.combining(c)
-        )
+        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
 
         # Convert to lowercase
         normalized = normalized.lower()
 
         # Remove non-alphanumeric characters except @ and spaces
         # Replace multiple spaces with single space
-        normalized = re.sub(r'[^a-z0-9@\s]', '', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        normalized = re.sub(r"[^a-z0-9@\s]", "", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
 
         # Remove spaces for key generation
-        normalized = normalized.replace(' ', '')
+        normalized = normalized.replace(" ", "")
 
         return normalized
 
-    def _normalize_phones(self) -> List[str]:
+    def _normalize_phones(self) -> list[str]:
         """
         Normalize phone numbers for consistent hashing.
 
@@ -365,7 +371,7 @@ class Contact:
         normalized = []
         for phone in self.phones:
             # Keep only digits
-            digits = re.sub(r'\D', '', phone)
+            digits = re.sub(r"\D", "", phone)
             normalized.append(digits)
         return normalized
 

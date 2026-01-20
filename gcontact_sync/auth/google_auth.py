@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -20,20 +20,25 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 # OAuth2 scopes required for Google Contacts access
-SCOPES = ['https://www.googleapis.com/auth/contacts']
+SCOPES = [
+    "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",  # Required by Google when requesting userinfo.email
+]
 
 # Default configuration directory
-DEFAULT_CONFIG_DIR = Path.home() / '.gcontact-sync'
+DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
 # Account identifiers
-ACCOUNT_1 = 'account1'
-ACCOUNT_2 = 'account2'
+ACCOUNT_1 = "account1"
+ACCOUNT_2 = "account2"
 
 logger = logging.getLogger(__name__)
 
 
 class AuthenticationError(Exception):
     """Raised when authentication fails or credentials are invalid."""
+
     pass
 
 
@@ -73,13 +78,13 @@ class GoogleAuth:
         if config_dir is not None:
             self.config_dir = Path(config_dir)
         else:
-            env_dir = os.environ.get('GCONTACT_SYNC_CONFIG_DIR')
+            env_dir = os.environ.get("GCONTACT_SYNC_CONFIG_DIR")
             if env_dir:
                 self.config_dir = Path(env_dir)
             else:
                 self.config_dir = DEFAULT_CONFIG_DIR
 
-        self.credentials_path = self.config_dir / 'credentials.json'
+        self.credentials_path = self.config_dir / "credentials.json"
 
     def _get_token_path(self, account_id: str) -> Path:
         """
@@ -92,7 +97,7 @@ class GoogleAuth:
             Path to the token file for the specified account
         """
         self._validate_account_id(account_id)
-        return self.config_dir / f'token_{account_id}.json'
+        return self.config_dir / f"token_{account_id}.json"
 
     def _validate_account_id(self, account_id: str) -> None:
         """
@@ -138,26 +143,36 @@ class GoogleAuth:
             return None
 
         try:
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+            creds: Credentials = Credentials.from_authorized_user_file(
+                str(token_path), SCOPES
+            )
             logger.debug(f"Loaded credentials for {account_id}")
             return creds
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Invalid token file for {account_id}: {e}")
             return None
 
-    def _save_credentials(self, account_id: str, creds: Credentials) -> None:
+    def _save_credentials(
+        self, account_id: str, creds: Credentials, email: Optional[str] = None
+    ) -> None:
         """
         Save credentials to token file.
 
         Args:
             account_id: Account identifier
             creds: Credentials object to save
+            email: Optional email address to store with credentials
         """
         self._ensure_config_dir()
         token_path = self._get_token_path(account_id)
 
+        # Parse credentials JSON and add email if provided
+        token_data = json.loads(creds.to_json())
+        if email:
+            token_data["email"] = email
+
         # Write with secure permissions
-        token_path.write_text(creds.to_json())
+        token_path.write_text(json.dumps(token_data))
         token_path.chmod(0o600)
         logger.debug(f"Saved credentials for {account_id}")
 
@@ -182,6 +197,41 @@ class GoogleAuth:
         except RefreshError as e:
             logger.warning(f"Failed to refresh credentials: {e}")
             return False
+
+    def _fetch_user_email(self, creds: Credentials) -> Optional[str]:
+        """
+        Fetch the authenticated user's email address from Google.
+
+        Args:
+            creds: Valid credentials with userinfo.email scope
+
+        Returns:
+            Email address if available, None otherwise
+        """
+        import urllib.request
+        from urllib.error import HTTPError
+
+        try:
+            url = "https://www.googleapis.com/oauth2/v2/userinfo"
+            req = urllib.request.Request(url)
+            req.add_header("Authorization", f"Bearer {creds.token}")
+
+            with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
+                data: dict[str, str] = json.loads(response.read().decode("utf-8"))
+                return data.get("email")
+        except HTTPError as e:
+            if e.code == 401:
+                # Token doesn't have email scope - need re-auth with new scopes
+                logger.debug(
+                    "Token missing email scope. Re-authentication required "
+                    "to display email addresses."
+                )
+            else:
+                logger.debug(f"Failed to fetch user email: {e}")
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to fetch user email: {e}")
+            return None
 
     def get_credentials(self, account_id: str) -> Optional[Credentials]:
         """
@@ -211,18 +261,13 @@ class GoogleAuth:
             return creds
 
         # Try to refresh if expired
-        if creds.expired and creds.refresh_token:
-            if self._refresh_credentials(creds):
-                self._save_credentials(account_id, creds)
-                return creds
+        if creds.expired and creds.refresh_token and self._refresh_credentials(creds):
+            self._save_credentials(account_id, creds)
+            return creds
 
         return None
 
-    def authenticate(
-        self,
-        account_id: str,
-        force_reauth: bool = False
-    ) -> Credentials:
+    def authenticate(self, account_id: str, force_reauth: bool = False) -> Credentials:
         """
         Authenticate a Google account.
 
@@ -254,23 +299,25 @@ class GoogleAuth:
         if not self.credentials_path.exists():
             raise FileNotFoundError(
                 f"OAuth credentials file not found: {self.credentials_path}\n"
-                f"Please download your OAuth client credentials from Google Cloud Console "
-                f"and save them to this location."
+                "Please download your OAuth client credentials from "
+                "Google Cloud Console and save them to this location."
             )
 
         logger.info(f"Starting OAuth flow for {account_id}")
 
         try:
             flow = InstalledAppFlow.from_client_secrets_file(
-                str(self.credentials_path),
-                SCOPES
+                str(self.credentials_path), SCOPES
             )
-            creds = flow.run_local_server(port=0)
+            new_creds: Credentials = flow.run_local_server(port=0)
 
-            self._save_credentials(account_id, creds)
+            # Fetch user email to store with credentials
+            email = self._fetch_user_email(new_creds)
+
+            self._save_credentials(account_id, new_creds, email=email)
             logger.info(f"Successfully authenticated {account_id}")
 
-            return creds
+            return new_creds
 
         except Exception as e:
             logger.error(f"Authentication failed for {account_id}: {e}")
@@ -293,7 +340,9 @@ class GoogleAuth:
         """
         return self.get_credentials(account_id) is not None
 
-    def get_both_credentials(self) -> Tuple[Optional[Credentials], Optional[Credentials]]:
+    def get_both_credentials(
+        self,
+    ) -> tuple[Optional[Credentials], Optional[Credentials]]:
         """
         Get credentials for both accounts.
 
@@ -306,9 +355,8 @@ class GoogleAuth:
         return (creds1, creds2)
 
     def authenticate_both(
-        self,
-        force_reauth: bool = False
-    ) -> Tuple[Credentials, Credentials]:
+        self, force_reauth: bool = False
+    ) -> tuple[Credentials, Credentials]:
         """
         Authenticate both accounts.
 
@@ -349,7 +397,7 @@ class GoogleAuth:
 
         return False
 
-    def clear_all_credentials(self) -> Tuple[bool, bool]:
+    def clear_all_credentials(self) -> tuple[bool, bool]:
         """
         Remove stored credentials for both accounts.
 
@@ -361,7 +409,7 @@ class GoogleAuth:
         cleared2 = self.clear_credentials(ACCOUNT_2)
         return (cleared1, cleared2)
 
-    def get_auth_status(self) -> dict:
+    def get_auth_status(self) -> dict[str, object]:
         """
         Get authentication status for both accounts.
 
@@ -376,22 +424,24 @@ class GoogleAuth:
                 'account2': {...}
             }
         """
-        status = {}
+        status: dict[str, object] = {}
 
         for account_id in (ACCOUNT_1, ACCOUNT_2):
             token_path = self._get_token_path(account_id)
             creds = self.get_credentials(account_id)
 
             status[account_id] = {
-                'authenticated': creds is not None,
-                'token_path': str(token_path),
-                'token_exists': token_path.exists(),
-                'credentials_valid': creds is not None and creds.valid if creds else False,
+                "authenticated": creds is not None,
+                "token_path": str(token_path),
+                "token_exists": token_path.exists(),
+                "credentials_valid": creds is not None and creds.valid
+                if creds
+                else False,
             }
 
-        status['credentials_path'] = str(self.credentials_path)
-        status['credentials_exist'] = self.credentials_path.exists()
-        status['config_dir'] = str(self.config_dir)
+        status["credentials_path"] = str(self.credentials_path)
+        status["credentials_exist"] = self.credentials_path.exists()
+        status["config_dir"] = str(self.config_dir)
 
         return status
 
@@ -399,8 +449,8 @@ class GoogleAuth:
         """
         Get the email address associated with an authenticated account.
 
-        Note: This requires the credentials to have the 'email' scope or
-        accessing the token info. Returns None if not available.
+        First checks if email is stored in the token file. If not, attempts
+        to fetch it from Google's userinfo API and stores it for future use.
 
         Args:
             account_id: Account identifier
@@ -415,8 +465,20 @@ class GoogleAuth:
             return None
 
         try:
-            token_data = json.loads(token_path.read_text())
-            # The email might be in the token data if returned by Google
-            return token_data.get('email')
+            token_data: dict[str, str] = json.loads(token_path.read_text())
+            email: Optional[str] = token_data.get("email")
+
+            # If email not stored, try to fetch it and update the token file
+            if not email:
+                creds = self.get_credentials(account_id)
+                if creds:
+                    email = self._fetch_user_email(creds)
+                    if email:
+                        # Update stored token with email
+                        token_data["email"] = email
+                        token_path.write_text(json.dumps(token_data))
+                        logger.debug(f"Updated stored email for {account_id}")
+
+            return email
         except (json.JSONDecodeError, OSError):
             return None

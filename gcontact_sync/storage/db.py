@@ -5,11 +5,10 @@ Provides persistent storage for sync tokens, contact mappings, and sync state.
 """
 
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Tuple
-
+from typing import Any, Optional
 
 # SQL Schema for sync state and contact mapping tables
 SCHEMA = """
@@ -36,6 +35,25 @@ CREATE TABLE IF NOT EXISTS contact_mapping (
 
 CREATE INDEX IF NOT EXISTS idx_contact_mapping_key ON contact_mapping(matching_key);
 CREATE INDEX IF NOT EXISTS idx_sync_state_account ON sync_state(account_id);
+
+CREATE TABLE IF NOT EXISTS llm_match_attempts (
+    id INTEGER PRIMARY KEY,
+    contact1_resource_name TEXT NOT NULL,
+    contact2_resource_name TEXT NOT NULL,
+    contact1_display_name TEXT,
+    contact2_display_name TEXT,
+    contact1_content_hash TEXT,
+    contact2_content_hash TEXT,
+    is_match BOOLEAN NOT NULL,
+    confidence REAL,
+    reasoning TEXT,
+    model_used TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(contact1_resource_name, contact2_resource_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_attempts_contacts
+    ON llm_match_attempts(contact1_resource_name, contact2_resource_name);
 """
 
 
@@ -65,7 +83,36 @@ class SyncDatabase:
             db_path: Path to SQLite database file, or ':memory:' for in-memory database
         """
         self.db_path = db_path
-        self._connection: Optional[sqlite3.Connection] = None
+        self._shared_connection: Optional[sqlite3.Connection] = None
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """
+        Get a database connection.
+
+        For in-memory databases, returns a shared connection to ensure
+        schema persists across operations. For file databases, creates
+        a new connection each time.
+
+        Returns:
+            sqlite3.Connection: Database connection
+        """
+        if self.db_path == ":memory:":
+            # For in-memory, use shared connection so schema persists
+            if self._shared_connection is None:
+                self._shared_connection = sqlite3.connect(
+                    ":memory:",
+                    detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+                )
+                self._shared_connection.row_factory = sqlite3.Row
+            return self._shared_connection
+        else:
+            # For file databases, create new connection
+            conn = sqlite3.connect(
+                self.db_path,
+                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            )
+            conn.row_factory = sqlite3.Row
+            return conn
 
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -80,11 +127,8 @@ class SyncDatabase:
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM sync_state")
         """
-        conn = sqlite3.connect(
-            self.db_path,
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
-        )
-        conn.row_factory = sqlite3.Row
+        conn = self._get_connection()
+        is_shared = self.db_path == ":memory:"
         try:
             yield conn
             conn.commit()
@@ -92,7 +136,9 @@ class SyncDatabase:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            # Only close if not using shared connection
+            if not is_shared:
+                conn.close()
 
     def initialize(self) -> None:
         """
@@ -107,7 +153,7 @@ class SyncDatabase:
     # Sync State Operations
     # =========================================================================
 
-    def get_sync_state(self, account_id: str) -> Optional[Dict[str, Any]]:
+    def get_sync_state(self, account_id: str) -> Optional[dict[str, Any]]:
         """
         Get sync state for an account.
 
@@ -120,13 +166,13 @@ class SyncDatabase:
         with self.connection() as conn:
             cursor = conn.execute(
                 "SELECT sync_token, last_sync_at FROM sync_state WHERE account_id = ?",
-                (account_id,)
+                (account_id,),
             )
             row = cursor.fetchone()
             if row:
                 return {
-                    'sync_token': row['sync_token'],
-                    'last_sync_at': row['last_sync_at']
+                    "sync_token": row["sync_token"],
+                    "last_sync_at": row["last_sync_at"],
                 }
             return None
 
@@ -134,7 +180,7 @@ class SyncDatabase:
         self,
         account_id: str,
         sync_token: Optional[str] = None,
-        last_sync_at: Optional[datetime] = None
+        last_sync_at: Optional[datetime] = None,
     ) -> None:
         """
         Update or insert sync state for an account.
@@ -156,7 +202,7 @@ class SyncDatabase:
                     sync_token = excluded.sync_token,
                     last_sync_at = excluded.last_sync_at
                 """,
-                (account_id, sync_token, last_sync_at)
+                (account_id, sync_token, last_sync_at),
             )
 
     def clear_sync_token(self, account_id: str) -> None:
@@ -169,14 +215,14 @@ class SyncDatabase:
         with self.connection() as conn:
             conn.execute(
                 "UPDATE sync_state SET sync_token = NULL WHERE account_id = ?",
-                (account_id,)
+                (account_id,),
             )
 
     # =========================================================================
     # Contact Mapping Operations
     # =========================================================================
 
-    def get_contact_mapping(self, matching_key: str) -> Optional[Dict[str, Any]]:
+    def get_contact_mapping(self, matching_key: str) -> Optional[dict[str, Any]]:
         """
         Get contact mapping by matching key.
 
@@ -201,7 +247,7 @@ class SyncDatabase:
                 FROM contact_mapping
                 WHERE matching_key = ?
                 """,
-                (matching_key,)
+                (matching_key,),
             )
             row = cursor.fetchone()
             if row:
@@ -215,7 +261,7 @@ class SyncDatabase:
         account2_resource_name: Optional[str] = None,
         account1_etag: Optional[str] = None,
         account2_etag: Optional[str] = None,
-        last_synced_hash: Optional[str] = None
+        last_synced_hash: Optional[str] = None,
     ) -> None:
         """
         Insert or update a contact mapping.
@@ -231,15 +277,14 @@ class SyncDatabase:
         with self.connection() as conn:
             # Check if mapping exists
             cursor = conn.execute(
-                "SELECT id FROM contact_mapping WHERE matching_key = ?",
-                (matching_key,)
+                "SELECT id FROM contact_mapping WHERE matching_key = ?", (matching_key,)
             )
             existing = cursor.fetchone()
 
             if existing:
                 # Update existing mapping
-                updates = []
-                params = []
+                updates: list[str] = []
+                params: list[str | datetime] = []
 
                 if account1_resource_name is not None:
                     updates.append("account1_resource_name = ?")
@@ -262,10 +307,11 @@ class SyncDatabase:
                     params.append(datetime.utcnow())
                     params.append(matching_key)
 
-                    conn.execute(
-                        f"UPDATE contact_mapping SET {', '.join(updates)} WHERE matching_key = ?",
-                        params
+                    update_sql = (
+                        f"UPDATE contact_mapping SET {', '.join(updates)} "  # nosec B608
+                        "WHERE matching_key = ?"
                     )
+                    conn.execute(update_sql, params)
             else:
                 # Insert new mapping
                 conn.execute(
@@ -289,11 +335,11 @@ class SyncDatabase:
                         account2_etag,
                         last_synced_hash,
                         datetime.utcnow(),
-                        datetime.utcnow()
-                    )
+                        datetime.utcnow(),
+                    ),
                 )
 
-    def get_all_contact_mappings(self) -> List[Dict[str, Any]]:
+    def get_all_contact_mappings(self) -> list[dict[str, Any]]:
         """
         Get all contact mappings.
 
@@ -330,16 +376,38 @@ class SyncDatabase:
         """
         with self.connection() as conn:
             cursor = conn.execute(
-                "DELETE FROM contact_mapping WHERE matching_key = ?",
-                (matching_key,)
+                "DELETE FROM contact_mapping WHERE matching_key = ?", (matching_key,)
+            )
+            return cursor.rowcount > 0
+
+    def update_matching_key(self, old_key: str, new_key: str) -> bool:
+        """
+        Update the matching key for a contact mapping.
+
+        Used when a contact is renamed and its matching key changes,
+        but we want to maintain the pairing between accounts.
+
+        Args:
+            old_key: The current matching key in the database
+            new_key: The new matching key to use
+
+        Returns:
+            True if a mapping was updated, False if not found
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE contact_mapping
+                SET matching_key = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE matching_key = ?
+                """,
+                (new_key, old_key),
             )
             return cursor.rowcount > 0
 
     def get_mappings_by_resource_name(
-        self,
-        resource_name: str,
-        account: int
-    ) -> List[Dict[str, Any]]:
+        self, resource_name: str, account: int
+    ) -> list[dict[str, Any]]:
         """
         Get contact mappings by resource name for a specific account.
 
@@ -368,10 +436,169 @@ class SyncDatabase:
                     updated_at
                 FROM contact_mapping
                 WHERE {column} = ?
-                """,
-                (resource_name,)
+                """,  # nosec B608 - column is validated to be account1 or account2
+                (resource_name,),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # LLM Match Attempt Operations
+    # =========================================================================
+
+    def get_llm_match_attempt(
+        self,
+        contact1_resource_name: str,
+        contact2_resource_name: str,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Get cached LLM match decision for a contact pair.
+
+        Checks both orderings of the contact pair since (A, B) and (B, A)
+        represent the same comparison.
+
+        Args:
+            contact1_resource_name: Resource name of first contact
+            contact2_resource_name: Resource name of second contact
+
+        Returns:
+            Dictionary with match attempt details, or None if not found
+        """
+        with self.connection() as conn:
+            # Check both orderings
+            cursor = conn.execute(
+                """
+                SELECT
+                    contact1_resource_name,
+                    contact2_resource_name,
+                    contact1_display_name,
+                    contact2_display_name,
+                    contact1_content_hash,
+                    contact2_content_hash,
+                    is_match,
+                    confidence,
+                    reasoning,
+                    model_used,
+                    created_at
+                FROM llm_match_attempts
+                WHERE (contact1_resource_name = ? AND contact2_resource_name = ?)
+                   OR (contact1_resource_name = ? AND contact2_resource_name = ?)
+                """,
+                (
+                    contact1_resource_name,
+                    contact2_resource_name,
+                    contact2_resource_name,
+                    contact1_resource_name,
+                ),
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def upsert_llm_match_attempt(
+        self,
+        contact1_resource_name: str,
+        contact2_resource_name: str,
+        contact1_display_name: str,
+        contact2_display_name: str,
+        contact1_content_hash: str,
+        contact2_content_hash: str,
+        is_match: bool,
+        confidence: float,
+        reasoning: str,
+        model_used: str,
+    ) -> None:
+        """
+        Store or update LLM match decision for a contact pair.
+
+        Args:
+            contact1_resource_name: Resource name of first contact
+            contact2_resource_name: Resource name of second contact
+            contact1_display_name: Display name of first contact
+            contact2_display_name: Display name of second contact
+            contact1_content_hash: Content hash of first contact
+            contact2_content_hash: Content hash of second contact
+            is_match: Whether LLM determined contacts match
+            confidence: LLM confidence score (0.0 to 1.0)
+            reasoning: LLM's reasoning for the decision
+            model_used: Model identifier used for the decision
+        """
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO llm_match_attempts (
+                    contact1_resource_name,
+                    contact2_resource_name,
+                    contact1_display_name,
+                    contact2_display_name,
+                    contact1_content_hash,
+                    contact2_content_hash,
+                    is_match,
+                    confidence,
+                    reasoning,
+                    model_used,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(contact1_resource_name, contact2_resource_name)
+                DO UPDATE SET
+                    contact1_display_name = excluded.contact1_display_name,
+                    contact2_display_name = excluded.contact2_display_name,
+                    contact1_content_hash = excluded.contact1_content_hash,
+                    contact2_content_hash = excluded.contact2_content_hash,
+                    is_match = excluded.is_match,
+                    confidence = excluded.confidence,
+                    reasoning = excluded.reasoning,
+                    model_used = excluded.model_used,
+                    created_at = excluded.created_at
+                """,
+                (
+                    contact1_resource_name,
+                    contact2_resource_name,
+                    contact1_display_name,
+                    contact2_display_name,
+                    contact1_content_hash,
+                    contact2_content_hash,
+                    is_match,
+                    confidence,
+                    reasoning,
+                    model_used,
+                    datetime.utcnow(),
+                ),
+            )
+
+    def delete_llm_match_attempts_for_contact(self, resource_name: str) -> int:
+        """
+        Delete all LLM match attempts involving a contact.
+
+        Used when a contact is deleted to clean up stale cache entries.
+
+        Args:
+            resource_name: Resource name of the contact
+
+        Returns:
+            Number of records deleted
+        """
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM llm_match_attempts
+                WHERE contact1_resource_name = ? OR contact2_resource_name = ?
+                """,
+                (resource_name, resource_name),
+            )
+            return cursor.rowcount
+
+    def get_llm_match_attempt_count(self) -> int:
+        """
+        Get the total number of cached LLM match attempts.
+
+        Returns:
+            Count of LLM match attempts
+        """
+        with self.connection() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM llm_match_attempts")
+            result: int = cursor.fetchone()[0]
+            return result
 
     # =========================================================================
     # Utility Operations
@@ -386,7 +613,8 @@ class SyncDatabase:
         """
         with self.connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM contact_mapping")
-            return cursor.fetchone()[0]
+            result: int = cursor.fetchone()[0]
+            return result
 
     def clear_all_mappings(self) -> int:
         """

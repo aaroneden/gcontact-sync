@@ -86,20 +86,30 @@ check_gcloud() {
 authenticate() {
     print_header "Authenticating with Google Cloud"
 
-    # Check if already authenticated
+    # Check if already authenticated AND tokens are valid
     if gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | grep -q "@"; then
         CURRENT_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | head -1)
         print_info "Currently authenticated as: $CURRENT_ACCOUNT"
 
-        read -p "Use this account? (Y/n): " USE_CURRENT
-        if [[ "${USE_CURRENT,,}" != "n" ]]; then
-            print_success "Using existing authentication"
-            return 0
+        # Verify tokens are still valid by making a simple API call
+        print_info "Verifying authentication tokens..."
+        if gcloud auth print-access-token >/dev/null 2>&1; then
+            read -p "Use this account? (Y/n): " USE_CURRENT
+            # Use tr for case conversion (compatible with Bash 3.2 on macOS)
+            if [[ "$(echo "$USE_CURRENT" | tr '[:upper:]' '[:lower:]')" != "n" ]]; then
+                print_success "Using existing authentication"
+                return 0
+            fi
+        else
+            print_warning "Authentication tokens have expired. Re-authentication required."
         fi
     fi
 
     print_info "Opening browser for Google authentication..."
-    gcloud auth login --no-launch-browser 2>/dev/null || gcloud auth login
+    if ! gcloud auth login; then
+        print_error "Authentication failed. Please try again."
+        exit 1
+    fi
 
     print_success "Authentication successful"
 }
@@ -110,7 +120,16 @@ setup_project() {
 
     # List existing projects
     print_info "Fetching your existing projects..."
-    PROJECTS=$(gcloud projects list --format="value(projectId)" 2>/dev/null || echo "")
+    PROJECTS=$(gcloud projects list --format="value(projectId)" 2>&1)
+    PROJECTS_EXIT_CODE=$?
+
+    if [[ $PROJECTS_EXIT_CODE -ne 0 ]]; then
+        print_error "Failed to list projects. This may indicate an authentication issue."
+        echo "$PROJECTS"
+        echo ""
+        print_info "Please run: gcloud auth login"
+        exit 1
+    fi
 
     if [[ -n "$PROJECTS" ]]; then
         echo ""
@@ -135,11 +154,27 @@ setup_project() {
         PROJECT_ID="${PROJECT_ID:-$DEFAULT_PROJECT_ID}"
 
         print_info "Creating project: $PROJECT_ID"
-        if gcloud projects create "$PROJECT_ID" --name="$APP_NAME" 2>/dev/null; then
+        CREATE_OUTPUT=$(gcloud projects create "$PROJECT_ID" --name="$APP_NAME" 2>&1)
+        CREATE_EXIT_CODE=$?
+
+        if [[ $CREATE_EXIT_CODE -eq 0 ]]; then
             print_success "Project created: $PROJECT_ID"
         else
-            print_warning "Project creation failed. It may already exist or you don't have permissions."
-            print_info "Trying to use existing project..."
+            # Check for specific error types
+            if echo "$CREATE_OUTPUT" | grep -q "Reauthentication"; then
+                print_error "Authentication tokens have expired."
+                echo ""
+                print_info "Please run: gcloud auth login"
+                print_info "Then re-run this script."
+                exit 1
+            elif echo "$CREATE_OUTPUT" | grep -q "already exists"; then
+                print_warning "Project '$PROJECT_ID' already exists."
+                print_info "Will use the existing project."
+            else
+                print_error "Project creation failed:"
+                echo "$CREATE_OUTPUT"
+                exit 1
+            fi
         fi
     else
         # Use existing project
@@ -152,7 +187,10 @@ setup_project() {
 
     # Set the project as active
     print_info "Setting active project to: $PROJECT_ID"
-    gcloud config set project "$PROJECT_ID"
+    if ! gcloud config set project "$PROJECT_ID" 2>&1; then
+        print_error "Failed to set project. Please check the project ID."
+        exit 1
+    fi
 
     print_success "Project configured: $PROJECT_ID"
     export GCLOUD_PROJECT_ID="$PROJECT_ID"
@@ -249,8 +287,8 @@ create_credentials() {
         if [[ -n "$RECENT_CREDS" ]]; then
             print_info "Found credentials file: $RECENT_CREDS"
             read -p "Use this file? (Y/n): " USE_FOUND
-
-            if [[ "${USE_FOUND,,}" != "n" ]]; then
+            # Use tr for case conversion (compatible with Bash 3.2 on macOS)
+            if [[ "$(echo "$USE_FOUND" | tr '[:upper:]' '[:lower:]')" != "n" ]]; then
                 CREDS_FILE="$RECENT_CREDS"
             fi
         fi

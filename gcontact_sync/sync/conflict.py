@@ -6,15 +6,16 @@ modified in both Google accounts since the last sync.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Optional
 
 from gcontact_sync.sync.contact import Contact
 
 
 class ConflictStrategy(Enum):
     """Available conflict resolution strategies."""
+
     LAST_MODIFIED_WINS = "last_modified_wins"
     ACCOUNT1_WINS = "account1_wins"
     ACCOUNT2_WINS = "account2_wins"
@@ -22,6 +23,7 @@ class ConflictStrategy(Enum):
 
 class ConflictSide(Enum):
     """Indicates which side won a conflict resolution."""
+
     ACCOUNT1 = "account1"
     ACCOUNT2 = "account2"
     NO_CONFLICT = "no_conflict"
@@ -41,6 +43,7 @@ class ConflictResult:
         needs_update_in_account1: True if account1 needs to be updated
         needs_update_in_account2: True if account2 needs to be updated
     """
+
     winner: Contact
     loser: Contact
     winning_side: ConflictSide
@@ -70,7 +73,9 @@ class ConflictResolver:
         strategy: The conflict resolution strategy to use
     """
 
-    def __init__(self, strategy: ConflictStrategy = ConflictStrategy.LAST_MODIFIED_WINS):
+    def __init__(
+        self, strategy: ConflictStrategy = ConflictStrategy.LAST_MODIFIED_WINS
+    ):
         """
         Initialize the conflict resolver.
 
@@ -83,7 +88,7 @@ class ConflictResolver:
         self,
         contact1: Contact,
         contact2: Contact,
-        last_synced_hash: Optional[str] = None
+        last_synced_hash: Optional[str] = None,
     ) -> bool:
         """
         Determine if two contacts are in conflict.
@@ -124,11 +129,7 @@ class ConflictResolver:
         # Without last synced hash, any difference is a potential conflict
         return True
 
-    def resolve(
-        self,
-        contact1: Contact,
-        contact2: Contact
-    ) -> ConflictResult:
+    def resolve(self, contact1: Contact, contact2: Contact) -> ConflictResult:
         """
         Resolve a conflict between two contacts.
 
@@ -153,9 +154,7 @@ class ConflictResolver:
             return self._resolve_last_modified_wins(contact1, contact2)
 
     def _resolve_last_modified_wins(
-        self,
-        contact1: Contact,
-        contact2: Contact
+        self, contact1: Contact, contact2: Contact
     ) -> ConflictResult:
         """
         Resolve conflict using last-modified-wins strategy.
@@ -171,9 +170,17 @@ class ConflictResolver:
             ConflictResult with resolution details
         """
         # Get timestamps, defaulting to epoch if not available
-        epoch = datetime(1970, 1, 1)
+        # Use UTC epoch to ensure timezone-aware comparison
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
         time1 = contact1.last_modified or epoch
         time2 = contact2.last_modified or epoch
+
+        # Ensure both are comparable (handle mixed naive/aware datetimes)
+        # If one has tzinfo and the other doesn't, assume UTC for the naive one
+        if time1.tzinfo is None and time2.tzinfo is not None:
+            time1 = time1.replace(tzinfo=timezone.utc)
+        elif time2.tzinfo is None and time1.tzinfo is not None:
+            time2 = time2.replace(tzinfo=timezone.utc)
 
         # Determine winner
         if time1 > time2:
@@ -206,10 +213,7 @@ class ConflictResolver:
             )
 
     def _resolve_account_wins(
-        self,
-        contact1: Contact,
-        contact2: Contact,
-        account: int
+        self, contact1: Contact, contact2: Contact, account: int
     ) -> ConflictResult:
         """
         Resolve conflict by always preferring one account.
@@ -242,10 +246,8 @@ class ConflictResolver:
             )
 
     def compare_timestamps(
-        self,
-        contact1: Contact,
-        contact2: Contact
-    ) -> Tuple[Optional[datetime], Optional[datetime], int]:
+        self, contact1: Contact, contact2: Contact
+    ) -> tuple[Optional[datetime], Optional[datetime], int]:
         """
         Compare modification timestamps of two contacts.
 
@@ -268,7 +270,7 @@ class ConflictResolver:
         elif time1 is None:
             return (None, time2, -1)  # contact2 is newer (has timestamp)
         elif time2 is None:
-            return (time1, None, 1)   # contact1 is newer (has timestamp)
+            return (time1, None, 1)  # contact1 is newer (has timestamp)
 
         # Both have timestamps
         if time1 > time2:
@@ -282,8 +284,8 @@ class ConflictResolver:
         self,
         contact1: Contact,
         contact2: Contact,
-        last_synced_hash: Optional[str] = None
-    ) -> Tuple[bool, bool]:
+        last_synced_hash: Optional[str] = None,
+    ) -> tuple[bool, bool]:
         """
         Determine which accounts need to be updated for sync.
 
@@ -319,12 +321,18 @@ class ConflictResolver:
             elif contact1_changed and contact2_changed:
                 # Both changed - resolve conflict
                 result = self.resolve(contact1, contact2)
-                return (result.needs_update_in_account1, result.needs_update_in_account2)
+                return (
+                    result.needs_update_in_account1,
+                    result.needs_update_in_account2,
+                )
             else:
                 # Neither changed from sync state but different from each other
                 # This shouldn't happen in normal operation
                 result = self.resolve(contact1, contact2)
-                return (result.needs_update_in_account1, result.needs_update_in_account2)
+                return (
+                    result.needs_update_in_account1,
+                    result.needs_update_in_account2,
+                )
         else:
             # No last synced hash - resolve based on strategy
             result = self.resolve(contact1, contact2)

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Bidirectional Google Contacts synchronization between two accounts"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 authors = [
     {name = "GContact Sync", email = "gcontact-sync@example.com"}
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -31,6 +30,7 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "click>=8.1.0",
     "requests>=2.31.0",
+    "rapidfuzz>=3.13.0",
 ]
 
 [project.optional-dependencies]
@@ -38,9 +38,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
-    "black>=24.0.0",
-    "isort>=5.13.0",
-    "flake8>=7.0.0",
+    "ruff>=0.4.0",
     "mypy>=1.8.0",
     "types-requests>=2.31.0",
 ]
@@ -63,43 +61,29 @@ dev-dependencies = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
-    "black>=24.0.0",
-    "isort>=5.13.0",
-    "flake8>=7.0.0",
+    "ruff>=0.4.0",
     "mypy>=1.8.0",
     "types-requests>=2.31.0",
+    "bandit>=1.8.6",
+    "anthropic>=0.76.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["gcontact_sync"]
 
-[tool.black]
+[tool.ruff]
 line-length = 88
-target-version = ["py38", "py39", "py310", "py311", "py312"]
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
+target-version = "py39"
 
-[tool.isort]
-profile = "black"
-line_length = 88
-known_first_party = ["gcontact_sync"]
-skip = [".venv", "venv", ".git", "__pycache__"]
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["gcontact_sync"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

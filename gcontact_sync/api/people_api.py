@@ -10,7 +10,7 @@ Provides a high-level interface to the Google People API for:
 
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -20,23 +20,27 @@ from gcontact_sync.sync.contact import Contact
 
 # Person fields to request from the API
 # These are the fields we sync between accounts
-PERSON_FIELDS = ','.join([
-    'names',
-    'emailAddresses',
-    'phoneNumbers',
-    'organizations',
-    'biographies',
-    'metadata',
-])
+PERSON_FIELDS = ",".join(
+    [
+        "names",
+        "emailAddresses",
+        "phoneNumbers",
+        "organizations",
+        "biographies",
+        "metadata",
+    ]
+)
 
 # Fields to update when modifying contacts
-UPDATE_PERSON_FIELDS = ','.join([
-    'names',
-    'emailAddresses',
-    'phoneNumbers',
-    'organizations',
-    'biographies',
-])
+UPDATE_PERSON_FIELDS = ",".join(
+    [
+        "names",
+        "emailAddresses",
+        "phoneNumbers",
+        "organizations",
+        "biographies",
+    ]
+)
 
 # Maximum number of contacts per page when listing
 DEFAULT_PAGE_SIZE = 100
@@ -54,11 +58,13 @@ logger = logging.getLogger(__name__)
 
 class PeopleAPIError(Exception):
     """Raised when a People API operation fails."""
+
     pass
 
 
 class RateLimitError(PeopleAPIError):
     """Raised when rate limit is exceeded and retries are exhausted."""
+
     pass
 
 
@@ -95,11 +101,7 @@ class PeopleAPI:
         created = api.batch_create_contacts(contacts_list)
     """
 
-    def __init__(
-        self,
-        credentials: Credentials,
-        page_size: int = DEFAULT_PAGE_SIZE
-    ):
+    def __init__(self, credentials: Credentials, page_size: int = DEFAULT_PAGE_SIZE):
         """
         Initialize the People API wrapper.
 
@@ -112,7 +114,7 @@ class PeopleAPI:
         self._service = None
 
     @property
-    def service(self):
+    def service(self) -> Any:
         """
         Get or create the Google API service object.
 
@@ -125,10 +127,7 @@ class PeopleAPI:
         if self._service is None:
             try:
                 self._service = build(
-                    'people',
-                    'v1',
-                    credentials=self.credentials,
-                    cache_discovery=False
+                    "people", "v1", credentials=self.credentials, cache_discovery=False
                 )
                 logger.debug("Created People API service")
             except Exception as e:
@@ -137,9 +136,7 @@ class PeopleAPI:
         return self._service
 
     def _retry_with_backoff(
-        self,
-        operation: Callable[[], Any],
-        operation_name: str
+        self, operation: Callable[[], Any], operation_name: str
     ) -> Any:
         """
         Execute an operation with exponential backoff retry.
@@ -168,8 +165,8 @@ class PeopleAPI:
                 if status_code in (429, 403):
                     if attempt < MAX_RETRIES - 1:
                         logger.warning(
-                            f"{operation_name} rate limited, "
-                            f"retrying in {delay:.1f}s (attempt {attempt + 1}/{MAX_RETRIES})"
+                            f"{operation_name} rate limited, retrying in "
+                            f"{delay:.1f}s (attempt {attempt + 1}/{MAX_RETRIES})"
                         )
                         time.sleep(delay)
                         delay = min(delay * 2, MAX_RETRY_DELAY)
@@ -181,30 +178,25 @@ class PeopleAPI:
                         ) from e
 
                 # Server error - retry with backoff
-                if status_code >= 500:
-                    if attempt < MAX_RETRIES - 1:
-                        logger.warning(
-                            f"{operation_name} server error ({status_code}), "
-                            f"retrying in {delay:.1f}s"
-                        )
-                        time.sleep(delay)
-                        delay = min(delay * 2, MAX_RETRY_DELAY)
-                        continue
+                if status_code >= 500 and attempt < MAX_RETRIES - 1:
+                    logger.warning(
+                        f"{operation_name} server error ({status_code}), "
+                        f"retrying in {delay:.1f}s"
+                    )
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                    continue
 
                 # Other errors - don't retry
                 logger.error(f"{operation_name} failed with status {status_code}: {e}")
-                raise PeopleAPIError(
-                    f"{operation_name} failed: {e}"
-                ) from e
+                raise PeopleAPIError(f"{operation_name} failed: {e}") from e
 
         # Should not reach here, but just in case
         raise PeopleAPIError(f"{operation_name} failed after all retries")
 
     def list_contacts(
-        self,
-        sync_token: Optional[str] = None,
-        request_sync_token: bool = True
-    ) -> Tuple[List[Contact], Optional[str]]:
+        self, sync_token: Optional[str] = None, request_sync_token: bool = True
+    ) -> tuple[list[Contact], Optional[str]]:
         """
         List all contacts or get changes since last sync.
 
@@ -228,29 +220,29 @@ class PeopleAPI:
         """
         logger.debug(f"Listing contacts (sync_token={bool(sync_token)})")
 
-        contacts: List[Contact] = []
+        contacts: list[Contact] = []
         page_token: Optional[str] = None
         next_sync_token: Optional[str] = None
 
         while True:
             # Build request parameters
-            params: Dict[str, Any] = {
-                'resourceName': 'people/me',
-                'personFields': PERSON_FIELDS,
-                'pageSize': self.page_size,
+            params: dict[str, Any] = {
+                "resourceName": "people/me",
+                "personFields": PERSON_FIELDS,
+                "pageSize": self.page_size,
             }
 
             if page_token:
-                params['pageToken'] = page_token
+                params["pageToken"] = page_token
 
             if sync_token:
-                params['syncToken'] = sync_token
+                params["syncToken"] = sync_token
             elif request_sync_token:
-                params['requestSyncToken'] = True
+                params["requestSyncToken"] = True
 
             # Execute request with retry
-            def execute_list():
-                return self.service.people().connections().list(**params).execute()
+            def execute_list(p: dict[str, Any] = params) -> Any:
+                return self.service.people().connections().list(**p).execute()
 
             try:
                 response = self._retry_with_backoff(execute_list, "list_contacts")
@@ -267,7 +259,7 @@ class PeopleAPI:
                 raise
 
             # Parse contacts from response
-            connections = response.get('connections', [])
+            connections = response.get("connections", [])
             for person in connections:
                 try:
                     contact = Contact.from_api_response(person)
@@ -277,8 +269,8 @@ class PeopleAPI:
                     continue
 
             # Get next page token or sync token
-            page_token = response.get('nextPageToken')
-            next_sync_token = response.get('nextSyncToken')
+            page_token = response.get("nextPageToken")
+            next_sync_token = response.get("nextSyncToken")
 
             if not page_token:
                 break
@@ -301,14 +293,17 @@ class PeopleAPI:
         """
         logger.debug(f"Getting contact: {resource_name}")
 
-        def execute_get():
-            return self.service.people().get(
-                resourceName=resource_name,
-                personFields=PERSON_FIELDS
-            ).execute()
+        def execute_get() -> Any:
+            return (
+                self.service.people()
+                .get(resourceName=resource_name, personFields=PERSON_FIELDS)
+                .execute()
+            )
 
         try:
-            response = self._retry_with_backoff(execute_get, f"get_contact({resource_name})")
+            response = self._retry_with_backoff(
+                execute_get, f"get_contact({resource_name})"
+            )
             return Contact.from_api_response(response)
         except HttpError as e:
             if e.resp.status == 404:
@@ -332,11 +327,12 @@ class PeopleAPI:
 
         body = contact.to_api_format()
 
-        def execute_create():
-            return self.service.people().createContact(
-                body=body,
-                personFields=PERSON_FIELDS
-            ).execute()
+        def execute_create() -> Any:
+            return (
+                self.service.people()
+                .createContact(body=body, personFields=PERSON_FIELDS)
+                .execute()
+            )
 
         response = self._retry_with_backoff(execute_create, "create_contact")
         created_contact = Contact.from_api_response(response)
@@ -348,7 +344,7 @@ class PeopleAPI:
         self,
         contact: Contact,
         resource_name: Optional[str] = None,
-        etag: Optional[str] = None
+        etag: Optional[str] = None,
     ) -> Contact:
         """
         Update an existing contact.
@@ -374,18 +370,24 @@ class PeopleAPI:
         logger.debug(f"Updating contact: {target_resource}")
 
         body = contact.to_api_format()
-        body['etag'] = target_etag
+        body["etag"] = target_etag
 
-        def execute_update():
-            return self.service.people().updateContact(
-                resourceName=target_resource,
-                body=body,
-                updatePersonFields=UPDATE_PERSON_FIELDS,
-                personFields=PERSON_FIELDS
-            ).execute()
+        def execute_update() -> Any:
+            return (
+                self.service.people()
+                .updateContact(
+                    resourceName=target_resource,
+                    body=body,
+                    updatePersonFields=UPDATE_PERSON_FIELDS,
+                    personFields=PERSON_FIELDS,
+                )
+                .execute()
+            )
 
         try:
-            response = self._retry_with_backoff(execute_update, f"update_contact({target_resource})")
+            response = self._retry_with_backoff(
+                execute_update, f"update_contact({target_resource})"
+            )
             updated_contact = Contact.from_api_response(response)
             logger.info(f"Updated contact: {target_resource}")
             return updated_contact
@@ -415,28 +417,29 @@ class PeopleAPI:
         """
         logger.debug(f"Deleting contact: {resource_name}")
 
-        def execute_delete():
-            return self.service.people().deleteContact(
-                resourceName=resource_name
-            ).execute()
+        def execute_delete() -> Any:
+            return (
+                self.service.people()
+                .deleteContact(resourceName=resource_name)
+                .execute()
+            )
 
         try:
             self._retry_with_backoff(execute_delete, f"delete_contact({resource_name})")
             logger.info(f"Deleted contact: {resource_name}")
             return True
 
-        except HttpError as e:
-            if e.resp.status == 404:
-                # Already deleted, consider success
+        except PeopleAPIError as e:
+            # Check if the underlying cause was a 404 (already deleted)
+            cause = e.__cause__
+            if cause and isinstance(cause, HttpError) and cause.resp.status == 404:
                 logger.debug(f"Contact already deleted: {resource_name}")
                 return True
             raise
 
     def batch_create_contacts(
-        self,
-        contacts: List[Contact],
-        batch_size: int = MAX_BATCH_SIZE
-    ) -> List[Contact]:
+        self, contacts: list[Contact], batch_size: int = MAX_BATCH_SIZE
+    ) -> list[Contact]:
         """
         Create multiple contacts in batches.
 
@@ -458,35 +461,36 @@ class PeopleAPI:
         logger.debug(f"Batch creating {len(contacts)} contacts")
 
         batch_size = min(batch_size, MAX_BATCH_SIZE)
-        created_contacts: List[Contact] = []
+        created_contacts: list[Contact] = []
 
         # Process in batches
         for i in range(0, len(contacts), batch_size):
-            batch = contacts[i:i + batch_size]
-            logger.debug(f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)")
+            batch = contacts[i : i + batch_size]
+            logger.debug(
+                f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)"
+            )
 
             # Build batch request body
             batch_body = {
-                'contacts': [
-                    {'contactPerson': contact.to_api_format()}
-                    for contact in batch
+                "contacts": [
+                    {"contactPerson": contact.to_api_format()} for contact in batch
                 ],
-                'readMask': PERSON_FIELDS
+                "readMask": PERSON_FIELDS,
             }
 
-            def execute_batch_create():
-                return self.service.people().batchCreateContacts(
-                    body=batch_body
-                ).execute()
+            def execute_batch_create(
+                b: dict[str, Any] = batch_body,
+            ) -> Any:
+                return self.service.people().batchCreateContacts(body=b).execute()
 
             response = self._retry_with_backoff(
                 execute_batch_create,
-                f"batch_create_contacts(batch {i // batch_size + 1})"
+                f"batch_create_contacts(batch {i // batch_size + 1})",
             )
 
             # Parse created contacts
-            for created_person in response.get('createdPeople', []):
-                person_data = created_person.get('person', {})
+            for created_person in response.get("createdPeople", []):
+                person_data = created_person.get("person", {})
                 if person_data:
                     contact = Contact.from_api_response(person_data)
                     created_contacts.append(contact)
@@ -496,9 +500,9 @@ class PeopleAPI:
 
     def batch_update_contacts(
         self,
-        contacts_with_resources: List[Tuple[str, Contact]],
-        batch_size: int = MAX_BATCH_SIZE
-    ) -> List[Contact]:
+        contacts_with_resources: list[tuple[str, Contact]],
+        batch_size: int = MAX_BATCH_SIZE,
+    ) -> list[Contact]:
         """
         Update multiple contacts in batches.
 
@@ -520,40 +524,42 @@ class PeopleAPI:
         logger.debug(f"Batch updating {len(contacts_with_resources)} contacts")
 
         batch_size = min(batch_size, MAX_BATCH_SIZE)
-        updated_contacts: List[Contact] = []
+        updated_contacts: list[Contact] = []
 
         # Process in batches
         for i in range(0, len(contacts_with_resources), batch_size):
-            batch = contacts_with_resources[i:i + batch_size]
-            logger.debug(f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)")
+            batch = contacts_with_resources[i : i + batch_size]
+            logger.debug(
+                f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)"
+            )
 
             # Build batch request body
             contacts_dict = {}
             for resource_name, contact in batch:
                 person_data = contact.to_api_format()
-                person_data['etag'] = contact.etag
+                person_data["etag"] = contact.etag
                 contacts_dict[resource_name] = person_data
 
             batch_body = {
-                'contacts': contacts_dict,
-                'updateMask': UPDATE_PERSON_FIELDS,
-                'readMask': PERSON_FIELDS
+                "contacts": contacts_dict,
+                "updateMask": UPDATE_PERSON_FIELDS,
+                "readMask": PERSON_FIELDS,
             }
 
-            def execute_batch_update():
-                return self.service.people().batchUpdateContacts(
-                    body=batch_body
-                ).execute()
+            def execute_batch_update(
+                b: dict[str, Any] = batch_body,
+            ) -> Any:
+                return self.service.people().batchUpdateContacts(body=b).execute()
 
             response = self._retry_with_backoff(
                 execute_batch_update,
-                f"batch_update_contacts(batch {i // batch_size + 1})"
+                f"batch_update_contacts(batch {i // batch_size + 1})",
             )
 
             # Parse updated contacts
-            update_results = response.get('updateResult', {})
-            for resource_name, result in update_results.items():
-                person_data = result.get('person', {})
+            update_results = response.get("updateResult", {})
+            for _resource_name, result in update_results.items():
+                person_data = result.get("person", {})
                 if person_data:
                     contact = Contact.from_api_response(person_data)
                     updated_contacts.append(contact)
@@ -562,9 +568,7 @@ class PeopleAPI:
         return updated_contacts
 
     def batch_delete_contacts(
-        self,
-        resource_names: List[str],
-        batch_size: int = MAX_BATCH_SIZE
+        self, resource_names: list[str], batch_size: int = MAX_BATCH_SIZE
     ) -> int:
         """
         Delete multiple contacts in batches.
@@ -591,21 +595,21 @@ class PeopleAPI:
 
         # Process in batches
         for i in range(0, len(resource_names), batch_size):
-            batch = resource_names[i:i + batch_size]
-            logger.debug(f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)")
+            batch = resource_names[i : i + batch_size]
+            logger.debug(
+                f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)"
+            )
 
-            batch_body = {
-                'resourceNames': batch
-            }
+            batch_body: dict[str, list[str]] = {"resourceNames": batch}
 
-            def execute_batch_delete():
-                return self.service.people().batchDeleteContacts(
-                    body=batch_body
-                ).execute()
+            def execute_batch_delete(
+                b: dict[str, list[str]] = batch_body,
+            ) -> Any:
+                return self.service.people().batchDeleteContacts(body=b).execute()
 
             self._retry_with_backoff(
                 execute_batch_delete,
-                f"batch_delete_contacts(batch {i // batch_size + 1})"
+                f"batch_delete_contacts(batch {i // batch_size + 1})",
             )
 
             deleted_count += len(batch)
@@ -626,26 +630,24 @@ class PeopleAPI:
 
         # Request with page size 1 to minimize data transfer
         params = {
-            'resourceName': 'people/me',
-            'personFields': 'names',
-            'pageSize': 1,
-            'requestSyncToken': True
+            "resourceName": "people/me",
+            "personFields": "names",
+            "pageSize": 1,
+            "requestSyncToken": True,
         }
 
-        def execute_list():
+        def execute_list() -> Any:
             return self.service.people().connections().list(**params).execute()
 
         try:
             response = self._retry_with_backoff(execute_list, "get_sync_token")
-            return response.get('nextSyncToken')
+            token: Optional[str] = response.get("nextSyncToken")
+            return token
         except PeopleAPIError:
             logger.warning("Failed to get sync token")
             return None
 
-    def list_deleted_contacts(
-        self,
-        sync_token: str
-    ) -> Tuple[List[str], Optional[str]]:
+    def list_deleted_contacts(self, sync_token: str) -> tuple[list[str], Optional[str]]:
         """
         List contacts deleted since the given sync token.
 
@@ -660,26 +662,28 @@ class PeopleAPI:
         """
         logger.debug("Listing deleted contacts")
 
-        deleted_resources: List[str] = []
+        deleted_resources: list[str] = []
         page_token: Optional[str] = None
         next_sync_token: Optional[str] = None
 
         while True:
-            params: Dict[str, Any] = {
-                'resourceName': 'people/me',
-                'personFields': 'metadata',
-                'pageSize': self.page_size,
-                'syncToken': sync_token,
+            params: dict[str, Any] = {
+                "resourceName": "people/me",
+                "personFields": "metadata",
+                "pageSize": self.page_size,
+                "syncToken": sync_token,
             }
 
             if page_token:
-                params['pageToken'] = page_token
+                params["pageToken"] = page_token
 
-            def execute_list():
-                return self.service.people().connections().list(**params).execute()
+            def execute_list(p: dict[str, Any] = params) -> Any:
+                return self.service.people().connections().list(**p).execute()
 
             try:
-                response = self._retry_with_backoff(execute_list, "list_deleted_contacts")
+                response = self._retry_with_backoff(
+                    execute_list, "list_deleted_contacts"
+                )
             except HttpError as e:
                 if e.resp.status == 410:
                     raise PeopleAPIError(
@@ -688,15 +692,15 @@ class PeopleAPI:
                 raise
 
             # Check for deleted contacts in response
-            for person in response.get('connections', []):
-                metadata = person.get('metadata', {})
-                if metadata.get('deleted'):
-                    resource_name = person.get('resourceName')
+            for person in response.get("connections", []):
+                metadata = person.get("metadata", {})
+                if metadata.get("deleted"):
+                    resource_name = person.get("resourceName")
                     if resource_name:
                         deleted_resources.append(resource_name)
 
-            page_token = response.get('nextPageToken')
-            next_sync_token = response.get('nextSyncToken')
+            page_token = response.get("nextPageToken")
+            next_sync_token = response.get("nextSyncToken")
 
             if not page_token:
                 break
