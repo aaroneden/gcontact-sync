@@ -7,6 +7,8 @@ Provides a normalized Contact representation with methods for:
 - Computing content hashes for change detection
 """
 
+from __future__ import annotations
+
 import hashlib
 import re
 import unicodedata
