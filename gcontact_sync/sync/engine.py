@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from gcontact_sync.config import SyncConfig
     from gcontact_sync.sync.matcher import MatchConfig
 
 from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
@@ -327,6 +328,7 @@ class SyncEngine:
         use_llm_matching: bool = True,
         match_config: Optional["MatchConfig"] = None,
         duplicate_handling: str = DuplicateHandling.SKIP,
+        config: Optional["SyncConfig"] = None,
     ):
         """
         Initialize the sync engine.
@@ -345,6 +347,9 @@ class SyncEngine:
                 If provided, use_llm_matching is ignored.
             duplicate_handling: Strategy for handling potential duplicates
                 (skip, auto_merge, or report_only)
+            config: Optional SyncConfig for tag-based contact filtering.
+                If provided, contacts will be filtered by group membership
+                according to the configuration. If None, all contacts are synced.
         """
         # Import here to avoid circular imports
         from gcontact_sync.sync.matcher import ContactMatcher, MatchConfig
@@ -365,6 +370,9 @@ class SyncEngine:
 
         # Duplicate handling strategy
         self.duplicate_handling = duplicate_handling
+
+        # Sync configuration for tag-based filtering
+        self.config = config
 
     def _get_account_label(self, account: int) -> str:
         """
