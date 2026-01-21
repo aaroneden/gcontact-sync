@@ -470,16 +470,22 @@ def init_config_command(ctx: click.Context, force: bool) -> None:
     is_flag=True,
     help="Show debug info: sample matches and unmatched contacts.",
 )
+@click.option(
+    "--no-backup",
+    is_flag=True,
+    help="Skip automatic backup before sync (not recommended).",
+)
 @click.pass_context
 def sync_command(
-    ctx: click.Context, dry_run: bool, full: bool, strategy: str, debug: bool
+    ctx: click.Context, dry_run: bool, full: bool, strategy: str, debug: bool, no_backup: bool
 ) -> None:
     """
     Synchronize contacts and groups between accounts.
 
     Performs bidirectional sync to ensure both Google accounts have
-    identical contacts and contact groups (labels). Groups are synced
-    first to ensure membership mappings work correctly. Contacts and
+    identical contacts and contact groups (labels). A backup is created
+    automatically before each sync unless --no-backup is used. Groups are
+    synced first to ensure membership mappings work correctly. Contacts and
     groups only in one account are copied to the other. Conflicting
     edits are resolved using the configured strategy.
 
@@ -496,6 +502,9 @@ def sync_command(
 
         # Show debug info with sample matches
         gcontact-sync sync --dry-run --debug
+
+        # Skip automatic backup (not recommended)
+        gcontact-sync sync --no-backup
     """
     logger = get_logger(__name__)
     config_dir = ctx.obj["config_dir"]
@@ -509,6 +518,23 @@ def sync_command(
     effective_dry_run = dry_run or config.get("dry_run", False)
     effective_full = full or config.get("full", False)
     effective_debug = debug or config.get("debug", False)
+
+    # Backup configuration
+    # If --no-backup is specified, disable backup regardless of config
+    # Otherwise, use config setting (default: True)
+    if no_backup:
+        effective_backup_enabled = False
+    else:
+        effective_backup_enabled = config.get("backup_enabled", True)
+
+    # Get backup directory and retention count from config
+    backup_dir = config.get("backup_dir")
+    if backup_dir:
+        backup_dir = Path(backup_dir).expanduser()
+    else:
+        backup_dir = config_dir / "backups"
+
+    backup_retention_count = config.get("backup_retention_count", 10)
 
     # For strategy, use config default if CLI used default value
     effective_strategy = strategy
@@ -617,6 +643,9 @@ def sync_command(
             account2_email=account2_email,
             match_config=match_config,
             duplicate_handling=duplicate_handling,
+            backup_enabled=effective_backup_enabled,
+            backup_dir=backup_dir,
+            backup_retention_count=backup_retention_count,
         )
 
         # Store account emails in context for summary display
