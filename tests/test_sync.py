@@ -5154,3 +5154,446 @@ class TestIncrementalSyncWithFilters(TestTagFilterIntegration):
         assert "Work Contact" in create_names
         assert "Personal Contact" in create_names
         assert "No Group Contact" in create_names
+
+
+class TestBackwardsCompatibility(TestTagFilterIntegration):
+    """Integration tests for backwards compatibility with tag filtering.
+
+    Verifies that when no config or empty config is provided,
+    all contacts are synced as before (no filtering applied).
+    """
+
+    def test_backwards_compatibility_no_config(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test sync without config file (config=None).
+
+        When SyncEngine is created without a config parameter,
+        it should sync all contacts from both accounts.
+        """
+        # Set up contacts with various group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Person",
+            given_name="Work",
+            family_name="Person",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_family = Contact(
+            resource_name="people/c_family",
+            etag="etag_family",
+            display_name="Family Person",
+            given_name="Family",
+            family_name="Person",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_none",
+            etag="etag_none",
+            display_name="No Group Person",
+            given_name="No Group",
+            family_name="Person",
+            emails=["nogroup@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_family, contact_no_group],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        # Create engine WITHOUT config (backwards compatible mode)
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            # config is not passed - defaults to None
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # All contacts should be processed (no filtering)
+        assert result.stats.contacts_in_account1 == 3
+
+        # All contacts should be synced to account 2
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Person" in create_names
+        assert "Family Person" in create_names
+        assert "No Group Person" in create_names
+
+    def test_backwards_compatibility_empty_config(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test sync with config file but empty groups.
+
+        When config has empty sync_groups for both accounts,
+        it should sync all contacts (backwards compatible).
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Empty sync_groups means "sync all"
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=[]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Set up contacts with various group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Person",
+            given_name="Work",
+            family_name="Person",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_family = Contact(
+            resource_name="people/c_family",
+            etag="etag_family",
+            display_name="Family Person",
+            given_name="Family",
+            family_name="Person",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_none",
+            etag="etag_none",
+            display_name="No Group Person",
+            given_name="No Group",
+            family_name="Person",
+            emails=["nogroup@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_family, contact_no_group],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # All contacts should be processed (empty filter = no filtering)
+        assert result.stats.contacts_in_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 0
+        assert result.stats.contacts_before_filter_account1 == 3
+
+        # All contacts should be synced to account 2
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Person" in create_names
+        assert "Family Person" in create_names
+        assert "No Group Person" in create_names
+
+    def test_backwards_compatibility_default_config_from_load(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+        tmp_path,
+    ):
+        """Test sync with default config from load_config (no file exists).
+
+        When load_config is called on a directory without sync_config.json,
+        it returns a default config with empty groups, which syncs all.
+        """
+        from gcontact_sync.config.sync_config import load_config
+
+        # Load config from empty directory (no sync_config.json)
+        sync_config = load_config(str(tmp_path))
+
+        # Set up contacts with various group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Person",
+            given_name="Work",
+            family_name="Person",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_family = Contact(
+            resource_name="people/c_family",
+            etag="etag_family",
+            display_name="Family Person",
+            given_name="Family",
+            family_name="Person",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_none",
+            etag="etag_none",
+            display_name="No Group Person",
+            given_name="No Group",
+            family_name="Person",
+            emails=["nogroup@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_family, contact_no_group],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Default config has empty groups, so all contacts synced
+        assert result.stats.contacts_in_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 0
+
+        # All contacts should be synced to account 2
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Person" in create_names
+        assert "Family Person" in create_names
+        assert "No Group Person" in create_names
+
+    def test_backwards_compatibility_mixed_one_account_filtered(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test sync with filter on one account, empty on other.
+
+        When only account1 has a filter and account2 has empty groups,
+        account1 contacts are filtered and account2 syncs all.
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Account 1 has filter, Account 2 syncs all (empty groups)
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # Empty = sync all
+        )
+
+        # Set up contacts for account 1
+        contact1_work = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice at Work",
+            given_name="Alice",
+            family_name="Worker",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact1_family = Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Bob in Family",
+            given_name="Bob",
+            family_name="FamilyMember",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Set up contacts for account 2
+        contact2_work = Contact(
+            resource_name="people/acc2_work",
+            etag="etag_acc2_work",
+            display_name="Carol at Work",
+            given_name="Carol",
+            family_name="Worker",
+            emails=["carol@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact2_family = Contact(
+            resource_name="people/acc2_family",
+            etag="etag_acc2_family",
+            display_name="David in Family",
+            given_name="David",
+            family_name="FamilyMember",
+            emails=["david@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact2_none = Contact(
+            resource_name="people/acc2_none",
+            etag="etag_acc2_none",
+            display_name="Eve No Group",
+            given_name="Eve",
+            family_name="NoGroup",
+            emails=["eve@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact1_work, contact1_family],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = (
+            [contact2_work, contact2_family, contact2_none],
+            "token2",
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Account 1: 1 contact synced (Work), 1 filtered (Family)
+        assert result.stats.contacts_before_filter_account1 == 2
+        assert result.stats.contacts_filtered_out_account1 == 1
+        assert result.stats.contacts_in_account1 == 1
+
+        # Account 2: all 3 contacts synced (empty filter)
+        assert result.stats.contacts_before_filter_account2 == 3
+        assert result.stats.contacts_filtered_out_account2 == 0
+        assert result.stats.contacts_in_account2 == 3
+
+        # Only Work contact from account 1 goes to account 2
+        create_in_acc2 = [c.display_name for c in result.to_create_in_account2]
+        assert "Alice at Work" in create_in_acc2
+        assert "Bob in Family" not in create_in_acc2
+
+        # All account 2 contacts go to account 1
+        create_in_acc1 = [c.display_name for c in result.to_create_in_account1]
+        assert "Carol at Work" in create_in_acc1
+        assert "David in Family" in create_in_acc1
+        assert "Eve No Group" in create_in_acc1
+
+    def test_backwards_compatibility_execute_no_config(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test execute() works correctly without config (backwards compatible).
+
+        Verifies the full sync execute flow works when no config is provided.
+        """
+        # Set up simple contact
+        contact = Contact(
+            resource_name="people/c1",
+            etag="etag1",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Created contact (returned after create)
+        created_contact = Contact(
+            resource_name="people/c2_new",
+            etag="etag_new",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api1.list_contacts.return_value = ([contact], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+        mock_api2.batch_create_contacts.return_value = [created_contact]
+
+        # Engine without config
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Contact should be synced
+        assert len(result.to_create_in_account2) == 1
+
+        # Execute should work (dry_run is handled at CLI level, not in execute)
+        engine.execute(result)
+
+        # Verify batch create was called
+        mock_api2.batch_create_contacts.assert_called_once()
