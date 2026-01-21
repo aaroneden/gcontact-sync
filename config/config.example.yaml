@@ -61,6 +61,27 @@
 # strategy: last_modified
 
 
+# Backup Options
+# --------------
+
+# Automatically create backup before each sync operation
+# Provides a safety net for recovering from accidental data loss
+# Backups are stored as JSON files with timestamp naming
+# Default: true
+# CLI equivalent: --no-backup (to disable)
+# backup_enabled: true
+
+# Directory where backups are stored
+# Each backup is saved as backup_YYYYMMDD_HHMMSS.json
+# Default: ~/.gcontact-sync/backups
+# backup_dir: ~/.gcontact-sync/backups
+
+# Number of backups to keep (oldest are automatically deleted)
+# Set to 0 to keep all backups (no automatic deletion)
+# Default: 10
+# backup_retention_count: 10
+
+
 # API Options
 # -----------
 
@@ -214,6 +235,17 @@
 # Faster API operations (for large contact lists):
 #   api_page_size: 500
 #   api_batch_size: 200
+#
+# Disable backups for advanced users (faster syncs):
+#   backup_enabled: false
+#
+# Custom backup location with extended retention:
+#   backup_dir: /path/to/custom/backups
+#   backup_retention_count: 30
+#
+# Keep all backups (no automatic deletion):
+#   backup_enabled: true
+#   backup_retention_count: 0
 
 
 # Quick Start Examples
