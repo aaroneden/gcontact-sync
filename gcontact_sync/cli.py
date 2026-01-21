@@ -1489,6 +1489,208 @@ def delete_group_command(
         sys.exit(1)
 
 
+# =============================================================================
+# Restore Command
+# =============================================================================
+
+
+@cli.command("restore")
+@click.option(
+    "--backup-file",
+    "-b",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False),
+    help="Path to specific backup file to restore from.",
+)
+@click.option(
+    "--list",
+    "-l",
+    "list_backups_flag",
+    is_flag=True,
+    help="List available backup files.",
+)
+@click.option(
+    "--account",
+    "-a",
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to restore to (restores to both if not specified).",
+)
+@click.option(
+    "--dry-run", "-n", is_flag=True, help="Preview restore without applying changes."
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def restore_command(
+    ctx: click.Context,
+    backup_file: str | None,
+    list_backups_flag: bool,
+    account: str | None,
+    dry_run: bool,
+    yes: bool,
+) -> None:
+    """
+    Restore contacts from a backup file.
+
+    Restores contacts and groups from a previously created backup.
+    By default, restores to both accounts. Use --account to restore
+    to a specific account only.
+
+    Without --backup-file, lists available backups to choose from.
+
+    Examples:
+
+        # List available backups
+        gcontact-sync restore --list
+
+        # Restore from specific backup to both accounts
+        gcontact-sync restore --backup-file ~/.gcontact-sync/backups/backup_20240120_103000.json
+
+        # Preview restore without applying
+        gcontact-sync restore --backup-file backup.json --dry-run
+
+        # Restore to specific account
+        gcontact-sync restore --backup-file backup.json --account account1
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    config = ctx.obj.get("config", {})
+
+    # Get backup directory from config or use default
+    backup_dir = config.get("backup_dir")
+    if backup_dir:
+        backup_dir = Path(backup_dir).expanduser()
+    else:
+        backup_dir = config_dir / "backups"
+
+    try:
+        from gcontact_sync.backup.manager import BackupManager
+
+        # Initialize backup manager
+        bm = BackupManager(backup_dir)
+
+        # If --list flag is set or no backup file specified, list backups
+        if list_backups_flag or not backup_file:
+            backups = bm.list_backups()
+
+            if not backups:
+                click.echo("No backups found.")
+                click.echo(f"Backup directory: {backup_dir}")
+                return
+
+            click.echo(f"Available backups in {backup_dir}:\n")
+            click.echo(f"{'Filename':<40} {'Date':<20} {'Size':<10}")
+            click.echo("-" * 70)
+
+            for backup_path in backups:
+                # Extract timestamp from filename
+                filename = backup_path.name
+                size = backup_path.stat().st_size
+                size_kb = size / 1024
+
+                # Try to get timestamp from backup content
+                backup_data = bm.load_backup(backup_path)
+                if backup_data and "timestamp" in backup_data:
+                    timestamp = backup_data["timestamp"]
+                else:
+                    # Fallback to file modification time
+                    from datetime import datetime
+
+                    mtime = backup_path.stat().st_mtime
+                    timestamp = datetime.fromtimestamp(mtime).isoformat()
+
+                click.echo(f"{filename:<40} {timestamp[:19]:<20} {size_kb:>8.1f} KB")
+
+            click.echo(f"\nTotal: {len(backups)} backup(s)")
+            click.echo(
+                "\nTo restore from a backup, use: gcontact-sync restore --backup-file <path>"
+            )
+            return
+
+        # Load the specified backup file
+        backup_path = Path(backup_file)
+        click.echo(f"Loading backup from {backup_path}...")
+
+        backup_data = bm.load_backup(backup_path)
+        if not backup_data:
+            click.echo(
+                click.style(f"Error: Failed to load backup file: {backup_path}", fg="red"),
+                err=True,
+            )
+            sys.exit(1)
+
+        # Display backup info
+        timestamp = backup_data.get("timestamp", "Unknown")
+        version = backup_data.get("version", "Unknown")
+        contacts = backup_data.get("contacts", [])
+        groups = backup_data.get("groups", [])
+
+        click.echo(f"Backup version: {version}")
+        click.echo(f"Backup timestamp: {timestamp}")
+        click.echo(f"Contacts: {len(contacts)}")
+        click.echo(f"Groups: {len(groups)}")
+        click.echo()
+
+        # Determine which accounts to restore to
+        accounts_to_restore = [account] if account else list(VALID_ACCOUNTS)
+
+        # Confirmation prompt
+        if not yes and not dry_run:
+            warning_msg = f"Restore {len(contacts)} contacts and {len(groups)} groups"
+            if not account:
+                warning_msg += " to BOTH accounts"
+            else:
+                warning_msg += f" to {account}"
+            warning_msg += "?"
+
+            click.confirm(warning_msg, abort=True)
+
+        if dry_run:
+            click.echo(
+                click.style(
+                    "\nDry run mode - no changes will be made.", fg="yellow"
+                )
+            )
+            click.echo(f"\nWould restore to account(s): {', '.join(accounts_to_restore)}")
+            click.echo(f"Contacts to restore: {len(contacts)}")
+            click.echo(f"Groups to restore: {len(groups)}")
+
+            # Show sample of contacts that would be restored
+            if contacts:
+                click.echo("\nSample contacts (first 5):")
+                for contact_data in contacts[:5]:
+                    name = contact_data.get("display_name", "Unknown")
+                    emails = contact_data.get("emails", [])
+                    click.echo(f"  - {name}")
+                    if emails:
+                        click.echo(f"    Emails: {', '.join(emails[:2])}")
+
+            click.echo(
+                click.style(
+                    "\nDry run complete. Use without --dry-run to apply restore.",
+                    fg="green",
+                )
+            )
+            return
+
+        # Perform actual restore
+        click.echo(
+            click.style(
+                "\nWARNING: Restore functionality is not yet implemented.",
+                fg="yellow",
+            )
+        )
+        click.echo(
+            "This command will restore contacts and groups in a future update."
+        )
+        click.echo("For now, you can manually inspect the backup JSON file.")
+
+        logger.info(f"Restore command executed (not yet implemented) for {backup_path}")
+
+    except Exception as e:
+        logger.exception(f"Restore failed: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
