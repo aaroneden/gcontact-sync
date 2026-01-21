@@ -113,6 +113,71 @@ GContact Sync stores all configuration in `~/.gcontact-sync/` by default:
 | `token_account1.json` | OAuth tokens for Account 1 (generated after auth) |
 | `token_account2.json` | OAuth tokens for Account 2 (generated after auth) |
 | `sync.db` | SQLite database for state tracking |
+| `config.yaml` | Optional configuration file for sync preferences (see below) |
+
+### Configuration File (Optional)
+
+You can create a `config.yaml` file to store sync preferences and avoid passing CLI arguments repeatedly.
+
+#### Creating a Config File
+
+Generate a default configuration file with all available options:
+
+```bash
+uv run gcontact-sync init-config
+```
+
+This creates `~/.gcontact-sync/config.yaml` with documented defaults. You can also view the example at [`config/config.example.yaml`](config/config.example.yaml).
+
+#### Available Options
+
+The config file supports these options:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `verbose` | boolean | `false` | Enable verbose output with detailed logging |
+| `debug` | boolean | `false` | Show debug information including sample matches |
+| `dry_run` | boolean | `false` | Preview changes without applying them |
+| `full` | boolean | `false` | Force full sync by ignoring sync tokens |
+| `strategy` | string | `last_modified` | Conflict resolution strategy (see below) |
+| `similarity_threshold` | float | `0.8` | Threshold for fuzzy matching (0.0 to 1.0) |
+| `batch_size` | integer | `100` | Number of contacts to process per batch |
+
+**Conflict Resolution Strategies:**
+- `last_modified` (recommended): Use the most recently modified version
+- `newest`: Alias for `last_modified`
+- `account1`: Always prefer changes from Account 1
+- `account2`: Always prefer changes from Account 2
+- `manual`: Prompt for each conflict (not yet implemented)
+
+#### Example Configuration
+
+```yaml
+# Conservative mode - preview all changes
+verbose: true
+dry_run: true
+strategy: last_modified
+
+# Production mode - automatic sync
+# verbose: false
+# dry_run: false
+# strategy: last_modified
+```
+
+#### Using the Config File
+
+Once created, the config file is automatically loaded. CLI arguments always override config values:
+
+```bash
+# Use config file defaults
+uv run gcontact-sync sync
+
+# Override specific options from CLI
+uv run gcontact-sync sync --verbose --dry-run
+
+# Use custom config file location
+uv run gcontact-sync --config-file /path/to/config.yaml sync
+```
 
 ### Environment Variables (Optional)
 

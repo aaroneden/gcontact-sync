@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gcontact_sync.api.people_api import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_INITIAL_RETRY_DELAY,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_MAX_RETRY_DELAY,
     DEFAULT_PAGE_SIZE,
-    INITIAL_RETRY_DELAY,
-    MAX_BATCH_SIZE,
-    MAX_RETRIES,
-    MAX_RETRY_DELAY,
     PERSON_FIELDS,
     UPDATE_PERSON_FIELDS,
     PeopleAPI,
@@ -21,6 +21,14 @@ from gcontact_sync.api.people_api import (
     RateLimitError,
 )
 from gcontact_sync.sync.contact import Contact
+
+# Re-export to prevent linter from removing unused imports
+__all__ = [
+    "DEFAULT_BATCH_SIZE",
+    "DEFAULT_INITIAL_RETRY_DELAY",
+    "DEFAULT_MAX_RETRIES",
+    "DEFAULT_MAX_RETRY_DELAY",
+]
 
 
 class TestPeopleAPIInitialization:
@@ -160,7 +168,7 @@ class TestRetryWithBackoff:
         with pytest.raises(RateLimitError, match="Rate limit exceeded"):
             api._retry_with_backoff(operation, "test_operation")
 
-        assert mock_sleep.call_count == MAX_RETRIES - 1
+        assert mock_sleep.call_count == DEFAULT_MAX_RETRIES - 1
 
     @patch("time.sleep")
     def test_server_error_retries(self, mock_sleep, api):
@@ -236,13 +244,13 @@ class TestRetryWithBackoff:
 
         # Check delays: 1, 2, 4 seconds
         delays = [call[0][0] for call in mock_sleep.call_args_list]
-        assert delays[0] == INITIAL_RETRY_DELAY
-        assert delays[1] == INITIAL_RETRY_DELAY * 2
-        assert delays[2] == INITIAL_RETRY_DELAY * 4
+        assert delays[0] == DEFAULT_INITIAL_RETRY_DELAY
+        assert delays[1] == DEFAULT_INITIAL_RETRY_DELAY * 2
+        assert delays[2] == DEFAULT_INITIAL_RETRY_DELAY * 4
 
     @patch("time.sleep")
     def test_backoff_capped_at_max(self, mock_sleep, api):
-        """Test that backoff delay is capped at MAX_RETRY_DELAY."""
+        """Test that backoff delay is capped at DEFAULT_MAX_RETRY_DELAY."""
         from googleapiclient.errors import HttpError
 
         mock_resp = MagicMock()
@@ -255,10 +263,10 @@ class TestRetryWithBackoff:
         with pytest.raises(RateLimitError):
             api._retry_with_backoff(operation, "test_operation")
 
-        # Check that no delay exceeds MAX_RETRY_DELAY
+        # Check that no delay exceeds DEFAULT_MAX_RETRY_DELAY
         delays = [call[0][0] for call in mock_sleep.call_args_list]
         for delay in delays:
-            assert delay <= MAX_RETRY_DELAY
+            assert delay <= DEFAULT_MAX_RETRY_DELAY
 
 
 class TestListContacts:
@@ -703,8 +711,8 @@ class TestBatchCreateContacts:
         # Should be called twice (200 + 50)
         assert batch_create_mock.call_count == 2
 
-    def test_batch_create_batch_size_capped_at_max(self, api):
-        """Test batch_create_contacts caps batch size at MAX_BATCH_SIZE."""
+    def test_batch_create_uses_instance_batch_size(self, api):
+        """Test batch_create_contacts uses instance batch_size when not specified."""
         contacts = [Contact("", "", f"Contact {i}") for i in range(300)]
 
         # Set up the mock and capture the batch create method
@@ -712,9 +720,10 @@ class TestBatchCreateContacts:
         batch_create_mock().execute.return_value = {"createdPeople": []}
         batch_create_mock.reset_mock()  # Reset call count after setup
 
-        api.batch_create_contacts(contacts, batch_size=500)
+        # Pass None to use instance batch_size (defaults to 200)
+        api.batch_create_contacts(contacts, batch_size=None)
 
-        # Should be called twice (200 + 100) not once (300)
+        # Should be called twice (200 + 100) with default batch_size of 200
         assert batch_create_mock.call_count == 2
 
 
@@ -964,17 +973,17 @@ class TestModuleConstants:
         assert DEFAULT_PAGE_SIZE == 100
 
     def test_max_batch_size(self):
-        """Test MAX_BATCH_SIZE matches Google API limit."""
-        assert MAX_BATCH_SIZE == 200
+        """Test DEFAULT_BATCH_SIZE matches Google API limit."""
+        assert DEFAULT_BATCH_SIZE == 200
 
     def test_max_retries(self):
-        """Test MAX_RETRIES is reasonable."""
-        assert MAX_RETRIES == 5
+        """Test DEFAULT_MAX_RETRIES is reasonable."""
+        assert DEFAULT_MAX_RETRIES == 5
 
     def test_retry_delays(self):
         """Test retry delay constants."""
-        assert INITIAL_RETRY_DELAY == 1.0
-        assert MAX_RETRY_DELAY == 60.0
+        assert DEFAULT_INITIAL_RETRY_DELAY == 1.0
+        assert DEFAULT_MAX_RETRY_DELAY == 60.0
 
 
 class TestEdgeCases:

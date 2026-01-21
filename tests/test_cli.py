@@ -403,6 +403,7 @@ class TestSyncCommand:
             assert result.exit_code == 1
             assert "account2 is not authenticated" in result.output
 
+    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
@@ -415,8 +416,14 @@ class TestSyncCommand:
         mock_api_class,
         mock_db_class,
         mock_engine_class,
+        mock_config_loader,
     ):
         """Test sync with --dry-run flag."""
+        # Mock ConfigLoader to return empty config
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {}
+        mock_config_loader.return_value = mock_loader
+
         mock_auth = MagicMock()
         mock_auth.get_credentials.return_value = MagicMock()
         mock_auth.get_account_email.return_value = "test@test.com"
@@ -426,6 +433,9 @@ class TestSyncCommand:
         mock_result.has_changes.return_value = True
         mock_result.summary.return_value = "Test summary"
         mock_result.conflicts = []
+        mock_result.matched_contacts = []
+        mock_result.to_create_in_account1 = []
+        mock_result.to_create_in_account2 = []
 
         mock_engine = MagicMock()
         mock_engine.sync.return_value = mock_result
@@ -438,6 +448,7 @@ class TestSyncCommand:
             assert "Dry run complete" in result.output
             mock_engine.sync.assert_called_once_with(dry_run=True, full_sync=False)
 
+    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
@@ -450,8 +461,14 @@ class TestSyncCommand:
         mock_api_class,
         mock_db_class,
         mock_engine_class,
+        mock_config_loader,
     ):
         """Test sync with --full flag."""
+        # Mock ConfigLoader to return empty config
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {}
+        mock_config_loader.return_value = mock_loader
+
         mock_auth = MagicMock()
         mock_auth.get_credentials.return_value = MagicMock()
         mock_auth.get_account_email.return_value = "test@test.com"
@@ -461,6 +478,9 @@ class TestSyncCommand:
         mock_result.has_changes.return_value = False
         mock_result.summary.return_value = "Test summary"
         mock_result.conflicts = []
+        mock_result.matched_contacts = []
+        mock_result.to_create_in_account1 = []
+        mock_result.to_create_in_account2 = []
 
         mock_engine = MagicMock()
         mock_engine.sync.return_value = mock_result
@@ -472,6 +492,7 @@ class TestSyncCommand:
             assert result.exit_code == 0
             mock_engine.sync.assert_called_once_with(dry_run=False, full_sync=True)
 
+    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
@@ -484,8 +505,14 @@ class TestSyncCommand:
         mock_api_class,
         mock_db_class,
         mock_engine_class,
+        mock_config_loader,
     ):
         """Test sync shows warning when there are errors."""
+        # Mock ConfigLoader to return empty config
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {}
+        mock_config_loader.return_value = mock_loader
+
         mock_auth = MagicMock()
         mock_auth.get_credentials.return_value = MagicMock()
         mock_auth.get_account_email.return_value = "test@test.com"
@@ -495,6 +522,9 @@ class TestSyncCommand:
         mock_result.has_changes.return_value = True
         mock_result.summary.return_value = "Test summary"
         mock_result.conflicts = []
+        mock_result.matched_contacts = []
+        mock_result.to_create_in_account1 = []
+        mock_result.to_create_in_account2 = []
         mock_result.stats.created_in_account1 = 1
         mock_result.stats.created_in_account2 = 1
         mock_result.stats.updated_in_account1 = 0
@@ -542,6 +572,7 @@ class TestSyncCommand:
             assert result.exit_code == 1
             assert "Sync failed" in result.output
 
+    @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
@@ -554,9 +585,15 @@ class TestSyncCommand:
         mock_api_class,
         mock_db_class,
         mock_engine_class,
+        mock_config_loader,
     ):
         """Test sync with --strategy account1."""
         from gcontact_sync.sync.conflict import ConflictStrategy
+
+        # Mock ConfigLoader to return empty config
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {}
+        mock_config_loader.return_value = mock_loader
 
         mock_auth = MagicMock()
         mock_auth.get_credentials.return_value = MagicMock()
@@ -567,6 +604,9 @@ class TestSyncCommand:
         mock_result.has_changes.return_value = False
         mock_result.summary.return_value = "Test summary"
         mock_result.conflicts = []
+        mock_result.matched_contacts = []
+        mock_result.to_create_in_account1 = []
+        mock_result.to_create_in_account2 = []
 
         mock_engine = MagicMock()
         mock_engine.sync.return_value = mock_result
@@ -741,3 +781,252 @@ class TestClearAuthCommand:
             )
             assert result.exit_code == 1
             assert "Error:" in result.output
+
+
+class TestConfigIntegration:
+    """Tests for configuration file integration with CLI."""
+
+    def test_cli_config_file_option_in_help(self):
+        """Test that --config-file option appears in help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--help"])
+        assert result.exit_code == 0
+        assert "--config-file" in result.output or "-f" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_missing_config_file_handled_gracefully(self, mock_setup_logging):
+        """Test that missing config file doesn't cause errors."""
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Run CLI with non-existent config file
+            result = runner.invoke(cli, ["--config-file", "nonexistent.yaml", "--help"])
+            assert result.exit_code == 0
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    def test_config_file_is_loaded(
+        self, mock_auth, mock_config_loader, mock_setup_logging
+    ):
+        """Test that config file is loaded when present."""
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {"verbose": True}
+        mock_loader.validate.return_value = None
+        mock_config_loader.return_value = mock_loader
+
+        # Mock auth to return not authenticated
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.is_authenticated.return_value = False
+        mock_auth.return_value = mock_auth_instance
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            # Verify config was loaded
+            mock_loader.load_from_file.assert_called_once()
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    def test_invalid_config_file_shows_warning(
+        self, mock_auth, mock_config_loader, mock_setup_logging
+    ):
+        """Test that invalid config file shows warning but doesn't crash."""
+        from gcontact_sync.config.loader import ConfigError
+
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.side_effect = ConfigError("Invalid YAML")
+        mock_config_loader.return_value = mock_loader
+
+        # Mock auth to return not authenticated
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.is_authenticated.return_value = False
+        mock_auth.return_value = mock_auth_instance
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            # Warning should be shown but command continues
+            assert "Warning" in result.output or "Invalid YAML" in result.output
+
+    @patch("gcontact_sync.cli.save_config_file")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_init_config_command_help(self, mock_setup_logging, mock_save):
+        """Test that init-config command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init-config", "--help"])
+        assert result.exit_code == 0
+        assert "init-config" in result.output or "Initialize" in result.output
+
+    @patch("gcontact_sync.cli.save_config_file")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_init_config_creates_file(self, mock_setup_logging, mock_save):
+        """Test that init-config command creates config file."""
+        mock_save.return_value = (True, None)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["init-config"])
+            assert result.exit_code == 0
+            assert (
+                "created" in result.output.lower() or "success" in result.output.lower()
+            )
+            mock_save.assert_called_once()
+
+    @patch("gcontact_sync.cli.save_config_file")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_init_config_with_force_flag(self, mock_setup_logging, mock_save):
+        """Test that init-config with --force overwrites existing file."""
+        mock_save.return_value = (True, None)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["init-config", "--force"])
+            assert result.exit_code == 0
+            # Verify save_config_file was called with overwrite=True
+            call_args = mock_save.call_args
+            assert call_args.kwargs.get("overwrite") is True
+
+    @patch("gcontact_sync.cli.save_config_file")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_init_config_error_handling(self, mock_setup_logging, mock_save):
+        """Test that init-config handles errors gracefully."""
+        mock_save.return_value = (False, "Permission denied")
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["init-config"])
+            assert result.exit_code == 1
+            assert "Error" in result.output
+            assert "Permission denied" in result.output
+
+    @patch("gcontact_sync.sync.engine.SyncEngine")
+    @patch("gcontact_sync.storage.db.SyncDatabase")
+    @patch("gcontact_sync.api.people_api.PeopleAPI")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_sync_uses_config_values(
+        self,
+        mock_setup_logging,
+        mock_config_loader,
+        mock_auth_class,
+        mock_api_class,
+        mock_db_class,
+        mock_engine_class,
+    ):
+        """Test that sync command uses values from config file."""
+        # Setup config with dry_run enabled
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {"dry_run": True, "full": False}
+        mock_loader.validate.return_value = None
+        mock_config_loader.return_value = mock_loader
+
+        # Setup auth
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        # Setup sync engine
+        mock_result = MagicMock()
+        mock_result.has_changes.return_value = False
+        mock_result.summary.return_value = "Test summary"
+        mock_result.conflicts = []
+        mock_result.matched_contacts = []
+        mock_result.to_create_in_account1 = []
+        mock_result.to_create_in_account2 = []
+        mock_engine = MagicMock()
+        mock_engine.sync.return_value = mock_result
+        mock_engine_class.return_value = mock_engine
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["sync"])
+            assert result.exit_code == 0
+            # Verify sync was called with dry_run=True from config
+            mock_engine.sync.assert_called_once()
+            call_kwargs = mock_engine.sync.call_args.kwargs
+            assert call_kwargs.get("dry_run") is True
+
+    @patch("gcontact_sync.sync.engine.SyncEngine")
+    @patch("gcontact_sync.storage.db.SyncDatabase")
+    @patch("gcontact_sync.api.people_api.PeopleAPI")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_cli_args_override_config_values(
+        self,
+        mock_setup_logging,
+        mock_config_loader,
+        mock_auth_class,
+        mock_api_class,
+        mock_db_class,
+        mock_engine_class,
+    ):
+        """Test that CLI arguments override config file values."""
+        # Setup config with full=True
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {"full": True, "dry_run": False}
+        mock_loader.validate.return_value = None
+        mock_config_loader.return_value = mock_loader
+
+        # Setup auth
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        # Setup sync engine
+        mock_result = MagicMock()
+        mock_result.has_changes.return_value = False
+        mock_result.summary.return_value = "Test summary"
+        mock_result.conflicts = []
+        mock_result.matched_contacts = []
+        mock_result.to_create_in_account1 = []
+        mock_result.to_create_in_account2 = []
+        mock_engine = MagicMock()
+        mock_engine.sync.return_value = mock_result
+        mock_engine_class.return_value = mock_engine
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Run sync with --dry-run flag (should override config's dry_run=False)
+            result = runner.invoke(cli, ["sync", "--dry-run"])
+            assert result.exit_code == 0
+            # Verify sync was called with dry_run=True from CLI, overriding config
+            mock_engine.sync.assert_called_once()
+            call_kwargs = mock_engine.sync.call_args.kwargs
+            assert call_kwargs.get("dry_run") is True
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    def test_custom_config_file_path(
+        self, mock_auth, mock_config_loader, mock_setup_logging
+    ):
+        """Test that custom config file path is used when specified."""
+        mock_loader = MagicMock()
+        mock_loader.load_from_file.return_value = {}
+        mock_loader.validate.return_value = None
+        mock_config_loader.return_value = mock_loader
+
+        # Mock auth to return not authenticated
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.is_authenticated.return_value = False
+        mock_auth.return_value = mock_auth_instance
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a custom config file
+            custom_config = Path("custom.yaml")
+            custom_config.write_text("verbose: true\n")
+
+            result = runner.invoke(cli, ["--config-file", "custom.yaml", "status"])
+            assert result.exit_code == 0
+            # Verify loader was called with custom path
+            mock_loader.load_from_file.assert_called_once()
+            call_args = mock_loader.load_from_file.call_args
+            assert call_args[0][0] == Path("custom.yaml")

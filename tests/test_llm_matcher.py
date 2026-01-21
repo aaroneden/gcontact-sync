@@ -750,10 +750,14 @@ class TestLLMMatcherCaching:
 
     def test_default_model_is_haiku(self):
         """Test that the default model is Haiku."""
-        assert LLMMatcher.DEFAULT_MODEL == "claude-haiku-4-5-20250514"
+        from gcontact_sync.sync.llm_matcher import DEFAULT_LLM_MODEL
+
+        assert DEFAULT_LLM_MODEL == "claude-haiku-4-5-20250514"
 
     def test_api_call_uses_default_model(self, contact1, contact2):
-        """Test that API calls use the DEFAULT_MODEL."""
+        """Test that API calls use the default model."""
+        from gcontact_sync.sync.llm_matcher import DEFAULT_LLM_MODEL
+
         mock_response = MagicMock()
         mock_response.content = [
             MagicMock(
@@ -770,4 +774,90 @@ class TestLLMMatcherCaching:
 
         # Verify the model used in the API call
         call_kwargs = mock_client.messages.create.call_args
-        assert call_kwargs.kwargs["model"] == LLMMatcher.DEFAULT_MODEL
+        assert call_kwargs.kwargs["model"] == DEFAULT_LLM_MODEL
+
+
+class TestLLMMatcherConfiguration:
+    """Tests for LLMMatcher configuration options."""
+
+    def test_custom_model(self):
+        """Test that custom model can be specified."""
+        matcher = LLMMatcher(api_key="test-key", model="claude-sonnet-4-20250514")
+        assert matcher.model == "claude-sonnet-4-20250514"
+
+    def test_custom_max_tokens(self):
+        """Test that custom max_tokens can be specified."""
+        matcher = LLMMatcher(api_key="test-key", max_tokens=1000)
+        assert matcher.max_tokens == 1000
+
+    def test_custom_batch_max_tokens(self):
+        """Test that custom batch_max_tokens can be specified."""
+        matcher = LLMMatcher(api_key="test-key", batch_max_tokens=4000)
+        assert matcher.batch_max_tokens == 4000
+
+    def test_api_key_priority_explicit(self):
+        """Test that explicit API key takes precedence."""
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "env-key"}):
+            matcher = LLMMatcher(api_key="explicit-key")
+            assert matcher.api_key == "explicit-key"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "default-env-key"})
+    def test_api_key_priority_default_env(self):
+        """Test that default ANTHROPIC_API_KEY env var is used when no explicit key."""
+        matcher = LLMMatcher()
+        assert matcher.api_key == "default-env-key"
+
+    @patch.dict("os.environ", {"CUSTOM_KEY_VAR": "custom-env-key"}, clear=False)
+    def test_custom_env_var_can_be_passed(self):
+        """Test that a custom env var can be resolved and passed to LLMMatcher."""
+        import os
+
+        # Simulate what CLI does - resolve custom env var and pass to LLMMatcher
+        env_var_name = "CUSTOM_KEY_VAR"
+        resolved_key = os.environ.get(env_var_name)
+        matcher = LLMMatcher(api_key=resolved_key)
+        assert matcher.api_key == "custom-env-key"
+
+    def test_api_call_uses_custom_model(self):
+        """Test that API calls use the custom model when specified."""
+        contact1 = Contact(resource_name="people/1", etag="e1", display_name="Test 1")
+        contact2 = Contact(resource_name="people/2", etag="e2", display_name="Test 2")
+
+        mock_response = MagicMock()
+        mock_response.content = [
+            MagicMock(
+                text='{"is_match": true, "confidence": 0.9, "reasoning": "Match"}'
+            )
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        matcher = LLMMatcher(api_key="test-key", model="claude-sonnet-4-20250514")
+        matcher._client = mock_client
+
+        matcher.match_pair(contact1, contact2)
+
+        call_kwargs = mock_client.messages.create.call_args
+        assert call_kwargs.kwargs["model"] == "claude-sonnet-4-20250514"
+
+    def test_api_call_uses_custom_max_tokens(self):
+        """Test that API calls use the custom max_tokens when specified."""
+        contact1 = Contact(resource_name="people/1", etag="e1", display_name="Test 1")
+        contact2 = Contact(resource_name="people/2", etag="e2", display_name="Test 2")
+
+        mock_response = MagicMock()
+        mock_response.content = [
+            MagicMock(
+                text='{"is_match": true, "confidence": 0.9, "reasoning": "Match"}'
+            )
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        matcher = LLMMatcher(api_key="test-key", max_tokens=1000)
+        matcher._client = mock_client
+
+        matcher.match_pair(contact1, contact2)
+
+        call_kwargs = mock_client.messages.create.call_args
+        assert call_kwargs.kwargs["max_tokens"] == 1000
