@@ -4366,3 +4366,425 @@ class TestFilterEdgeCases:
         assert "Contact 2" not in names  # No memberships
         assert "Contact 4" not in names  # Wrong group
         assert "Contact 5" not in names  # System group only
+
+
+# ==============================================================================
+# Tag Filter Integration Tests
+# ==============================================================================
+
+
+class TestTagFilterIntegration:
+    """Integration tests for full sync flow with tag filtering."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    @pytest.fixture
+    def work_group_api_data(self):
+        """API response dict for Work group."""
+        return {
+            "resourceName": "contactGroups/work123",
+            "etag": "etag_work",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 10,
+        }
+
+    @pytest.fixture
+    def family_group_api_data(self):
+        """API response dict for Family group."""
+        return {
+            "resourceName": "contactGroups/family456",
+            "etag": "etag_family",
+            "name": "Family",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 5,
+        }
+
+    @pytest.fixture
+    def friends_group_api_data(self):
+        """API response dict for Friends group."""
+        return {
+            "resourceName": "contactGroups/friends789",
+            "etag": "etag_friends",
+            "name": "Friends",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 3,
+        }
+
+
+class TestSyncWithTagFiltersIntegration(TestTagFilterIntegration):
+    """Integration test for full sync with tag filters applied to both accounts."""
+
+    def test_sync_with_tag_filters_integration(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+        friends_group_api_data,
+    ):
+        """Test full sync flow with tag filters applied to both accounts.
+
+        This tests:
+        - Config with different filters per account
+        - Only contacts matching filters are synced
+        - SyncStats correctly reflects filtered contact counts
+        - Filter groups are resolved from display names
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Create sync config with different filters for each account
+        # Account 1: only sync "Work" contacts
+        # Account 2: only sync "Family" and "Friends" contacts
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=["Family", "Friends"]),
+        )
+
+        # Set up contacts for account 1
+        # Contact 1: in Work group (should be synced)
+        contact1_work = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 2: in Family group (should be filtered out from account 1)
+        contact1_family = Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Bob Johnson",
+            given_name="Bob",
+            family_name="Johnson",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 3: in no group (should be filtered out from account 1)
+        contact1_none = Contact(
+            resource_name="people/acc1_none",
+            etag="etag_acc1_none",
+            display_name="Charlie Brown",
+            given_name="Charlie",
+            family_name="Brown",
+            emails=["charlie@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Set up contacts for account 2
+        # Contact 4: in Family group (should be synced)
+        contact2_family = Contact(
+            resource_name="people/acc2_family",
+            etag="etag_acc2_family",
+            display_name="Diana Lee",
+            given_name="Diana",
+            family_name="Lee",
+            emails=["diana@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 5: in Friends group (should be synced)
+        contact2_friends = Contact(
+            resource_name="people/acc2_friends",
+            etag="etag_acc2_friends",
+            display_name="Eve Wilson",
+            given_name="Eve",
+            family_name="Wilson",
+            emails=["eve@example.com"],
+            memberships=["contactGroups/friends789"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 6: in Work group (should be filtered out from account 2)
+        contact2_work = Contact(
+            resource_name="people/acc2_work",
+            etag="etag_acc2_work",
+            display_name="Frank Miller",
+            given_name="Frank",
+            family_name="Miller",
+            emails=["frank@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs to return groups and contacts
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data, friends_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data, friends_group_api_data],
+            None,
+        )
+
+        mock_api1.list_contacts.return_value = (
+            [contact1_work, contact1_family, contact1_none],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = (
+            [contact2_family, contact2_friends, contact2_work],
+            "token2",
+        )
+
+        # Create SyncEngine with config
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run analyze (dry_run equivalent)
+        result = engine.analyze(full_sync=True)
+
+        # Verify filter statistics
+        # Account 1: 3 contacts fetched, 2 filtered out (only Work contact kept)
+        assert result.stats.contacts_before_filter_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 2
+        assert result.stats.contacts_in_account1 == 1
+
+        # Account 2: 3 contacts fetched, 1 filtered out (Family and Friends kept)
+        assert result.stats.contacts_before_filter_account2 == 3
+        assert result.stats.contacts_filtered_out_account2 == 1
+        assert result.stats.contacts_in_account2 == 2
+
+        # Verify filter groups were resolved
+        assert result.stats.filter_groups_account1 == 1  # Work
+        assert result.stats.filter_groups_account2 == 2  # Family, Friends
+
+        # Verify that only filtered contacts are in sync operations
+        # Account 1's Alice (Work) should be synced to Account 2
+        # Account 2's Diana (Family) and Eve (Friends) should be synced to Account 1
+        # The "filtered out" contacts should not appear in sync operations
+
+        # Check to_create lists - contacts should only include those that passed filter
+        # Since contacts don't match between accounts (different people),
+        # we should see creates happening for filtered contacts only
+
+        # Verify Alice (Work) from account 1 is in to_create_in_account2
+        # (since there's no matching contact in account 2 after filtering)
+        create_names_2 = [c.display_name for c in result.to_create_in_account2]
+        assert "Alice Smith" in create_names_2
+        # Bob (Family) and Charlie (no group) should NOT be synced from account 1
+        assert "Bob Johnson" not in create_names_2
+        assert "Charlie Brown" not in create_names_2
+
+        # Verify Diana (Family) and Eve (Friends) from account 2 are in to_create_in_account1
+        create_names_1 = [c.display_name for c in result.to_create_in_account1]
+        assert "Diana Lee" in create_names_1
+        assert "Eve Wilson" in create_names_1
+        # Frank (Work) should NOT be synced from account 2
+        assert "Frank Miller" not in create_names_1
+
+    def test_sync_with_tag_filters_stats_in_summary(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test that SyncResult.summary() includes filter statistics."""
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Create sync config with filter for account 1 only
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # No filter
+        )
+
+        # Contact in Work group
+        contact1_work = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact not in Work group
+        contact1_other = Contact(
+            resource_name="people/acc1_other",
+            etag="etag_acc1_other",
+            display_name="Bob Johnson",
+            given_name="Bob",
+            family_name="Johnson",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/other"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api1.list_contacts.return_value = (
+            [contact1_work, contact1_other],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+        summary = result.summary()
+
+        # Verify filter stats are shown in summary
+        assert "Group filtering applied" in summary
+        assert "2 fetched" in summary  # contacts_before_filter_account1
+        assert "1 after filter" in summary  # contacts_in_account1
+        assert "1 excluded" in summary  # contacts_filtered_out_account1
+
+    def test_sync_with_tag_filters_execute_creates_only_filtered(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test that execute() only creates contacts that passed the filter."""
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Only sync Work contacts
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # No filter
+        )
+
+        # Account 1: Work contact only
+        contact1 = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Account 1: Family contact (filtered out)
+        contact2 = Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Bob Johnson",
+            given_name="Bob",
+            family_name="Johnson",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Mock API returns
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([contact1, contact2], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        # Mock the batch create to return a created contact
+        created_contact = Contact(
+            resource_name="people/new_acc2",
+            etag="etag_new_acc2",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+        )
+        mock_api2.batch_create_contacts.return_value = [created_contact]
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run full sync (not dry run)
+        result = engine.sync(dry_run=False, full_sync=True)
+
+        # Verify only 1 contact was created (Alice, the Work contact)
+        assert result.stats.created_in_account2 == 1
+
+        # Verify batch_create_contacts was called with only Alice
+        mock_api2.batch_create_contacts.assert_called_once()
+        created_contacts = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(created_contacts) == 1
+        assert created_contacts[0].display_name == "Alice Smith"
+
+    def test_sync_with_tag_filters_contact_in_multiple_groups(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test that contact in multiple groups is synced if ANY group matches filter."""
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Only sync Work contacts
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Contact in both Work AND Family groups - should be included
+        contact_multi = Contact(
+            resource_name="people/acc1_multi",
+            etag="etag_acc1_multi",
+            display_name="Multi Group User",
+            given_name="Multi",
+            family_name="Group User",
+            emails=["multi@example.com"],
+            memberships=["contactGroups/work123", "contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([contact_multi], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Contact should not be filtered out (it's in Work group)
+        assert result.stats.contacts_before_filter_account1 == 1
+        assert result.stats.contacts_filtered_out_account1 == 0
+        assert result.stats.contacts_in_account1 == 1
+
+        # Contact should be in to_create_in_account2
+        assert len(result.to_create_in_account2) == 1
+        assert result.to_create_in_account2[0].display_name == "Multi Group User"
