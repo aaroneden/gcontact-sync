@@ -28,9 +28,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ CONFIG_VERSION = "1.0"
 
 # Default sync config file name
 DEFAULT_SYNC_CONFIG_FILE = "sync_config.json"
+
+# Default configuration directory
+DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
 
 class SyncConfigError(Exception):
@@ -336,3 +340,62 @@ class SyncConfig:
             f"account1_groups={self.account1.sync_groups!r}, "
             f"account2_groups={self.account2.sync_groups!r})"
         )
+
+
+def load_config(config_dir: Path | str | None = None) -> SyncConfig:
+    """
+    Load sync configuration from a config directory.
+
+    This is a convenience function that handles config directory resolution
+    and loads the sync_config.json file from within that directory. Supports
+    environment variable override and provides sensible defaults.
+
+    Resolution order for config directory:
+    1. Explicit config_dir parameter (if provided)
+    2. GCONTACT_SYNC_CONFIG_DIR environment variable (if set)
+    3. Default: ~/.gcontact-sync
+
+    Args:
+        config_dir: Configuration directory path. Can be a string path
+                   (supports ~ expansion) or Path object. If None, uses
+                   environment variable or default.
+
+    Returns:
+        SyncConfig instance. Returns default (empty) config if:
+        - Config directory doesn't exist
+        - sync_config.json file doesn't exist
+        This ensures backwards compatibility with existing setups.
+
+    Raises:
+        SyncConfigError: If config file exists but is invalid JSON
+                        or has invalid structure
+
+    Usage:
+        # Load from default location (~/.gcontact-sync/sync_config.json)
+        config = load_config()
+
+        # Load from explicit directory
+        config = load_config("~/.my-config-dir")
+
+        # Environment variable override
+        # $ export GCONTACT_SYNC_CONFIG_DIR=/path/to/config
+        config = load_config()  # Uses env var path
+    """
+    # Resolve config directory path
+    if config_dir is not None:
+        resolved_dir = Path(config_dir).expanduser().resolve()
+    else:
+        # Check environment variable
+        env_dir = os.environ.get("GCONTACT_SYNC_CONFIG_DIR")
+        if env_dir:
+            resolved_dir = Path(env_dir).expanduser().resolve()
+        else:
+            resolved_dir = DEFAULT_CONFIG_DIR
+
+    # Construct path to sync config file
+    config_file_path = resolved_dir / DEFAULT_SYNC_CONFIG_FILE
+
+    logger.debug(f"Loading sync config from directory: {resolved_dir}")
+
+    # Load config (returns default if file doesn't exist)
+    return SyncConfig.load_from_file(config_file_path)
