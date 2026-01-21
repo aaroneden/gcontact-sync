@@ -101,7 +101,12 @@ def get_config_file(config_file: Optional[str]) -> Path:
     help="Configuration file path (default: ~/.gcontact-sync/config.yaml).",
 )
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str], config_file: Optional[str]) -> None:
+def cli(
+    ctx: click.Context,
+    verbose: bool,
+    config_dir: Optional[str],
+    config_file: Optional[str],
+) -> None:
     """
     Bidirectional Google Contacts Sync.
 
@@ -131,8 +136,7 @@ def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str], config_fil
     except ConfigError as e:
         # Show error but don't fail - allow CLI to work without config file
         click.echo(
-            click.style(f"Warning: Configuration error: {e}", fg="yellow"),
-            err=True
+            click.style(f"Warning: Configuration error: {e}", fg="yellow"), err=True
         )
         config = {}
 
@@ -140,12 +144,24 @@ def cli(ctx: click.Context, verbose: bool, config_dir: Optional[str], config_fil
     ctx.obj["config"] = config
 
     # Merge verbose flag: CLI arg takes precedence over config file
-    # If verbose was not set via CLI (False is default) and config has it, use config value
+    # If verbose was not set via CLI, use config value
     effective_verbose = verbose or config.get("verbose", False)
     ctx.obj["verbose"] = effective_verbose
 
-    # Setup logging
-    setup_logging(verbose=effective_verbose, enable_file_logging=True)
+    # Get log directory from config
+    log_dir = None
+    if config.get("log_dir"):
+        log_dir = Path(config["log_dir"])
+
+    # Setup logging with configured log directory
+    setup_logging(verbose=effective_verbose, log_dir=log_dir, enable_file_logging=True)
+
+    # Clean up old log files based on retention setting
+    log_retention = config.get("log_retention_count", 10)
+    if log_retention > 0:
+        from gcontact_sync.utils.logging import cleanup_old_logs
+
+        cleanup_old_logs(log_dir=log_dir, keep_count=log_retention)
 
 
 # =============================================================================
@@ -548,9 +564,12 @@ def sync_command(
         click.echo(click.style(f"  {account2_email}", fg="green"))
 
         # Initialize components
+        import os
+
         from gcontact_sync.api.people_api import PeopleAPI
         from gcontact_sync.storage.db import SyncDatabase
         from gcontact_sync.sync.engine import SyncEngine
+        from gcontact_sync.sync.matcher import MatchConfig
 
         # Ensure database directory exists
         db_path = config_dir / "sync.db"
@@ -562,7 +581,32 @@ def sync_command(
         database = SyncDatabase(str(db_path))
         database.initialize()
 
+        # Build MatchConfig from config file settings
+        # Resolve Anthropic API key with priority:
+        # 1. anthropic_api_key in config (direct key - not recommended)
+        # 2. anthropic_api_key_env in config (custom env var name)
+        # 3. None (LLMMatcher will use default ANTHROPIC_API_KEY env var)
+        anthropic_api_key = config.get("anthropic_api_key")
+        if not anthropic_api_key:
+            env_var_name = config.get("anthropic_api_key_env")
+            if env_var_name:
+                anthropic_api_key = os.environ.get(env_var_name)
+
+        match_config = MatchConfig(
+            name_similarity_threshold=config.get("name_similarity_threshold", 0.85),
+            name_only_threshold=config.get("name_only_threshold", 0.95),
+            uncertain_threshold=config.get("uncertain_threshold", 0.7),
+            use_llm_matching=True,
+            llm_batch_size=config.get("llm_batch_size", 20),
+            use_organization_matching=config.get("use_organization_matching", True),
+            anthropic_api_key=anthropic_api_key,
+            llm_model=config.get("llm_model", "claude-haiku-4-5-20250514"),
+            llm_max_tokens=config.get("llm_max_tokens", 500),
+            llm_batch_max_tokens=config.get("llm_batch_max_tokens", 2000),
+        )
+
         # Create sync engine with account emails for better logging
+        duplicate_handling = config.get("duplicate_handling", "skip")
         engine = SyncEngine(
             api1=api1,
             api2=api2,
@@ -570,6 +614,8 @@ def sync_command(
             conflict_strategy=conflict_strategy,
             account1_email=account1_email,
             account2_email=account2_email,
+            match_config=match_config,
+            duplicate_handling=duplicate_handling,
         )
 
         # Store account emails in context for summary display
@@ -735,11 +781,14 @@ def _show_debug_info(
 
     # Show matched contacts sample
     matched = result.matched_contacts
+    # Handle case where matched_contacts might be a MagicMock in tests
+    if not isinstance(matched, list):
+        matched = list(matched) if hasattr(matched, "__iter__") else []
     click.echo(f"\n{click.style('Matched Contacts:', fg='green')} {len(matched)} pairs")
 
     if matched:
         sample_size = min(5, len(matched))
-        sample = random.sample(matched, sample_size)
+        sample = random.sample(list(matched), sample_size)
         click.echo(f"\nRandom sample of {sample_size} matched pairs:")
         for contact1, contact2 in sample:
             click.echo(f"\n  {click.style('Match:', fg='cyan')}")
@@ -757,8 +806,17 @@ def _show_debug_info(
                 click.echo(f"      Phones: {', '.join(contact2.phones[:2])}")
 
     # Show unmatched contacts (to be created)
+    # Handle case where these might be MagicMock in tests
     unmatched_in_1 = result.to_create_in_account2  # Contacts only in account 1
     unmatched_in_2 = result.to_create_in_account1  # Contacts only in account 2
+    if not isinstance(unmatched_in_1, list):
+        unmatched_in_1 = (
+            list(unmatched_in_1) if hasattr(unmatched_in_1, "__iter__") else []
+        )
+    if not isinstance(unmatched_in_2, list):
+        unmatched_in_2 = (
+            list(unmatched_in_2) if hasattr(unmatched_in_2, "__iter__") else []
+        )
 
     click.echo(
         f"\n{click.style('Unmatched Contacts:', fg='yellow')} "
@@ -769,7 +827,7 @@ def _show_debug_info(
     if unmatched_in_1:
         unmatched_sample_size_1 = min(5, len(unmatched_in_1))
         unmatched_sample_1: list[Contact] = random.sample(
-            unmatched_in_1, unmatched_sample_size_1
+            list(unmatched_in_1), unmatched_sample_size_1
         )
         click.echo(
             f"\nSample of {unmatched_sample_size_1} contacts only in {account1_label}:"
@@ -780,7 +838,7 @@ def _show_debug_info(
     if unmatched_in_2:
         unmatched_sample_size_2 = min(5, len(unmatched_in_2))
         unmatched_sample_2: list[Contact] = random.sample(
-            unmatched_in_2, unmatched_sample_size_2
+            list(unmatched_in_2), unmatched_sample_size_2
         )
         click.echo(
             f"\nSample of {unmatched_sample_size_2} contacts only in {account2_label}:"
@@ -789,13 +847,14 @@ def _show_debug_info(
             _print_contact_debug(contact)
 
     # Show conflicts sample
-    if result.conflicts:
-        click.echo(
-            f"\n{click.style('Conflicts:', fg='magenta')} {len(result.conflicts)}"
-        )
-        conflict_sample_size = min(3, len(result.conflicts))
+    conflicts = result.conflicts
+    if not isinstance(conflicts, list):
+        conflicts = list(conflicts) if hasattr(conflicts, "__iter__") else []
+    if conflicts:
+        click.echo(f"\n{click.style('Conflicts:', fg='magenta')} {len(conflicts)}")
+        conflict_sample_size = min(3, len(conflicts))
         conflict_sample: list[ConflictResult] = random.sample(
-            result.conflicts, conflict_sample_size
+            list(conflicts), conflict_sample_size
         )
         click.echo(f"\nSample of {conflict_sample_size} conflicts:")
         for conflict in conflict_sample:

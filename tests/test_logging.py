@@ -154,21 +154,15 @@ class TestGetLogFilePath:
         assert "gcontact_sync" in str(path)
         assert ".log" in str(path)
 
-    @patch.dict(
-        os.environ,
-        {"GCONTACT_SYNC_CONFIG_DIR": "/custom/config", "GCONTACT_SYNC_LOG_FILE": ""},
-        clear=False,
-    )
-    def test_default_log_dir_with_custom_config(self):
-        """Test default log file uses custom config dir."""
+    def test_default_log_dir_uses_project_logs(self):
+        """Test default log file uses project logs directory."""
         # Clear GCONTACT_SYNC_LOG_FILE to trigger default behavior
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch.dict(os.environ, {"GCONTACT_SYNC_CONFIG_DIR": "/custom/config"}),
-        ):
+        with patch.dict(os.environ, {}, clear=True):
             path = get_log_file_path()
             assert path is not None
-            assert "/custom/config/logs" in str(path)
+            # Should use PROJECT_LOG_DIR (project/logs folder)
+            assert "logs" in str(path)
+            assert "gcontact_sync_" in str(path)
 
 
 class TestColoredFormatter:
@@ -261,6 +255,21 @@ class TestSetupLogging:
         logger.info("Test message")
         # Verify file exists and has content
         assert log_file.exists()
+
+    def test_setup_logging_with_log_dir(self, tmp_path):
+        """Test setup_logging with log_dir parameter from config."""
+        log_dir = tmp_path / "custom_logs"
+        log_dir.mkdir()
+        logger = setup_logging(
+            log_dir=log_dir, enable_file_logging=True, use_colors=False
+        )
+        # Should have console + file handlers
+        assert len(logger.handlers) == 2
+        # Log something
+        logger.info("Test message")
+        # Verify file was created in custom log_dir
+        log_files = list(log_dir.glob("gcontact_sync_*.log"))
+        assert len(log_files) == 1
 
     def test_setup_logging_without_file(self):
         """Test setup_logging without file logging."""

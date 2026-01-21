@@ -35,8 +35,18 @@ ENV_DEBUG = "GCONTACT_SYNC_DEBUG"
 ENV_LOG_FILE = "GCONTACT_SYNC_LOG_FILE"
 ENV_CONFIG_DIR = "GCONTACT_SYNC_CONFIG_DIR"
 
-# Default log directory
-DEFAULT_LOG_DIR = Path.home() / ".gcontact-sync" / "logs"
+
+# Project log directory (where pyproject.toml is located)
+def _get_project_log_dir() -> Path:
+    """Get the project logs directory."""
+    current = Path(__file__).resolve()
+    project_root = (
+        current.parent.parent.parent
+    )  # utils -> gcontact_sync -> project root
+    return project_root / "logs"
+
+
+PROJECT_LOG_DIR = _get_project_log_dir()
 
 # Matching log format - detailed for debugging contact matching
 MATCHING_LOG_FORMAT = "%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s"
@@ -149,16 +159,14 @@ def get_log_file_path() -> Optional[Path]:
             return None
         return Path(log_file)
 
-    # Use default location in config directory
-    config_dir = os.environ.get(ENV_CONFIG_DIR)
-    log_dir = Path(config_dir) / "logs" if config_dir else DEFAULT_LOG_DIR
-
-    return log_dir / f"gcontact_sync_{datetime.now().strftime('%Y%m%d')}.log"
+    # Use project logs directory (consolidated logging location)
+    return PROJECT_LOG_DIR / f"gcontact_sync_{datetime.now().strftime('%Y%m%d')}.log"
 
 
 def setup_logging(
     level: Optional[int] = None,
     verbose: bool = False,
+    log_dir: Optional[Path] = None,
     log_file: Optional[Path] = None,
     enable_file_logging: bool = True,
     use_colors: bool = True,
@@ -173,7 +181,8 @@ def setup_logging(
         level: Logging level (e.g., logging.DEBUG). If None, determined from
                environment variables.
         verbose: If True, use verbose format with more details.
-        log_file: Path to log file. If None, uses default or env variable.
+        log_dir: Directory for log files. If provided, overrides default.
+        log_file: Path to log file. If None, uses log_dir or default.
         enable_file_logging: If False, disable file logging entirely.
         use_colors: If True, use colored output for console (when supported).
 
@@ -187,8 +196,8 @@ def setup_logging(
         # Verbose mode for CLI
         setup_logging(verbose=True)
 
-        # Debug level with specific file
-        setup_logging(level=logging.DEBUG, log_file=Path('/tmp/sync.log'))
+        # Custom log directory from config
+        setup_logging(log_dir=Path('/path/to/logs'))
 
         # Disable file logging
         setup_logging(enable_file_logging=False)
@@ -227,7 +236,16 @@ def setup_logging(
 
     # File handler (optional)
     if enable_file_logging:
-        file_path = log_file if log_file else get_log_file_path()
+        file_path: Optional[Path] = None
+        if log_file:
+            file_path = log_file
+        elif log_dir:
+            # Use provided log_dir from config
+            file_path = (
+                log_dir / f"gcontact_sync_{datetime.now().strftime('%Y%m%d')}.log"
+            )
+        else:
+            file_path = get_log_file_path()
 
         if file_path:
             try:
@@ -245,7 +263,81 @@ def setup_logging(
                 # Log warning but don't fail
                 logger.warning(f"Could not create log file {file_path}: {e}")
 
+    # Store log_dir for matching logger to use
+    if log_dir:
+        _current_log_dir = log_dir
+    elif log_file:
+        _current_log_dir = log_file.parent
+    else:
+        _current_log_dir = None
+    # Store in module-level variable for matching logger
+    global _configured_log_dir
+    _configured_log_dir = _current_log_dir
+
     return logger
+
+
+# Module-level variable to store configured log directory
+_configured_log_dir: Optional[Path] = None
+
+
+def cleanup_old_logs(log_dir: Optional[Path] = None, keep_count: int = 10) -> int:
+    """
+    Clean up old log files, keeping only the most recent ones.
+
+    Removes old gcontact_sync_*.log and matching_*.log files from the log
+    directory, keeping only the specified number of most recent files.
+
+    Args:
+        log_dir: Directory containing log files. If None, uses configured
+                 directory or project default.
+        keep_count: Number of log files to keep for each type. Default 10.
+                    Set to 0 to disable cleanup.
+
+    Returns:
+        Number of files deleted.
+    """
+    if keep_count <= 0:
+        return 0
+
+    # Determine log directory
+    if log_dir:
+        logs_dir = log_dir
+    elif _configured_log_dir:
+        logs_dir = _configured_log_dir
+    else:
+        logs_dir = PROJECT_LOG_DIR
+
+    if not logs_dir.exists():
+        return 0
+
+    deleted_count = 0
+
+    # Clean up gcontact_sync_*.log files
+    sync_logs = sorted(
+        logs_dir.glob("gcontact_sync_*.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old_log in sync_logs[keep_count:]:
+        try:
+            old_log.unlink()
+            deleted_count += 1
+        except OSError:
+            pass  # Ignore errors deleting old logs
+
+    # Clean up matching_*.log files
+    matching_logs = sorted(
+        logs_dir.glob("matching_*.log"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    for old_log in matching_logs[keep_count:]:
+        try:
+            old_log.unlink()
+            deleted_count += 1
+        except OSError:
+            pass  # Ignore errors deleting old logs
+
+    return deleted_count
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -309,22 +401,27 @@ def enable_logging() -> None:
     logger.disabled = False
 
 
-def get_matching_log_path() -> Path:
+def get_matching_log_path(log_dir: Optional[Path] = None) -> Path:
     """
     Get the path for the matching log file.
 
-    Creates a timestamped log file for each session in the project's logs directory.
-    The logs directory is at the project root (where pyproject.toml is located).
+    Creates a timestamped log file for each session. Uses the configured
+    log directory if available, otherwise falls back to project logs directory.
+
+    Args:
+        log_dir: Optional directory for log files. If None, uses configured
+                 directory from setup_logging() or project default.
 
     Returns:
         Path to the matching log file
     """
-    # Find project root by looking for pyproject.toml
-    current = Path(__file__).resolve()
-    project_root = (
-        current.parent.parent.parent
-    )  # utils -> gcontact_sync -> project root
-    logs_dir = project_root / "logs"
+    # Use provided log_dir, or configured log_dir, or project default
+    if log_dir:
+        logs_dir = log_dir
+    elif _configured_log_dir:
+        logs_dir = _configured_log_dir
+    else:
+        logs_dir = PROJECT_LOG_DIR
 
     # Create timestamped filename for this session
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -422,12 +519,14 @@ __all__ = [
     "set_log_level",
     "disable_logging",
     "enable_logging",
+    "cleanup_old_logs",
     "ColoredFormatter",
     "get_log_level_from_env",
     "get_log_file_path",
     "setup_matching_logger",
     "get_matching_logger",
     "get_matching_log_path",
+    "PROJECT_LOG_DIR",
     "DEFAULT_FORMAT",
     "CONSOLE_FORMAT",
     "VERBOSE_FORMAT",
