@@ -5,6 +5,7 @@ A Python-based bidirectional synchronization system that keeps Google Contacts s
 ## Features
 
 - **Bidirectional Sync**: Automatically synchronize contacts between two Google accounts
+- **Tag Filtering**: Selectively sync only contacts belonging to specific contact groups/tags
 - **Multi-Tier Matching**: Deterministic, fuzzy, and optional LLM-assisted matching to identify contacts across accounts
 - **Change Detection**: Content hashing detects modifications and propagates updates automatically
 - **Deletion Sync**: Deleted contacts are automatically removed from the other account
@@ -114,6 +115,7 @@ GContact Sync stores all configuration in `~/.gcontact-sync/` by default:
 | `token_account2.json` | OAuth tokens for Account 2 (generated after auth) |
 | `sync.db` | SQLite database for state tracking |
 | `config.yaml` | Optional configuration file for sync preferences (see below) |
+| `sync_config.json` | Optional tag filtering configuration (see [Tag Filtering](#tag-filtering-contact-groups)) |
 
 ### Configuration File (Optional)
 
@@ -178,6 +180,102 @@ uv run gcontact-sync sync --verbose --dry-run
 # Use custom config file location
 uv run gcontact-sync --config-file /path/to/config.yaml sync
 ```
+
+### Tag Filtering (Contact Groups)
+
+You can selectively sync only contacts that belong to specific contact groups/tags. This is useful when you only want to sync certain categories of contacts (e.g., "Work" or "Family") rather than your entire contact list.
+
+#### Configuration File
+
+Create a `sync_config.json` file in your config directory (`~/.gcontact-sync/sync_config.json`):
+
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": ["Work", "Family"]
+  },
+  "account2": {
+    "sync_groups": ["Important", "contactGroups/abc123def"]
+  }
+}
+```
+
+An example configuration file is available at [`config/sync_config.example.json`](config/sync_config.example.json).
+
+#### Tag Filter Options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | string | Configuration schema version (currently "1.0") |
+| `account1.sync_groups` | array | List of group names/IDs to sync for Account 1 |
+| `account2.sync_groups` | array | List of group names/IDs to sync for Account 2 |
+
+#### How Tag Filtering Works
+
+- **Per-account filtering**: Each account can have independent group filters
+- **OR logic**: A contact is included if it belongs to ANY of the specified groups
+- **Group identification**: Groups can be specified by:
+  - Display name (e.g., `"Work"`, `"Family"`) - case-insensitive matching
+  - Resource name (e.g., `"contactGroups/abc123def"`) - exact matching
+- **Backwards compatible**: Empty `sync_groups` array or missing config file syncs all contacts
+- **Contacts without groups**: Excluded when filtering is enabled (they don't match any group)
+
+#### Examples
+
+**Sync only Work contacts from Account 1, all contacts from Account 2:**
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": ["Work"]
+  },
+  "account2": {
+    "sync_groups": []
+  }
+}
+```
+
+**Sync Family and Friends from both accounts:**
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": ["Family", "Friends"]
+  },
+  "account2": {
+    "sync_groups": ["Family", "Friends"]
+  }
+}
+```
+
+**Sync all contacts (no filtering - default behavior):**
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": []
+  },
+  "account2": {
+    "sync_groups": []
+  }
+}
+```
+
+Or simply don't create a `sync_config.json` file at all.
+
+#### Verifying Tag Filters
+
+Use dry-run with verbose mode to see which contacts would be filtered:
+
+```bash
+uv run gcontact-sync sync --dry-run --verbose
+```
+
+The output will show:
+- Which groups are configured for filtering
+- How many contacts pass the filter for each account
+- Details about filtered contacts in verbose mode
 
 ### Environment Variables (Optional)
 
