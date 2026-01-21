@@ -106,6 +106,14 @@ class SyncStats:
     groups_deleted_in_account1: int = 0
     groups_deleted_in_account2: int = 0
 
+    # Filter statistics (for verbose logging)
+    contacts_before_filter_account1: int = 0
+    contacts_before_filter_account2: int = 0
+    contacts_filtered_out_account1: int = 0
+    contacts_filtered_out_account2: int = 0
+    filter_groups_account1: int = 0
+    filter_groups_account2: int = 0
+
 
 @dataclass
 class SyncResult:
@@ -278,6 +286,28 @@ class SyncResult:
             if self.stats.photos_failed:
                 lines.append(f"  Photos failed: {self.stats.photos_failed}")
 
+        # Add filter statistics if any filtering was applied
+        if (
+            self.stats.contacts_filtered_out_account1 > 0
+            or self.stats.contacts_filtered_out_account2 > 0
+        ):
+            lines.append("")
+            lines.append("Group filtering applied:")
+            if self.stats.contacts_before_filter_account1 > 0:
+                lines.append(
+                    f"  {account1_label}: "
+                    f"{self.stats.contacts_before_filter_account1} fetched -> "
+                    f"{self.stats.contacts_in_account1} after filter "
+                    f"({self.stats.contacts_filtered_out_account1} excluded)"
+                )
+            if self.stats.contacts_before_filter_account2 > 0:
+                lines.append(
+                    f"  {account2_label}: "
+                    f"{self.stats.contacts_before_filter_account2} fetched -> "
+                    f"{self.stats.contacts_in_account2} after filter "
+                    f"({self.stats.contacts_filtered_out_account2} excluded)"
+                )
+
         return "\n".join(lines)
 
 
@@ -447,16 +477,90 @@ class SyncEngine:
 
         result = SyncResult()
 
+        # === LOG FILTER CONFIGURATION ===
+        # Log filter configuration at sync start for visibility
+        if self.config and self.config.has_any_filter():
+            logger.info("Group filtering is enabled:")
+            if self.config.account1.has_filter():
+                logger.info(
+                    f"  {self.account1_email}: filtering by groups "
+                    f"{self.config.account1.sync_groups}"
+                )
+            else:
+                logger.info(f"  {self.account1_email}: no filter (sync all contacts)")
+            if self.config.account2.has_filter():
+                logger.info(
+                    f"  {self.account2_email}: filtering by groups "
+                    f"{self.config.account2.sync_groups}"
+                )
+            else:
+                logger.info(f"  {self.account2_email}: no filter (sync all contacts)")
+        else:
+            logger.debug("No group filtering configured (syncing all contacts)")
+
         # === ANALYZE GROUPS FIRST (before contacts) ===
         # Groups must be synced first so memberships can be mapped correctly
-        self._analyze_groups(result)
+        # Returns groups for filter resolution
+        groups1, groups2 = self._analyze_groups(result)
 
-        # Fetch contacts from both accounts
-        contacts1, sync_token1 = self._fetch_contacts(self.api1, ACCOUNT_1, full_sync)
-        contacts2, sync_token2 = self._fetch_contacts(self.api2, ACCOUNT_2, full_sync)
+        # === RESOLVE GROUP FILTERS ===
+        # Convert configured group names to resource names for filtering
+        allowed_groups_1: frozenset[str] = frozenset()
+        allowed_groups_2: frozenset[str] = frozenset()
 
+        if self.config:
+            if self.config.account1.has_filter():
+                allowed_groups_1 = self._resolve_group_filters(
+                    self.config.account1.sync_groups,
+                    groups1,
+                    self.account1_email,
+                )
+                result.stats.filter_groups_account1 = len(allowed_groups_1)
+                if allowed_groups_1:
+                    logger.info(
+                        f"Resolved {len(allowed_groups_1)} filter groups for "
+                        f"{self.account1_email}"
+                    )
+
+            if self.config.account2.has_filter():
+                allowed_groups_2 = self._resolve_group_filters(
+                    self.config.account2.sync_groups,
+                    groups2,
+                    self.account2_email,
+                )
+                result.stats.filter_groups_account2 = len(allowed_groups_2)
+                if allowed_groups_2:
+                    logger.info(
+                        f"Resolved {len(allowed_groups_2)} filter groups for "
+                        f"{self.account2_email}"
+                    )
+
+        # === FETCH CONTACTS (with filtering) ===
+        # Fetch contacts from both accounts, applying group filters if configured
+        contacts1, sync_token1, original_count1 = self._fetch_contacts(
+            self.api1,
+            ACCOUNT_1,
+            full_sync,
+            allowed_groups=allowed_groups_1 if allowed_groups_1 else None,
+            account_label=self.account1_email,
+        )
+        contacts2, sync_token2, original_count2 = self._fetch_contacts(
+            self.api2,
+            ACCOUNT_2,
+            full_sync,
+            allowed_groups=allowed_groups_2 if allowed_groups_2 else None,
+            account_label=self.account2_email,
+        )
+
+        # Track contact counts (after filtering if applied)
         result.stats.contacts_in_account1 = len(contacts1)
         result.stats.contacts_in_account2 = len(contacts2)
+
+        # Track filter statistics for verbose reporting
+        result.stats.contacts_before_filter_account1 = original_count1
+        result.stats.contacts_before_filter_account2 = original_count2
+        result.stats.contacts_filtered_out_account1 = original_count1 - len(contacts1)
+        result.stats.contacts_filtered_out_account2 = original_count2 - len(contacts2)
 
         logger.info(
             f"Fetched {len(contacts1)} contacts from {self.account1_email}, "
@@ -973,7 +1077,9 @@ class SyncEngine:
     # Group Sync Analysis Methods
     # =========================================================================
 
-    def _analyze_groups(self, result: SyncResult) -> None:
+    def _analyze_groups(
+        self, result: SyncResult
+    ) -> tuple[list[ContactGroup], list[ContactGroup]]:
         """
         Analyze contact groups in both accounts and determine sync operations.
 
@@ -982,6 +1088,10 @@ class SyncEngine:
 
         Args:
             result: SyncResult to populate with group sync operations
+
+        Returns:
+            Tuple of (groups from account1, groups from account2) for use in
+            filter resolution.
         """
         logger.info("Analyzing contact groups for sync")
         mlog = getattr(self, "_matching_logger", None)
@@ -1170,6 +1280,9 @@ class SyncEngine:
             f"to_create_in_1={len(result.groups_to_create_in_account1)}, "
             f"to_create_in_2={len(result.groups_to_create_in_account2)}"
         )
+
+        # Return fetched groups for use in filter resolution
+        return groups1, groups2
 
     def _fetch_groups(self, api: PeopleAPI, account_id: str) -> list[ContactGroup]:
         """
@@ -1707,7 +1820,7 @@ class SyncEngine:
         full_sync: bool,
         allowed_groups: frozenset[str] | None = None,
         account_label: str | None = None,
-    ) -> tuple[list[Contact], str | None]:
+    ) -> tuple[list[Contact], str | None, int]:
         """
         Fetch contacts from an account, optionally using sync token.
 
@@ -1726,7 +1839,8 @@ class SyncEngine:
                 (used in logging). Defaults to account_id if not provided.
 
         Returns:
-            Tuple of (list of contacts, new sync token)
+            Tuple of (list of contacts, new sync token, pre-filter count).
+            Pre-filter count equals len(contacts) if no filtering was applied.
         """
         # Use account_label for logging, fall back to account_id
         label = account_label or account_id
@@ -1760,15 +1874,18 @@ class SyncEngine:
 
         # Apply group-based filtering if configured
         # This happens after API call but before returning, preserving sync token
+        original_count = len(contacts)
         if allowed_groups:
-            original_count = len(contacts)
             contacts = self._filter_contacts_by_groups(contacts, allowed_groups, label)
-            logger.debug(
-                f"Applied group filter for {label}: "
-                f"{original_count} fetched -> {len(contacts)} after filtering"
-            )
+            filtered_count = original_count - len(contacts)
+            if filtered_count > 0:
+                logger.info(
+                    f"Group filter applied for {label}: "
+                    f"{original_count} fetched -> {len(contacts)} after filter "
+                    f"({filtered_count} contacts excluded)"
+                )
 
-        return contacts, new_token
+        return contacts, new_token, original_count
 
     def _build_contact_index(
         self, contacts: list[Contact], account_label: str = "unknown"
