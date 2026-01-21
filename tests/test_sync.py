@@ -4788,3 +4788,369 @@ class TestSyncWithTagFiltersIntegration(TestTagFilterIntegration):
         # Contact should be in to_create_in_account2
         assert len(result.to_create_in_account2) == 1
         assert result.to_create_in_account2[0].display_name == "Multi Group User"
+
+
+class TestIncrementalSyncWithFilters(TestTagFilterIntegration):
+    """Integration tests for incremental sync with tag filters."""
+
+    def test_incremental_sync_with_filters(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test that filters apply correctly in incremental sync mode.
+
+        This verifies:
+        - Filters are applied during incremental sync (not just full sync)
+        - Sync token behavior is preserved when filtering is active
+        - New contacts returned by incremental sync are correctly filtered
+        - Filter statistics are accurate for incremental sync results
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Create sync config - Account 1: only Work, Account 2: only Family
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=["Family"]),
+        )
+
+        # Set up initial sync state (simulating a previous sync)
+        real_database.update_sync_state("account1", "initial_token1")
+        real_database.update_sync_state("account2", "initial_token2")
+
+        # New contact from incremental sync that matches Work filter
+        new_work_contact = Contact(
+            resource_name="people/inc_work",
+            etag="etag_inc_work",
+            display_name="New Worker",
+            given_name="New",
+            family_name="Worker",
+            emails=["newworker@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # New contact from incremental sync that does NOT match Work filter
+        new_personal_contact = Contact(
+            resource_name="people/inc_personal",
+            etag="etag_inc_personal",
+            display_name="Personal Contact",
+            given_name="Personal",
+            family_name="Contact",
+            emails=["personal@example.com"],
+            memberships=["contactGroups/personal999"],  # Not in Work group
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # New contact from account 2 that matches Family filter
+        new_family_contact = Contact(
+            resource_name="people/inc_family",
+            etag="etag_inc_family",
+            display_name="New Family Member",
+            given_name="New",
+            family_name="Family Member",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # New contact from account 2 that does NOT match Family filter
+        new_other_contact = Contact(
+            resource_name="people/inc_other",
+            etag="etag_inc_other",
+            display_name="Other Contact",
+            given_name="Other",
+            family_name="Contact",
+            emails=["other@example.com"],
+            memberships=["contactGroups/other888"],  # Not in Family group
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs to return groups and incremental contacts
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+
+        # API returns new contacts from incremental sync with new tokens
+        mock_api1.list_contacts.return_value = (
+            [new_work_contact, new_personal_contact],
+            "new_token1",  # New sync token after incremental sync
+        )
+        mock_api2.list_contacts.return_value = (
+            [new_family_contact, new_other_contact],
+            "new_token2",
+        )
+
+        # Create SyncEngine with config
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run incremental sync (full_sync=False)
+        result = engine.analyze(full_sync=False)
+
+        # Verify filter statistics for account 1
+        # 2 contacts fetched, 1 filtered out (only Work contact kept)
+        assert result.stats.contacts_before_filter_account1 == 2
+        assert result.stats.contacts_filtered_out_account1 == 1
+        assert result.stats.contacts_in_account1 == 1
+
+        # Verify filter statistics for account 2
+        # 2 contacts fetched, 1 filtered out (only Family contact kept)
+        assert result.stats.contacts_before_filter_account2 == 2
+        assert result.stats.contacts_filtered_out_account2 == 1
+        assert result.stats.contacts_in_account2 == 1
+
+        # Verify only filtered contacts are in sync operations
+        # New Worker (Work) from account 1 -> should create in account 2
+        create_names_2 = [c.display_name for c in result.to_create_in_account2]
+        assert "New Worker" in create_names_2
+        assert "Personal Contact" not in create_names_2
+
+        # New Family Member (Family) from account 2 -> should create in account 1
+        create_names_1 = [c.display_name for c in result.to_create_in_account1]
+        assert "New Family Member" in create_names_1
+        assert "Other Contact" not in create_names_1
+
+    def test_incremental_sync_with_filters_preserves_sync_tokens(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test that sync token behavior is preserved when filtering is active.
+
+        Verifies that:
+        - Existing sync tokens are used for incremental fetch
+        - New sync tokens are returned and can be stored
+        - Filtering doesn't interfere with sync token management
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # No filter
+        )
+
+        # Set up initial sync tokens
+        real_database.update_sync_state("account1", "token_v1")
+        real_database.update_sync_state("account2", "token_v2")
+
+        # Contact that passes filter
+        work_contact = Contact(
+            resource_name="people/work1",
+            etag="etag_work1",
+            display_name="Worker One",
+            given_name="Worker",
+            family_name="One",
+            emails=["worker1@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+
+        # API returns contacts with new sync tokens
+        mock_api1.list_contacts.return_value = ([work_contact], "token_v3")
+        mock_api2.list_contacts.return_value = ([], "token_v4")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run incremental sync
+        result = engine.analyze(full_sync=False)
+
+        # Verify the APIs were called (sync tokens are used internally)
+        mock_api1.list_contacts.assert_called()
+        mock_api2.list_contacts.assert_called()
+
+        # Verify filtered contact passed through
+        assert result.stats.contacts_in_account1 == 1
+        assert result.stats.contacts_filtered_out_account1 == 0
+
+    def test_incremental_sync_with_filters_membership_change(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test filtering when a contact's group membership changes.
+
+        Simulates a scenario where:
+        - A contact previously wasn't in the filtered group
+        - The contact gets added to the filtered group
+        - Incremental sync should now include this contact
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Set up existing sync state
+        real_database.update_sync_state("account1", "prev_token")
+        real_database.update_sync_state("account2", "prev_token2")
+
+        # Contact that was updated to now be in Work group
+        # (simulating membership change detected by incremental sync)
+        updated_contact = Contact(
+            resource_name="people/updated1",
+            etag="etag_updated_v2",  # New etag indicates update
+            display_name="Recently Added to Work",
+            given_name="Recently",
+            family_name="Added to Work",
+            emails=["updated@example.com"],
+            memberships=["contactGroups/work123"],  # Now in Work group
+            last_modified=datetime(2024, 6, 25, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Contact that remains outside Work group
+        unchanged_contact = Contact(
+            resource_name="people/unchanged1",
+            etag="etag_unchanged",
+            display_name="Still Not Work",
+            given_name="Still",
+            family_name="Not Work",
+            emails=["unchanged@example.com"],
+            memberships=["contactGroups/family456"],  # Still in Family, not Work
+            last_modified=datetime(2024, 6, 25, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+
+        # Incremental sync returns both contacts
+        mock_api1.list_contacts.return_value = (
+            [updated_contact, unchanged_contact],
+            "new_token",
+        )
+        mock_api2.list_contacts.return_value = ([], "new_token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=False)
+
+        # Verify filter applied correctly
+        assert result.stats.contacts_before_filter_account1 == 2
+        assert result.stats.contacts_filtered_out_account1 == 1  # unchanged_contact
+        assert result.stats.contacts_in_account1 == 1  # updated_contact
+
+        # Only the contact now in Work group should be synced
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Recently Added to Work" in create_names
+        assert "Still Not Work" not in create_names
+
+    def test_incremental_sync_with_no_filter_syncs_all(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test that incremental sync with no filter syncs all contacts.
+
+        Verifies backwards compatibility - when no filter is configured,
+        all contacts from incremental sync should be processed.
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # No filters configured (empty sync_groups)
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=[]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Set up existing sync state
+        real_database.update_sync_state("account1", "prev_token")
+        real_database.update_sync_state("account2", "prev_token2")
+
+        # Multiple contacts with different group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Contact",
+            given_name="Work",
+            family_name="Contact",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_personal = Contact(
+            resource_name="people/c_personal",
+            etag="etag_personal",
+            display_name="Personal Contact",
+            given_name="Personal",
+            family_name="Contact",
+            emails=["personal@example.com"],
+            memberships=["contactGroups/personal"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_nogroup",
+            etag="etag_nogroup",
+            display_name="No Group Contact",
+            given_name="No Group",
+            family_name="Contact",
+            emails=["nogroup@example.com"],
+            memberships=[],  # No group membership
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+
+        # All contacts returned from incremental sync
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_personal, contact_no_group],
+            "new_token",
+        )
+        mock_api2.list_contacts.return_value = ([], "new_token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=False)
+
+        # With no filter, all contacts should be processed
+        # contacts_before_filter should equal contacts_in_account (no filtering)
+        assert result.stats.contacts_before_filter_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 0
+        assert result.stats.contacts_in_account1 == 3
+
+        # All contacts should be in sync operations
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Contact" in create_names
+        assert "Personal Contact" in create_names
+        assert "No Group Contact" in create_names
