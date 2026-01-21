@@ -201,6 +201,10 @@ class ConfigLoader:
             "auth_timeout": int,
             # Logging options
             "log_dir": str,
+            # Backup options
+            "backup_enabled": bool,
+            "backup_dir": str,
+            "backup_retention_count": int,
             # Legacy options (for backwards compatibility)
             "similarity_threshold": (int, float),
             "batch_size": int,
@@ -292,6 +296,7 @@ class ConfigLoader:
             "llm_max_tokens",
             "llm_batch_max_tokens",
             "auth_timeout",
+            "backup_retention_count",
         ]
         for key in positive_int_keys:
             if key in config:
