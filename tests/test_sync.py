@@ -3205,3 +3205,566 @@ class TestPhotoSync:
         api_format = contact_without_photo1.to_api_format()
 
         assert "photos" not in api_format
+
+
+# ==============================================================================
+# Contact Filtering Tests
+# ==============================================================================
+
+
+class TestFilterContactsByGroups:
+    """Tests for the _filter_contacts_by_groups method."""
+
+    @pytest.fixture
+    def contact_in_work_group(self):
+        """Create a contact in the 'Work' group."""
+        return Contact(
+            resource_name="people/work1",
+            etag="etag_work1",
+            display_name="Alice Work",
+            given_name="Alice",
+            family_name="Work",
+            emails=["alice@work.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_family_group(self):
+        """Create a contact in the 'Family' group."""
+        return Contact(
+            resource_name="people/family1",
+            etag="etag_family1",
+            display_name="Bob Family",
+            given_name="Bob",
+            family_name="Family",
+            emails=["bob@family.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_multiple_groups(self):
+        """Create a contact in multiple groups (Work and Family)."""
+        return Contact(
+            resource_name="people/multi1",
+            etag="etag_multi1",
+            display_name="Charlie Multi",
+            given_name="Charlie",
+            family_name="Multi",
+            emails=["charlie@example.com"],
+            memberships=["contactGroups/work123", "contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_with_no_groups(self):
+        """Create a contact with no group memberships."""
+        return Contact(
+            resource_name="people/nogroup1",
+            etag="etag_nogroup1",
+            display_name="Dave NoGroup",
+            given_name="Dave",
+            family_name="NoGroup",
+            emails=["dave@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_friends_group(self):
+        """Create a contact in the 'Friends' group."""
+        return Contact(
+            resource_name="people/friends1",
+            etag="etag_friends1",
+            display_name="Eve Friends",
+            given_name="Eve",
+            family_name="Friends",
+            emails=["eve@friends.com"],
+            memberships=["contactGroups/friends789"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    def test_filter_contacts_matching_group_included(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test that contacts with matching groups are included."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].resource_name == "people/work1"
+        assert filtered[0].display_name == "Alice Work"
+
+    def test_filter_contacts_no_match_excluded(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test that contacts without matching groups are excluded."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/friends789"])  # Neither has this
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_contacts_multiple_groups_or_logic(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test that contacts matching ANY allowed group are included (OR logic)."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/work123", "contactGroups/family456"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Both contacts should be included since each matches one group
+        assert len(filtered) == 2
+        assert contact_in_work_group in filtered
+        assert contact_in_family_group in filtered
+
+    def test_filter_contacts_contact_in_multiple_groups_matches_one(
+        self, sync_engine, contact_in_multiple_groups
+    ):
+        """Test contact with multiple groups is included if ANY group matches."""
+        contacts = [contact_in_multiple_groups]
+        # Only allow "work" group, but contact is in both "work" and "family"
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Charlie Multi"
+
+    def test_filter_contacts_empty_filter_includes_all(
+        self,
+        sync_engine,
+        contact_in_work_group,
+        contact_in_family_group,
+        contact_with_no_groups,
+    ):
+        """Test that empty filter includes all contacts (backwards compatibility)."""
+        contacts = [contact_in_work_group, contact_in_family_group, contact_with_no_groups]
+        allowed_groups = frozenset()  # Empty filter
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # All contacts should be included when filter is empty
+        assert len(filtered) == 3
+        assert contact_in_work_group in filtered
+        assert contact_in_family_group in filtered
+        assert contact_with_no_groups in filtered
+
+    def test_filter_contacts_no_memberships_excluded_when_filter_active(
+        self, sync_engine, contact_with_no_groups, contact_in_work_group
+    ):
+        """Test that contacts with no group memberships are excluded when filter is active."""
+        contacts = [contact_with_no_groups, contact_in_work_group]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Only contact with matching group should be included
+        assert len(filtered) == 1
+        assert filtered[0].resource_name == "people/work1"
+        # Contact with no memberships should be excluded
+        assert contact_with_no_groups not in filtered
+
+    def test_filter_contacts_preserves_order(
+        self,
+        sync_engine,
+        contact_in_work_group,
+        contact_in_family_group,
+        contact_in_friends_group,
+    ):
+        """Test that filter preserves the original order of contacts."""
+        contacts = [
+            contact_in_work_group,
+            contact_in_family_group,
+            contact_in_friends_group,
+        ]
+        allowed_groups = frozenset(
+            ["contactGroups/work123", "contactGroups/friends789"]
+        )
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should preserve order: work first, then friends (family excluded)
+        assert len(filtered) == 2
+        assert filtered[0].display_name == "Alice Work"
+        assert filtered[1].display_name == "Eve Friends"
+
+    def test_filter_contacts_empty_list(self, sync_engine):
+        """Test filtering an empty contacts list."""
+        contacts = []
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_contacts_all_excluded(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test when all contacts are filtered out."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/nonexistent999"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_contacts_single_group_single_contact(
+        self, sync_engine, contact_in_work_group
+    ):
+        """Test filtering with single contact and single allowed group."""
+        contacts = [contact_in_work_group]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0] == contact_in_work_group
+
+
+class TestResolveGroupFilters:
+    """Tests for the _resolve_group_filters method."""
+
+    @pytest.fixture
+    def work_group(self):
+        """Create a Work contact group."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        return ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+    @pytest.fixture
+    def family_group(self):
+        """Create a Family contact group."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        return ContactGroup(
+            resource_name="contactGroups/family456",
+            etag="etag_family",
+            name="Family",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+    @pytest.fixture
+    def friends_group(self):
+        """Create a Friends contact group."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        return ContactGroup(
+            resource_name="contactGroups/friends789",
+            etag="etag_friends",
+            name="Friends",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+    def test_resolve_group_filters_by_display_name(
+        self, sync_engine, work_group, family_group
+    ):
+        """Test resolving group filters by display name."""
+        configured_groups = ["Work", "Family"]
+        fetched_groups = [work_group, family_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 2
+        assert "contactGroups/work123" in resolved
+        assert "contactGroups/family456" in resolved
+
+    def test_resolve_group_filters_by_resource_name(
+        self, sync_engine, work_group, family_group
+    ):
+        """Test resolving group filters by resource name."""
+        configured_groups = ["contactGroups/work123", "contactGroups/family456"]
+        fetched_groups = [work_group, family_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 2
+        assert "contactGroups/work123" in resolved
+        assert "contactGroups/family456" in resolved
+
+    def test_resolve_group_filters_case_insensitive_display_name(
+        self, sync_engine, work_group
+    ):
+        """Test that display name matching is case-insensitive."""
+        # Test various case variations
+        for name in ["work", "WORK", "Work", "wOrK"]:
+            configured_groups = [name]
+            fetched_groups = [work_group]
+
+            resolved = sync_engine._resolve_group_filters(
+                configured_groups, fetched_groups, "Account 1"
+            )
+
+            assert len(resolved) == 1
+            assert "contactGroups/work123" in resolved
+
+    def test_resolve_group_filters_mixed_display_and_resource_names(
+        self, sync_engine, work_group, family_group, friends_group
+    ):
+        """Test resolving with mix of display names and resource names."""
+        configured_groups = ["Work", "contactGroups/family456", "friends"]
+        fetched_groups = [work_group, family_group, friends_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 3
+        assert "contactGroups/work123" in resolved
+        assert "contactGroups/family456" in resolved
+        assert "contactGroups/friends789" in resolved
+
+    def test_resolve_group_filters_nonexistent_group_skipped(
+        self, sync_engine, work_group
+    ):
+        """Test that non-existent groups are skipped and warning is logged."""
+        configured_groups = ["Work", "NonexistentGroup"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Only the existing group should be resolved
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_resolve_group_filters_empty_config(
+        self, sync_engine, work_group, family_group
+    ):
+        """Test resolving with empty configured groups list."""
+        configured_groups = []
+        fetched_groups = [work_group, family_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should return empty frozenset
+        assert len(resolved) == 0
+
+    def test_resolve_group_filters_empty_fetched_groups(self, sync_engine):
+        """Test resolving when no groups are fetched from the account."""
+        configured_groups = ["Work", "Family"]
+        fetched_groups = []
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # No groups can be resolved
+        assert len(resolved) == 0
+
+    def test_resolve_group_filters_returns_frozenset(
+        self, sync_engine, work_group
+    ):
+        """Test that the method returns a frozenset for efficient lookup."""
+        configured_groups = ["Work"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert isinstance(resolved, frozenset)
+
+    def test_resolve_group_filters_all_nonexistent(self, sync_engine, work_group):
+        """Test when all configured groups don't exist."""
+        configured_groups = ["NonexistentGroup1", "NonexistentGroup2"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 0
+
+
+class TestFilterPerAccountIndependence:
+    """Tests for per-account filter independence."""
+
+    @pytest.fixture
+    def account1_contact_work(self):
+        """Contact from account 1 in Work group."""
+        return Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Account1 Worker",
+            given_name="Account1",
+            family_name="Worker",
+            emails=["acc1.worker@example.com"],
+            memberships=["contactGroups/work_acc1"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def account1_contact_family(self):
+        """Contact from account 1 in Family group."""
+        return Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Account1 Family",
+            given_name="Account1",
+            family_name="FamilyMember",
+            emails=["acc1.family@example.com"],
+            memberships=["contactGroups/family_acc1"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def account2_contact_work(self):
+        """Contact from account 2 in Work group."""
+        return Contact(
+            resource_name="people/acc2_work",
+            etag="etag_acc2_work",
+            display_name="Account2 Worker",
+            given_name="Account2",
+            family_name="Worker",
+            emails=["acc2.worker@example.com"],
+            memberships=["contactGroups/work_acc2"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def account2_contact_friends(self):
+        """Contact from account 2 in Friends group."""
+        return Contact(
+            resource_name="people/acc2_friends",
+            etag="etag_acc2_friends",
+            display_name="Account2 Friend",
+            given_name="Account2",
+            family_name="Friend",
+            emails=["acc2.friend@example.com"],
+            memberships=["contactGroups/friends_acc2"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    def test_filter_accounts_independent_different_filters(
+        self,
+        sync_engine,
+        account1_contact_work,
+        account1_contact_family,
+        account2_contact_work,
+        account2_contact_friends,
+    ):
+        """Test that account1 and account2 can have different filter configurations."""
+        # Account 1 contacts
+        account1_contacts = [account1_contact_work, account1_contact_family]
+        # Account 2 contacts
+        account2_contacts = [account2_contact_work, account2_contact_friends]
+
+        # Different filters for each account
+        account1_filter = frozenset(["contactGroups/work_acc1"])  # Only Work
+        account2_filter = frozenset(["contactGroups/friends_acc2"])  # Only Friends
+
+        # Apply filters independently
+        filtered_acc1 = sync_engine._filter_contacts_by_groups(
+            account1_contacts, account1_filter, "Account 1"
+        )
+        filtered_acc2 = sync_engine._filter_contacts_by_groups(
+            account2_contacts, account2_filter, "Account 2"
+        )
+
+        # Account 1: only work contact
+        assert len(filtered_acc1) == 1
+        assert filtered_acc1[0].display_name == "Account1 Worker"
+
+        # Account 2: only friends contact
+        assert len(filtered_acc2) == 1
+        assert filtered_acc2[0].display_name == "Account2 Friend"
+
+    def test_filter_account1_filtered_account2_unfiltered(
+        self,
+        sync_engine,
+        account1_contact_work,
+        account1_contact_family,
+        account2_contact_work,
+        account2_contact_friends,
+    ):
+        """Test account1 with filter, account2 without filter (empty = sync all)."""
+        account1_contacts = [account1_contact_work, account1_contact_family]
+        account2_contacts = [account2_contact_work, account2_contact_friends]
+
+        # Account 1 has filter, Account 2 has no filter
+        account1_filter = frozenset(["contactGroups/family_acc1"])  # Only Family
+        account2_filter = frozenset()  # Empty = sync all
+
+        filtered_acc1 = sync_engine._filter_contacts_by_groups(
+            account1_contacts, account1_filter, "Account 1"
+        )
+        filtered_acc2 = sync_engine._filter_contacts_by_groups(
+            account2_contacts, account2_filter, "Account 2"
+        )
+
+        # Account 1: only family contact
+        assert len(filtered_acc1) == 1
+        assert filtered_acc1[0].display_name == "Account1 Family"
+
+        # Account 2: all contacts (no filter)
+        assert len(filtered_acc2) == 2
+        assert account2_contact_work in filtered_acc2
+        assert account2_contact_friends in filtered_acc2
+
+    def test_filter_both_accounts_same_filter_different_results(
+        self,
+        sync_engine,
+        account1_contact_work,
+        account1_contact_family,
+        account2_contact_work,
+        account2_contact_friends,
+    ):
+        """Test same filter type results in different contacts due to different resource names."""
+        account1_contacts = [account1_contact_work, account1_contact_family]
+        account2_contacts = [account2_contact_work, account2_contact_friends]
+
+        # Both filter for "work" but resource names are different per account
+        account1_filter = frozenset(["contactGroups/work_acc1"])
+        account2_filter = frozenset(["contactGroups/work_acc2"])
+
+        filtered_acc1 = sync_engine._filter_contacts_by_groups(
+            account1_contacts, account1_filter, "Account 1"
+        )
+        filtered_acc2 = sync_engine._filter_contacts_by_groups(
+            account2_contacts, account2_filter, "Account 2"
+        )
+
+        # Each account gets their respective work contact
+        assert len(filtered_acc1) == 1
+        assert filtered_acc1[0].display_name == "Account1 Worker"
+
+        assert len(filtered_acc2) == 1
+        assert filtered_acc2[0].display_name == "Account2 Worker"
