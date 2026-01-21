@@ -46,12 +46,12 @@ UPDATE_PERSON_FIELDS = ",".join(
 DEFAULT_PAGE_SIZE = 100
 
 # Maximum contacts per batch operation
-MAX_BATCH_SIZE = 200
+DEFAULT_BATCH_SIZE = 200
 
-# Retry configuration
-MAX_RETRIES = 5
-INITIAL_RETRY_DELAY = 1.0  # seconds
-MAX_RETRY_DELAY = 60.0  # seconds
+# Retry configuration defaults
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_INITIAL_RETRY_DELAY = 1.0  # seconds
+DEFAULT_MAX_RETRY_DELAY = 60.0  # seconds
 
 logger = logging.getLogger(__name__)
 
@@ -101,16 +101,32 @@ class PeopleAPI:
         created = api.batch_create_contacts(contacts_list)
     """
 
-    def __init__(self, credentials: Credentials, page_size: int = DEFAULT_PAGE_SIZE):
+    def __init__(
+        self,
+        credentials: Credentials,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        initial_retry_delay: float = DEFAULT_INITIAL_RETRY_DELAY,
+        max_retry_delay: float = DEFAULT_MAX_RETRY_DELAY,
+    ):
         """
         Initialize the People API wrapper.
 
         Args:
             credentials: Valid Google OAuth2 credentials with contacts scope
             page_size: Number of contacts per page when listing (default 100)
+            batch_size: Maximum contacts per batch operation (default 200)
+            max_retries: Maximum retry attempts for failed API calls (default 5)
+            initial_retry_delay: Initial backoff delay in seconds (default 1.0)
+            max_retry_delay: Maximum backoff delay in seconds (default 60.0)
         """
         self.credentials = credentials
         self.page_size = min(page_size, 1000)  # API max is 1000
+        self.batch_size = batch_size
+        self.max_retries = max_retries
+        self.initial_retry_delay = initial_retry_delay
+        self.max_retry_delay = max_retry_delay
         self._service = None
 
     @property
@@ -152,9 +168,9 @@ class PeopleAPI:
             RateLimitError: If retries are exhausted due to rate limits
             PeopleAPIError: For other API errors
         """
-        delay = INITIAL_RETRY_DELAY
+        delay = self.initial_retry_delay
 
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(self.max_retries):
             try:
                 return operation()
 
@@ -163,28 +179,28 @@ class PeopleAPI:
 
                 # Rate limit or quota exceeded - retry with backoff
                 if status_code in (429, 403):
-                    if attempt < MAX_RETRIES - 1:
+                    if attempt < self.max_retries - 1:
                         logger.warning(
                             f"{operation_name} rate limited, retrying in "
-                            f"{delay:.1f}s (attempt {attempt + 1}/{MAX_RETRIES})"
+                            f"{delay:.1f}s (attempt {attempt + 1}/{self.max_retries})"
                         )
                         time.sleep(delay)
-                        delay = min(delay * 2, MAX_RETRY_DELAY)
+                        delay = min(delay * 2, self.max_retry_delay)
                         continue
                     else:
                         raise RateLimitError(
                             f"Rate limit exceeded for {operation_name} "
-                            f"after {MAX_RETRIES} retries"
+                            f"after {self.max_retries} retries"
                         ) from e
 
                 # Server error - retry with backoff
-                if status_code >= 500 and attempt < MAX_RETRIES - 1:
+                if status_code >= 500 and attempt < self.max_retries - 1:
                     logger.warning(
                         f"{operation_name} server error ({status_code}), "
                         f"retrying in {delay:.1f}s"
                     )
                     time.sleep(delay)
-                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                    delay = min(delay * 2, self.max_retry_delay)
                     continue
 
                 # Other errors - don't retry
@@ -438,7 +454,7 @@ class PeopleAPI:
             raise
 
     def batch_create_contacts(
-        self, contacts: list[Contact], batch_size: int = MAX_BATCH_SIZE
+        self, contacts: list[Contact], batch_size: Optional[int] = None
     ) -> list[Contact]:
         """
         Create multiple contacts in batches.
@@ -447,7 +463,7 @@ class PeopleAPI:
 
         Args:
             contacts: List of contacts to create
-            batch_size: Maximum contacts per batch (default 200)
+            batch_size: Maximum contacts per batch (default: instance batch_size)
 
         Returns:
             List of created contacts with resource_names and etags
@@ -460,15 +476,14 @@ class PeopleAPI:
 
         logger.debug(f"Batch creating {len(contacts)} contacts")
 
-        batch_size = min(batch_size, MAX_BATCH_SIZE)
+        effective_batch_size = batch_size if batch_size is not None else self.batch_size
         created_contacts: list[Contact] = []
 
         # Process in batches
-        for i in range(0, len(contacts), batch_size):
-            batch = contacts[i : i + batch_size]
-            logger.debug(
-                f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)"
-            )
+        for i in range(0, len(contacts), effective_batch_size):
+            batch = contacts[i : i + effective_batch_size]
+            batch_num = i // effective_batch_size + 1
+            logger.debug(f"Processing batch {batch_num} ({len(batch)} contacts)")
 
             # Build batch request body
             batch_body = {
@@ -485,7 +500,7 @@ class PeopleAPI:
 
             response = self._retry_with_backoff(
                 execute_batch_create,
-                f"batch_create_contacts(batch {i // batch_size + 1})",
+                f"batch_create_contacts(batch {batch_num})",
             )
 
             # Parse created contacts
@@ -501,7 +516,7 @@ class PeopleAPI:
     def batch_update_contacts(
         self,
         contacts_with_resources: list[tuple[str, Contact]],
-        batch_size: int = MAX_BATCH_SIZE,
+        batch_size: Optional[int] = None,
     ) -> list[Contact]:
         """
         Update multiple contacts in batches.
@@ -510,7 +525,7 @@ class PeopleAPI:
 
         Args:
             contacts_with_resources: List of (resource_name, Contact) tuples
-            batch_size: Maximum contacts per batch (default 200)
+            batch_size: Maximum contacts per batch (default: instance batch_size)
 
         Returns:
             List of updated contacts
@@ -523,15 +538,14 @@ class PeopleAPI:
 
         logger.debug(f"Batch updating {len(contacts_with_resources)} contacts")
 
-        batch_size = min(batch_size, MAX_BATCH_SIZE)
+        effective_batch_size = batch_size if batch_size is not None else self.batch_size
         updated_contacts: list[Contact] = []
 
         # Process in batches
-        for i in range(0, len(contacts_with_resources), batch_size):
-            batch = contacts_with_resources[i : i + batch_size]
-            logger.debug(
-                f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)"
-            )
+        for i in range(0, len(contacts_with_resources), effective_batch_size):
+            batch = contacts_with_resources[i : i + effective_batch_size]
+            batch_num = i // effective_batch_size + 1
+            logger.debug(f"Processing batch {batch_num} ({len(batch)} contacts)")
 
             # Build batch request body
             contacts_dict = {}
@@ -553,7 +567,7 @@ class PeopleAPI:
 
             response = self._retry_with_backoff(
                 execute_batch_update,
-                f"batch_update_contacts(batch {i // batch_size + 1})",
+                f"batch_update_contacts(batch {batch_num})",
             )
 
             # Parse updated contacts
@@ -568,7 +582,7 @@ class PeopleAPI:
         return updated_contacts
 
     def batch_delete_contacts(
-        self, resource_names: list[str], batch_size: int = MAX_BATCH_SIZE
+        self, resource_names: list[str], batch_size: Optional[int] = None
     ) -> int:
         """
         Delete multiple contacts in batches.
@@ -577,7 +591,7 @@ class PeopleAPI:
 
         Args:
             resource_names: List of resource names to delete
-            batch_size: Maximum contacts per batch (default 200)
+            batch_size: Maximum contacts per batch (default: instance batch_size)
 
         Returns:
             Number of contacts deleted
@@ -590,15 +604,14 @@ class PeopleAPI:
 
         logger.debug(f"Batch deleting {len(resource_names)} contacts")
 
-        batch_size = min(batch_size, MAX_BATCH_SIZE)
+        effective_batch_size = batch_size if batch_size is not None else self.batch_size
         deleted_count = 0
 
         # Process in batches
-        for i in range(0, len(resource_names), batch_size):
-            batch = resource_names[i : i + batch_size]
-            logger.debug(
-                f"Processing batch {i // batch_size + 1} ({len(batch)} contacts)"
-            )
+        for i in range(0, len(resource_names), effective_batch_size):
+            batch = resource_names[i : i + effective_batch_size]
+            batch_num = i // effective_batch_size + 1
+            logger.debug(f"Processing batch {batch_num} ({len(batch)} contacts)")
 
             batch_body: dict[str, list[str]] = {"resourceNames": batch}
 
@@ -609,7 +622,7 @@ class PeopleAPI:
 
             self._retry_with_backoff(
                 execute_batch_delete,
-                f"batch_delete_contacts(batch {i // batch_size + 1})",
+                f"batch_delete_contacts(batch {batch_num})",
             )
 
             deleted_count += len(batch)

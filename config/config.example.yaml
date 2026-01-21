@@ -27,6 +27,11 @@
 # CLI equivalent: --debug
 # debug: false
 
+# Custom log directory path
+# Default: ~/.gcontact-sync/logs
+# Environment variable: GCONTACT_SYNC_LOG_FILE
+# log_dir: /path/to/logs
+
 
 # Sync Behavior
 # -------------
@@ -56,6 +61,114 @@
 # strategy: last_modified
 
 
+# API Options
+# -----------
+
+# Number of contacts to fetch per API page
+# Higher values may be faster but use more memory
+# Default: 100
+# api_page_size: 100
+
+# Maximum contacts per batch operation (create/update/delete)
+# Google API has a limit of 200 per batch
+# Default: 200
+# api_batch_size: 200
+
+# Maximum retry attempts for failed/rate-limited API calls
+# Default: 5
+# api_max_retries: 5
+
+# Initial backoff delay in seconds when retrying
+# Each retry doubles the delay up to api_max_retry_delay
+# Default: 1.0
+# api_initial_retry_delay: 1.0
+
+# Maximum backoff delay in seconds
+# Default: 60.0
+# api_max_retry_delay: 60.0
+
+
+# Contact Matching Options
+# ------------------------
+
+# Fuzzy name matching threshold (0.0 to 1.0)
+# Contacts with name similarity >= this value AND shared email/phone are matched
+# Higher values require closer matches. Lower values may create false matches.
+# Default: 0.85 (85% similarity required)
+# name_similarity_threshold: 0.85
+
+# Threshold for name-only matches (no shared email/phone)
+# Must be very high to avoid false positives
+# Default: 0.95 (95% similarity required)
+# name_only_threshold: 0.95
+
+# Threshold for uncertain matches that trigger LLM review
+# Contacts with similarity between this and name_similarity_threshold
+# may be sent to LLM for verification
+# Default: 0.7 (70%)
+# uncertain_threshold: 0.7
+
+# Maximum contacts to send to LLM per batch when reviewing uncertain matches
+# Default: 20
+# llm_batch_size: 20
+
+# Enable organization-based matching as a secondary signal
+# When enabled, contacts with similar names AND shared organization will match
+# even if they don't share email/phone (useful for corporate contacts)
+# Default: true
+# use_organization_matching: true
+
+
+# Duplicate Handling
+# ------------------
+# How to handle potential duplicates when one account has merged contacts
+# and the other has them split. For example:
+#   Account 1: "Jim Harris" (email: a@x.com), "Jim Harris" (email: b@x.com)
+#   Account 2: "Jim Harris" (emails: a@x.com, b@x.com)
+#
+# Options:
+#   - skip: Don't create duplicates, log them for manual review (safest)
+#   - auto_merge: Merge identifiers into the matched contact (cleanest result)
+#   - report_only: Create the contact but track it in the report
+#
+# Default: skip
+# duplicate_handling: skip
+
+
+# LLM Options
+# -----------
+
+# Anthropic API key can be configured via:
+# 1. anthropic_api_key: "sk-..." (NOT RECOMMENDED - don't commit secrets)
+# 2. anthropic_api_key_env: MY_CUSTOM_VAR (read from custom env var)
+# 3. Default: ANTHROPIC_API_KEY environment variable
+#
+# For AWS Secrets Manager, use:
+#   eval "$(uv run --python 3.12 --with boto3 ~/bin/pull-env -c default -a api-credentials 2>/dev/null | grep ANTHROPIC)"
+#
+# anthropic_api_key_env: MY_ANTHROPIC_KEY
+
+# Claude model to use for contact matching decisions
+# Default: claude-haiku-4-5-20250514
+# llm_model: claude-haiku-4-5-20250514
+
+# Maximum tokens for single contact match responses
+# Default: 500
+# llm_max_tokens: 500
+
+# Maximum tokens for batch contact match responses
+# Default: 2000
+# llm_batch_max_tokens: 2000
+
+
+# Authentication Options
+# ----------------------
+
+# Timeout in seconds for authentication network requests
+# Default: 10
+# auth_timeout: 10
+
+
 # Advanced Options
 # ----------------
 
@@ -64,16 +177,6 @@
 # Environment variable: GCONTACT_SYNC_CONFIG_DIR
 # CLI equivalent: --config-dir <path>
 # config_dir: /path/to/config
-
-# Similarity threshold for matching contacts (0.0 to 1.0)
-# Higher values require closer matches. Lower values may create false matches.
-# Default: 0.8 (not yet used in current implementation)
-# similarity_threshold: 0.8
-
-# Batch size for API operations
-# Number of contacts to process in a single batch
-# Default: 100 (not yet used in current implementation)
-# batch_size: 100
 
 
 # Example Configurations
@@ -97,6 +200,20 @@
 # Account preference (always trust account1):
 #   strategy: account1
 #   verbose: true
+#
+# Strict matching (fewer false positives):
+#   name_similarity_threshold: 0.9
+#   name_only_threshold: 0.98
+#   uncertain_threshold: 0.8
+#
+# Relaxed matching (more matches found):
+#   name_similarity_threshold: 0.75
+#   name_only_threshold: 0.9
+#   uncertain_threshold: 0.6
+#
+# Faster API operations (for large contact lists):
+#   api_page_size: 500
+#   api_batch_size: 200
 
 
 # Quick Start Examples

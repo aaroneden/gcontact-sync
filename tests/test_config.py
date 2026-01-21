@@ -7,7 +7,7 @@ including YAML parsing, error handling, and file operations.
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -184,7 +184,9 @@ class TestConfigLoading:
         assert result == config_data
 
     @patch("builtins.open", side_effect=OSError("Permission denied"))
-    def test_load_permission_error_raises_config_error(self, mock_open, loader, tmp_path):
+    def test_load_permission_error_raises_config_error(
+        self, mock_open, loader, tmp_path
+    ):
         """Test loading file with permission error raises ConfigError."""
         config_path = tmp_path / DEFAULT_CONFIG_FILE
         config_path.write_text("test: true", encoding="utf-8")
@@ -229,6 +231,24 @@ class TestConfigValidation:
         """Test validating invalid boolean type raises ConfigError."""
         config = {"dry_run": "true"}  # String instead of bool
         with pytest.raises(ConfigError, match="Invalid type for 'dry_run'"):
+            loader.validate(config)
+
+    def test_validate_full_wrong_type_raises_error(self, loader):
+        """Test validating full with wrong type raises ConfigError."""
+        config = {"full": "yes"}
+        with pytest.raises(ConfigError, match="Invalid type for 'full'"):
+            loader.validate(config)
+
+    def test_validate_debug_wrong_type_raises_error(self, loader):
+        """Test validating debug with wrong type raises ConfigError."""
+        config = {"debug": 1}
+        with pytest.raises(ConfigError, match="Invalid type for 'debug'"):
+            loader.validate(config)
+
+    def test_validate_verbose_wrong_type_raises_error(self, loader):
+        """Test validating verbose with wrong type raises ConfigError."""
+        config = {"verbose": "true"}
+        with pytest.raises(ConfigError, match="Invalid type for 'verbose'"):
             loader.validate(config)
 
     def test_validate_valid_strategy(self, loader):
@@ -288,7 +308,9 @@ class TestConfigValidation:
     def test_validate_similarity_threshold_wrong_type_raises_error(self, loader):
         """Test validating similarity_threshold with wrong type raises ConfigError."""
         config = {"similarity_threshold": "0.8"}
-        with pytest.raises(ConfigError, match="Invalid type for 'similarity_threshold'"):
+        with pytest.raises(
+            ConfigError, match="Invalid type for 'similarity_threshold'"
+        ):
             loader.validate(config)
 
     def test_validate_batch_size_valid_values(self, loader):
@@ -344,6 +366,307 @@ class TestConfigValidation:
             "config_dir": "/custom/path",
             "similarity_threshold": 0.85,
             "batch_size": 50,
+        }
+        loader.validate(config)  # Should not raise
+
+    # Tests for new Tier 1/2 configuration options
+
+    def test_validate_api_page_size_valid(self, loader):
+        """Test validating api_page_size with valid values."""
+        for size in [1, 100, 500, 1000]:
+            config = {"api_page_size": size}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_api_page_size_invalid(self, loader):
+        """Test validating api_page_size with invalid values."""
+        config = {"api_page_size": 0}
+        with pytest.raises(ConfigError, match="api_page_size must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_api_page_size_wrong_type(self, loader):
+        """Test validating api_page_size with wrong type."""
+        config = {"api_page_size": "100"}
+        with pytest.raises(ConfigError, match="Invalid type for 'api_page_size'"):
+            loader.validate(config)
+
+    def test_validate_api_batch_size_valid(self, loader):
+        """Test validating api_batch_size with valid values."""
+        for size in [1, 50, 100, 200]:
+            config = {"api_batch_size": size}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_api_batch_size_invalid(self, loader):
+        """Test validating api_batch_size with invalid values."""
+        config = {"api_batch_size": 0}
+        with pytest.raises(ConfigError, match="api_batch_size must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_api_batch_size_wrong_type(self, loader):
+        """Test validating api_batch_size with wrong type."""
+        config = {"api_batch_size": "200"}
+        with pytest.raises(ConfigError, match="Invalid type for 'api_batch_size'"):
+            loader.validate(config)
+
+    def test_validate_api_max_retries_valid(self, loader):
+        """Test validating api_max_retries with valid values."""
+        for retries in [1, 3, 5, 10]:
+            config = {"api_max_retries": retries}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_api_max_retries_invalid(self, loader):
+        """Test validating api_max_retries with invalid values."""
+        config = {"api_max_retries": 0}
+        with pytest.raises(ConfigError, match="api_max_retries must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_api_max_retries_wrong_type(self, loader):
+        """Test validating api_max_retries with wrong type."""
+        config = {"api_max_retries": "5"}
+        with pytest.raises(ConfigError, match="Invalid type for 'api_max_retries'"):
+            loader.validate(config)
+
+    def test_validate_api_initial_retry_delay_valid(self, loader):
+        """Test validating api_initial_retry_delay with valid values."""
+        for delay in [0.1, 0.5, 1.0, 5.0]:
+            config = {"api_initial_retry_delay": delay}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_api_initial_retry_delay_invalid(self, loader):
+        """Test validating api_initial_retry_delay with invalid values."""
+        config = {"api_initial_retry_delay": 0}
+        with pytest.raises(ConfigError, match="api_initial_retry_delay must be > 0"):
+            loader.validate(config)
+
+    def test_validate_api_initial_retry_delay_negative(self, loader):
+        """Test validating api_initial_retry_delay with negative values."""
+        config = {"api_initial_retry_delay": -1.0}
+        with pytest.raises(ConfigError, match="api_initial_retry_delay must be > 0"):
+            loader.validate(config)
+
+    def test_validate_api_initial_retry_delay_wrong_type(self, loader):
+        """Test validating api_initial_retry_delay with wrong type."""
+        config = {"api_initial_retry_delay": "1.0"}
+        with pytest.raises(
+            ConfigError, match="Invalid type for 'api_initial_retry_delay'"
+        ):
+            loader.validate(config)
+
+    def test_validate_api_max_retry_delay_valid(self, loader):
+        """Test validating api_max_retry_delay with valid values."""
+        for delay in [1.0, 30.0, 60.0, 120.0]:
+            config = {"api_max_retry_delay": delay}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_api_max_retry_delay_invalid(self, loader):
+        """Test validating api_max_retry_delay with invalid values."""
+        config = {"api_max_retry_delay": -1.0}
+        with pytest.raises(ConfigError, match="api_max_retry_delay must be > 0"):
+            loader.validate(config)
+
+    def test_validate_api_max_retry_delay_zero(self, loader):
+        """Test validating api_max_retry_delay with zero value."""
+        config = {"api_max_retry_delay": 0}
+        with pytest.raises(ConfigError, match="api_max_retry_delay must be > 0"):
+            loader.validate(config)
+
+    def test_validate_api_max_retry_delay_wrong_type(self, loader):
+        """Test validating api_max_retry_delay with wrong type."""
+        config = {"api_max_retry_delay": "60.0"}
+        with pytest.raises(ConfigError, match="Invalid type for 'api_max_retry_delay'"):
+            loader.validate(config)
+
+    def test_validate_name_similarity_threshold_valid(self, loader):
+        """Test validating name_similarity_threshold with valid values."""
+        for threshold in [0.0, 0.5, 0.85, 1.0]:
+            config = {"name_similarity_threshold": threshold}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_name_similarity_threshold_invalid_low(self, loader):
+        """Test validating name_similarity_threshold below 0."""
+        config = {"name_similarity_threshold": -0.1}
+        with pytest.raises(ConfigError, match="must be between 0.0 and 1.0"):
+            loader.validate(config)
+
+    def test_validate_name_similarity_threshold_invalid_high(self, loader):
+        """Test validating name_similarity_threshold above 1."""
+        config = {"name_similarity_threshold": 1.1}
+        with pytest.raises(ConfigError, match="must be between 0.0 and 1.0"):
+            loader.validate(config)
+
+    def test_validate_name_similarity_threshold_wrong_type(self, loader):
+        """Test validating name_similarity_threshold with wrong type."""
+        config = {"name_similarity_threshold": "0.85"}
+        with pytest.raises(
+            ConfigError, match="Invalid type for 'name_similarity_threshold'"
+        ):
+            loader.validate(config)
+
+    def test_validate_name_only_threshold_valid(self, loader):
+        """Test validating name_only_threshold with valid values."""
+        for threshold in [0.0, 0.5, 0.95, 1.0]:
+            config = {"name_only_threshold": threshold}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_name_only_threshold_invalid(self, loader):
+        """Test validating name_only_threshold with invalid values."""
+        config = {"name_only_threshold": 1.5}
+        with pytest.raises(ConfigError, match="must be between 0.0 and 1.0"):
+            loader.validate(config)
+
+    def test_validate_name_only_threshold_wrong_type(self, loader):
+        """Test validating name_only_threshold with wrong type."""
+        config = {"name_only_threshold": "0.95"}
+        with pytest.raises(ConfigError, match="Invalid type for 'name_only_threshold'"):
+            loader.validate(config)
+
+    def test_validate_uncertain_threshold_valid(self, loader):
+        """Test validating uncertain_threshold with valid values."""
+        for threshold in [0.0, 0.5, 0.7, 1.0]:
+            config = {"uncertain_threshold": threshold}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_uncertain_threshold_invalid(self, loader):
+        """Test validating uncertain_threshold with invalid values."""
+        config = {"uncertain_threshold": -0.5}
+        with pytest.raises(ConfigError, match="must be between 0.0 and 1.0"):
+            loader.validate(config)
+
+    def test_validate_uncertain_threshold_wrong_type(self, loader):
+        """Test validating uncertain_threshold with wrong type."""
+        config = {"uncertain_threshold": "0.7"}
+        with pytest.raises(ConfigError, match="Invalid type for 'uncertain_threshold'"):
+            loader.validate(config)
+
+    def test_validate_llm_batch_size_valid(self, loader):
+        """Test validating llm_batch_size with valid values."""
+        for size in [1, 10, 20, 50]:
+            config = {"llm_batch_size": size}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_llm_batch_size_invalid(self, loader):
+        """Test validating llm_batch_size with invalid values."""
+        config = {"llm_batch_size": 0}
+        with pytest.raises(ConfigError, match="llm_batch_size must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_llm_batch_size_wrong_type(self, loader):
+        """Test validating llm_batch_size with wrong type."""
+        config = {"llm_batch_size": "20"}
+        with pytest.raises(ConfigError, match="Invalid type for 'llm_batch_size'"):
+            loader.validate(config)
+
+    def test_validate_llm_model_valid(self, loader):
+        """Test validating llm_model with valid string values."""
+        config = {"llm_model": "claude-haiku-4-5-20250514"}
+        loader.validate(config)  # Should not raise
+
+    def test_validate_llm_model_wrong_type(self, loader):
+        """Test validating llm_model with wrong type."""
+        config = {"llm_model": 123}
+        with pytest.raises(ConfigError, match="Invalid type for 'llm_model'"):
+            loader.validate(config)
+
+    def test_validate_llm_max_tokens_valid(self, loader):
+        """Test validating llm_max_tokens with valid values."""
+        for tokens in [100, 500, 1000]:
+            config = {"llm_max_tokens": tokens}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_llm_max_tokens_invalid(self, loader):
+        """Test validating llm_max_tokens with invalid values."""
+        config = {"llm_max_tokens": 0}
+        with pytest.raises(ConfigError, match="llm_max_tokens must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_llm_max_tokens_wrong_type(self, loader):
+        """Test validating llm_max_tokens with wrong type."""
+        config = {"llm_max_tokens": "500"}
+        with pytest.raises(ConfigError, match="Invalid type for 'llm_max_tokens'"):
+            loader.validate(config)
+
+    def test_validate_llm_batch_max_tokens_valid(self, loader):
+        """Test validating llm_batch_max_tokens with valid values."""
+        for tokens in [500, 2000, 4000]:
+            config = {"llm_batch_max_tokens": tokens}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_llm_batch_max_tokens_invalid(self, loader):
+        """Test validating llm_batch_max_tokens with invalid values."""
+        config = {"llm_batch_max_tokens": 0}
+        with pytest.raises(ConfigError, match="llm_batch_max_tokens must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_llm_batch_max_tokens_wrong_type(self, loader):
+        """Test validating llm_batch_max_tokens with wrong type."""
+        config = {"llm_batch_max_tokens": "2000"}
+        with pytest.raises(
+            ConfigError, match="Invalid type for 'llm_batch_max_tokens'"
+        ):
+            loader.validate(config)
+
+    def test_validate_auth_timeout_valid(self, loader):
+        """Test validating auth_timeout with valid values."""
+        for timeout in [1, 10, 30, 60]:
+            config = {"auth_timeout": timeout}
+            loader.validate(config)  # Should not raise
+
+    def test_validate_auth_timeout_invalid(self, loader):
+        """Test validating auth_timeout with invalid values."""
+        config = {"auth_timeout": 0}
+        with pytest.raises(ConfigError, match="auth_timeout must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_auth_timeout_negative(self, loader):
+        """Test validating auth_timeout with negative values."""
+        config = {"auth_timeout": -5}
+        with pytest.raises(ConfigError, match="auth_timeout must be >= 1"):
+            loader.validate(config)
+
+    def test_validate_auth_timeout_wrong_type(self, loader):
+        """Test validating auth_timeout with wrong type."""
+        config = {"auth_timeout": "10"}
+        with pytest.raises(ConfigError, match="Invalid type for 'auth_timeout'"):
+            loader.validate(config)
+
+    def test_validate_log_dir_valid(self, loader):
+        """Test validating log_dir with valid string values."""
+        config = {"log_dir": "/var/log/gcontact-sync"}
+        loader.validate(config)  # Should not raise
+
+    def test_validate_log_dir_wrong_type(self, loader):
+        """Test validating log_dir with wrong type."""
+        config = {"log_dir": 123}
+        with pytest.raises(ConfigError, match="Invalid type for 'log_dir'"):
+            loader.validate(config)
+
+    def test_validate_complete_tier1_tier2_config(self, loader):
+        """Test validating a config with all Tier 1 and Tier 2 options."""
+        config = {
+            # CLI options
+            "dry_run": True,
+            "verbose": True,
+            "debug": False,
+            "full": False,
+            "strategy": "last_modified",
+            # API options (Tier 1)
+            "api_page_size": 100,
+            "api_batch_size": 200,
+            "api_max_retries": 5,
+            "api_initial_retry_delay": 1.0,
+            "api_max_retry_delay": 60.0,
+            # Matching options (Tier 1)
+            "name_similarity_threshold": 0.85,
+            "name_only_threshold": 0.95,
+            "uncertain_threshold": 0.7,
+            "llm_batch_size": 20,
+            # LLM options (Tier 1/2)
+            "llm_model": "claude-haiku-4-5-20250514",
+            "llm_max_tokens": 500,
+            "llm_batch_max_tokens": 2000,
+            # Auth options (Tier 2)
+            "auth_timeout": 10,
+            # Logging options (Tier 2)
+            "log_dir": "/var/log/gcontact",
         }
         loader.validate(config)  # Should not raise
 
@@ -515,7 +838,7 @@ class TestSaveConfigFile:
         assert success is False
         assert error is not None
         assert "already exists" in error
-        assert "existing content" == config_path.read_text()
+        assert config_path.read_text() == "existing content"
 
     def test_save_config_file_existing_file_with_overwrite(self, tmp_path):
         """Test that existing file is overwritten with overwrite=True."""
@@ -526,7 +849,7 @@ class TestSaveConfigFile:
 
         assert success is True
         assert error is None
-        assert "existing content" != config_path.read_text()
+        assert config_path.read_text() != "existing content"
 
     def test_save_config_file_with_tilde_path(self, tmp_path, monkeypatch):
         """Test that save_config_file handles tilde paths."""
@@ -571,7 +894,7 @@ class TestConfigConstants:
 
     def test_default_config_dir_is_in_home(self):
         """Test that DEFAULT_CONFIG_DIR is in user's home directory."""
-        assert DEFAULT_CONFIG_DIR == Path.home() / ".gcontact-sync"
+        assert Path.home() / ".gcontact-sync" == DEFAULT_CONFIG_DIR
 
     def test_default_config_file_name(self):
         """Test that DEFAULT_CONFIG_FILE is config.yaml."""

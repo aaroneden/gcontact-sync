@@ -11,7 +11,7 @@ Provides YAML-based configuration file loading with support for:
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Type, Union
+from typing import Any, Optional, Union
 
 import yaml
 
@@ -85,7 +85,7 @@ class ConfigLoader:
         """
         return self.config_dir / self.config_file
 
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         """
         Load configuration from the default configuration file.
 
@@ -102,7 +102,7 @@ class ConfigLoader:
         config_path = self._get_config_path()
         return self.load_from_file(config_path)
 
-    def load_from_file(self, path: Union[Path, str]) -> Dict[str, Any]:
+    def load_from_file(self, path: Union[Path, str]) -> dict[str, Any]:
         """
         Load configuration from a specific file.
 
@@ -149,7 +149,7 @@ class ConfigLoader:
         except OSError as e:
             raise ConfigError(f"Failed to read configuration file: {e}") from e
 
-    def validate(self, config: Dict[str, Any]) -> None:
+    def validate(self, config: dict[str, Any]) -> None:
         """
         Validate configuration structure and values.
 
@@ -169,7 +169,7 @@ class ConfigLoader:
 
         # Define valid configuration keys and their expected types
         # This can be expanded as more configuration options are added
-        valid_keys: Dict[str, Union[Type[Any], Tuple[Type[Any], ...]]] = {
+        valid_keys: dict[str, Union[type[Any], tuple[type[Any], ...]]] = {
             # CLI options
             "dry_run": bool,
             "full": bool,
@@ -177,7 +177,31 @@ class ConfigLoader:
             "verbose": bool,
             "strategy": str,
             "config_dir": str,
-            # Sync options (for future use)
+            # API options
+            "api_page_size": int,
+            "api_batch_size": int,
+            "api_max_retries": int,
+            "api_initial_retry_delay": (int, float),
+            "api_max_retry_delay": (int, float),
+            # Matching options
+            "name_similarity_threshold": (int, float),
+            "name_only_threshold": (int, float),
+            "uncertain_threshold": (int, float),
+            "llm_batch_size": int,
+            "use_organization_matching": bool,
+            # Duplicate handling
+            "duplicate_handling": str,
+            # LLM options
+            "llm_model": str,
+            "llm_max_tokens": int,
+            "llm_batch_max_tokens": int,
+            "anthropic_api_key": str,
+            "anthropic_api_key_env": str,
+            # Auth options
+            "auth_timeout": int,
+            # Logging options
+            "log_dir": str,
+            # Legacy options (for backwards compatibility)
             "similarity_threshold": (int, float),
             "batch_size": int,
         }
@@ -217,21 +241,76 @@ class ConfigLoader:
                     f"Must be one of: {', '.join(valid_strategies)}"
                 )
 
+        # Validate duplicate_handling value if present
+        if "duplicate_handling" in config:
+            valid_duplicate_handling = [
+                "skip",
+                "auto_merge",
+                "report_only",
+            ]
+            if config["duplicate_handling"] not in valid_duplicate_handling:
+                raise ConfigError(
+                    f"Invalid duplicate_handling '{config['duplicate_handling']}'. "
+                    f"Must be one of: {', '.join(valid_duplicate_handling)}"
+                )
+
         # Validate numeric ranges if present
+        # Legacy similarity_threshold
         if "similarity_threshold" in config:
             threshold = config["similarity_threshold"]
             if not (0.0 <= threshold <= 1.0):
                 raise ConfigError(
-                    f"similarity_threshold must be between 0.0 and 1.0, "
-                    f"got {threshold}"
+                    f"similarity_threshold must be between 0.0 and 1.0, got {threshold}"
                 )
 
+        # Legacy batch_size
         if "batch_size" in config:
             batch_size = config["batch_size"]
             if batch_size < 1:
                 raise ConfigError(f"batch_size must be >= 1, got {batch_size}")
 
-    def load_and_validate(self) -> Dict[str, Any]:
+        # Matching thresholds (must be 0.0 to 1.0)
+        threshold_keys = [
+            "name_similarity_threshold",
+            "name_only_threshold",
+            "uncertain_threshold",
+        ]
+        for key in threshold_keys:
+            if key in config:
+                threshold = config[key]
+                if not (0.0 <= threshold <= 1.0):
+                    raise ConfigError(
+                        f"{key} must be between 0.0 and 1.0, got {threshold}"
+                    )
+
+        # Positive integer values
+        positive_int_keys = [
+            "api_page_size",
+            "api_batch_size",
+            "api_max_retries",
+            "llm_batch_size",
+            "llm_max_tokens",
+            "llm_batch_max_tokens",
+            "auth_timeout",
+        ]
+        for key in positive_int_keys:
+            if key in config:
+                value = config[key]
+                if value < 1:
+                    raise ConfigError(f"{key} must be >= 1, got {value}")
+
+        # Positive float values (delays)
+        positive_float_keys = [
+            "api_initial_retry_delay",
+            "api_max_retry_delay",
+        ]
+        for key in positive_float_keys:
+            if key in config:
+                value = config[key]
+                if value <= 0:
+                    raise ConfigError(f"{key} must be > 0, got {value}")
+
+    def load_and_validate(self) -> dict[str, Any]:
         """
         Load configuration and validate it.
 

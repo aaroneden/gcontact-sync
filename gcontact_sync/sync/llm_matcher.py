@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Default LLM configuration
+DEFAULT_LLM_MODEL = "claude-haiku-4-5-20250514"
+DEFAULT_LLM_MAX_TOKENS = 500
+DEFAULT_LLM_BATCH_MAX_TOKENS = 2000
+
 
 @dataclass
 class LLMMatchDecision:
@@ -46,12 +51,13 @@ class LLMMatcher:
         decision = matcher.match_pair(contact1, contact2)  # Checks cache first
     """
 
-    DEFAULT_MODEL = "claude-haiku-4-5-20250514"
-
     def __init__(
         self,
         api_key: Optional[str] = None,
         database: Optional["SyncDatabase"] = None,
+        model: str = DEFAULT_LLM_MODEL,
+        max_tokens: int = DEFAULT_LLM_MAX_TOKENS,
+        batch_max_tokens: int = DEFAULT_LLM_BATCH_MAX_TOKENS,
     ):
         """
         Initialize the LLM matcher.
@@ -59,10 +65,16 @@ class LLMMatcher:
         Args:
             api_key: Anthropic API key. If not provided, uses ANTHROPIC_API_KEY env var.
             database: Optional SyncDatabase for caching LLM decisions.
+            model: Claude model to use for matching (default: claude-haiku-4-5-20250514)
+            max_tokens: Max tokens for single match responses (default: 500)
+            batch_max_tokens: Max tokens for batch match responses (default: 2000)
         """
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._client = None
         self._database = database
+        self.model = model
+        self.max_tokens = max_tokens
+        self.batch_max_tokens = batch_max_tokens
 
     def _get_client(self):  # type: ignore[no-untyped-def]
         """Lazy-load the Anthropic client. Returns anthropic.Anthropic instance."""
@@ -111,8 +123,8 @@ class LLMMatcher:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model=self.DEFAULT_MODEL,
-                max_tokens=500,
+                model=self.model,
+                max_tokens=self.max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -158,8 +170,8 @@ class LLMMatcher:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model=self.DEFAULT_MODEL,
-                max_tokens=2000,
+                model=self.model,
+                max_tokens=self.batch_max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -398,7 +410,7 @@ Only include candidates that ARE matches. Empty array if no matches."""
                 is_match=decision.is_match,
                 confidence=decision.confidence,
                 reasoning=decision.reasoning,
-                model_used=self.DEFAULT_MODEL,
+                model_used=self.model,
             )
         except Exception as e:
             logger.warning(f"Failed to cache LLM decision: {e}")

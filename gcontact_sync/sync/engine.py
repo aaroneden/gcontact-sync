@@ -8,7 +8,10 @@ handling contact creation, updates, deletions, and conflict resolution.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from gcontact_sync.sync.matcher import MatchConfig
 
 from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
 from gcontact_sync.auth.google_auth import ACCOUNT_1, ACCOUNT_2
@@ -23,6 +26,43 @@ from gcontact_sync.sync.contact import Contact
 from gcontact_sync.utils.logging import setup_matching_logger
 
 logger = logging.getLogger(__name__)
+
+
+class DuplicateHandling:
+    """Strategy for handling potential duplicate contacts."""
+
+    SKIP = "skip"  # Don't create, log as potential duplicate
+    AUTO_MERGE = "auto_merge"  # Merge identifiers into existing matched contact
+    REPORT_ONLY = "report_only"  # Create but track in report for user review
+
+
+@dataclass
+class PotentialDuplicate:
+    """
+    A contact that appears to be a duplicate of an already-matched contact.
+
+    This occurs when one account has merged contacts and the other has them split.
+    For example, Account 1 might have two "Jim Harris" contacts with different emails,
+    while Account 2 has one "Jim Harris" with both emails.
+    """
+
+    # The unmatched contact that appears to be a duplicate
+    unmatched_contact: Contact
+
+    # The already-matched contact it shares identifiers with
+    matched_contact: Contact
+
+    # The matched contact's partner in the other account
+    matched_partner: Contact
+
+    # The shared identifiers (emails or phones)
+    shared_identifiers: list[str]
+
+    # Which account the unmatched contact is in (1 or 2)
+    source_account: int
+
+    # How the duplicate was handled
+    action_taken: str = ""  # "skipped", "merged", "created", "reported"
 
 
 @dataclass
@@ -44,6 +84,10 @@ class SyncStats:
     conflicts_resolved: int = 0
     skipped_invalid: int = 0
     errors: int = 0
+    potential_duplicates_found: int = 0
+    duplicates_skipped: int = 0
+    duplicates_merged: int = 0
+    duplicates_reported: int = 0
 
 
 @dataclass
@@ -71,6 +115,9 @@ class SyncResult:
 
     # Matched contacts (for debug output): list of (contact1, contact2) pairs
     matched_contacts: list[tuple[Contact, Contact]] = field(default_factory=list)
+
+    # Potential duplicates detected (contacts sharing identifiers with matched)
+    potential_duplicates: list[PotentialDuplicate] = field(default_factory=list)
 
     # Statistics
     stats: SyncStats = field(default_factory=SyncStats)
@@ -167,6 +214,8 @@ class SyncEngine:
         account1_email: Optional[str] = None,
         account2_email: Optional[str] = None,
         use_llm_matching: bool = True,
+        match_config: Optional["MatchConfig"] = None,
+        duplicate_handling: str = DuplicateHandling.SKIP,
     ):
         """
         Initialize the sync engine.
@@ -180,6 +229,11 @@ class SyncEngine:
             account1_email: Email address of account 1 (for logging)
             account2_email: Email address of account 2 (for logging)
             use_llm_matching: Whether to use LLM for uncertain matches
+                (ignored if match_config is provided)
+            match_config: Optional MatchConfig for advanced matching configuration.
+                If provided, use_llm_matching is ignored.
+            duplicate_handling: Strategy for handling potential duplicates
+                (skip, auto_merge, or report_only)
         """
         # Import here to avoid circular imports
         from gcontact_sync.sync.matcher import ContactMatcher, MatchConfig
@@ -193,8 +247,13 @@ class SyncEngine:
         self.account2_email = account2_email or ACCOUNT_2
 
         # Initialize multi-tier contact matcher with database for LLM caching
-        match_config = MatchConfig(use_llm_matching=use_llm_matching)
+        # Use provided match_config or create a default one
+        if match_config is None:
+            match_config = MatchConfig(use_llm_matching=use_llm_matching)
         self.matcher = ContactMatcher(config=match_config, database=database)
+
+        # Duplicate handling strategy
+        self.duplicate_handling = duplicate_handling
 
     def _get_account_label(self, account: int) -> str:
         """
@@ -368,6 +427,7 @@ class SyncEngine:
             mlog.info("PHASE 1: KEY-BASED MATCHING (new contacts)")
             mlog.info("=" * 60)
 
+        # Step 1a: Single-key matching (fast path for primary key matches)
         all_keys = set(index1.keys()) | set(index2.keys())
 
         for key in all_keys:
@@ -385,6 +445,60 @@ class SyncEngine:
                 matched_from_1.add(contact1.resource_name)
                 matched_from_2.add(contact2.resource_name)
                 self._analyze_contact_pair(key, contact1, contact2, result)
+
+        # Step 1b: Multi-key matching (for contacts sharing ANY identifier)
+        # This catches cases where contacts share a non-primary identifier
+        # e.g., two contacts share an email that isn't alphabetically first
+        if mlog:
+            mlog.info("")
+            mlog.info("PHASE 1b: MULTI-KEY MATCHING")
+
+        # Build multi-key indexes for remaining unmatched contacts
+        unmatched_contacts1 = [
+            c
+            for c in contacts1
+            if c.resource_name not in matched_from_1 and not c.deleted and c.is_valid()
+        ]
+        unmatched_contacts2 = [
+            c
+            for c in contacts2
+            if c.resource_name not in matched_from_2 and not c.deleted and c.is_valid()
+        ]
+
+        if unmatched_contacts1 and unmatched_contacts2:
+            multi_index1 = self._build_multi_key_index(
+                unmatched_contacts1, self.account1_email
+            )
+            multi_index2 = self._build_multi_key_index(
+                unmatched_contacts2, self.account2_email
+            )
+
+            # Find matches on shared keys
+            shared_keys = set(multi_index1.keys()) & set(multi_index2.keys())
+
+            for key in shared_keys:
+                contacts_with_key_1 = multi_index1[key]
+                contacts_with_key_2 = multi_index2[key]
+
+                # Match first unmatched pair for each shared key
+                for c1 in contacts_with_key_1:
+                    if c1.resource_name in matched_from_1:
+                        continue
+                    for c2 in contacts_with_key_2:
+                        if c2.resource_name in matched_from_2:
+                            continue
+                        # Found a match via shared identifier
+                        matched_from_1.add(c1.resource_name)
+                        matched_from_2.add(c2.resource_name)
+                        # Use primary key for database storage (backward compat)
+                        primary_key = c1.matching_key()
+                        if mlog:
+                            mlog.info(
+                                f"MULTI-KEY MATCH: {c1.display_name} <-> "
+                                f"{c2.display_name} via {key}"
+                            )
+                        self._analyze_contact_pair(primary_key, c1, c2, result)
+                        break  # Only match one pair per contact
 
         # === PHASE 2: Multi-tier matching for unmatched contacts ===
         unmatched1 = [
@@ -410,22 +524,40 @@ class SyncEngine:
             if mlog:
                 mlog.info(f"  Multi-tier matches found: {newly_matched}")
 
-        # Remaining unmatched contacts need to be created
+        # === PHASE 3: Handle remaining unmatched contacts ===
+        # Check for potential duplicates before creating
+        if mlog:
+            mlog.info("")
+            mlog.info("=" * 60)
+            mlog.info("PHASE 3: DUPLICATE DETECTION & UNMATCHED HANDLING")
+            mlog.info("=" * 60)
+
+        # Build identifier lookup from matched contacts for duplicate detection
+        identifier_to_matched = self._build_matched_identifier_index(
+            result.matched_contacts
+        )
+
+        # Process unmatched contacts from account 1
         for contact in index1.values():
             if contact.resource_name not in matched_from_1:
-                result.to_create_in_account2.append(contact)
-                if mlog:
-                    mlog.info(
-                        f"UNMATCHED: {contact.display_name} -> create in account2"
-                    )
+                self._handle_unmatched_contact(
+                    contact,
+                    source_account=1,
+                    identifier_to_matched=identifier_to_matched,
+                    result=result,
+                    mlog=mlog,
+                )
 
+        # Process unmatched contacts from account 2
         for contact in index2.values():
             if contact.resource_name not in matched_from_2:
-                result.to_create_in_account1.append(contact)
-                if mlog:
-                    mlog.info(
-                        f"UNMATCHED: {contact.display_name} -> create in account1"
-                    )
+                self._handle_unmatched_contact(
+                    contact,
+                    source_account=2,
+                    identifier_to_matched=identifier_to_matched,
+                    result=result,
+                    mlog=mlog,
+                )
 
         # Log matching summary
         if mlog:
@@ -438,6 +570,11 @@ class SyncEngine:
             mlog.info(f"  To update in account1: {len(result.to_update_in_account1)}")
             mlog.info(f"  To update in account2: {len(result.to_update_in_account2)}")
             mlog.info(f"  Conflicts resolved: {len(result.conflicts)}")
+            if result.potential_duplicates:
+                mlog.info(f"  Potential duplicates: {len(result.potential_duplicates)}")
+                mlog.info(f"    Skipped: {result.stats.duplicates_skipped}")
+                mlog.info(f"    Merged: {result.stats.duplicates_merged}")
+                mlog.info(f"    Reported: {result.stats.duplicates_reported}")
             mlog.info("=" * 60)
 
         # Handle deleted contacts
@@ -510,6 +647,201 @@ class SyncEngine:
                     break  # Move to next contact1
 
         return matches_found
+
+    def _build_matched_identifier_index(
+        self,
+        matched_contacts: list[tuple[Contact, Contact]],
+    ) -> dict[str, tuple[Contact, Contact]]:
+        """
+        Build an index mapping identifiers to matched contact pairs.
+
+        This is used for duplicate detection - when an unmatched contact
+        shares an identifier with an already-matched contact.
+
+        Args:
+            matched_contacts: List of (contact1, contact2) matched pairs
+
+        Returns:
+            Dictionary mapping normalized identifiers to matched pairs
+        """
+        index: dict[str, tuple[Contact, Contact]] = {}
+
+        for contact1, contact2 in matched_contacts:
+            # Index all emails from both contacts in the pair
+            for email in contact1.emails + contact2.emails:
+                if email:
+                    normalized = self.matcher._normalize_email(email)
+                    if normalized:
+                        index[f"email:{normalized}"] = (contact1, contact2)
+
+            # Index all valid phones from both contacts
+            for phone in contact1.phones + contact2.phones:
+                if phone:
+                    normalized = self.matcher._normalize_phone(phone)
+                    if self.matcher._is_valid_phone(normalized):
+                        index[f"phone:{normalized}"] = (contact1, contact2)
+
+        return index
+
+    def _handle_unmatched_contact(
+        self,
+        contact: Contact,
+        source_account: int,
+        identifier_to_matched: dict[str, tuple[Contact, Contact]],
+        result: SyncResult,
+        mlog: Optional[logging.Logger],
+    ) -> None:
+        """
+        Handle an unmatched contact, checking for potential duplicates.
+
+        Args:
+            contact: The unmatched contact
+            source_account: Which account the contact is from (1 or 2)
+            identifier_to_matched: Index of identifiers to matched pairs
+            result: SyncResult to update
+            mlog: Optional matching logger
+        """
+        # Check if this contact shares any identifiers with matched contacts
+        shared_identifiers: list[str] = []
+        matched_pair: Optional[tuple[Contact, Contact]] = None
+
+        # Check emails
+        for email in contact.emails:
+            if email:
+                normalized = self.matcher._normalize_email(email)
+                key = f"email:{normalized}"
+                if key in identifier_to_matched:
+                    shared_identifiers.append(email)
+                    matched_pair = identifier_to_matched[key]
+
+        # Check phones
+        for phone in contact.phones:
+            if phone:
+                normalized = self.matcher._normalize_phone(phone)
+                if self.matcher._is_valid_phone(normalized):
+                    key = f"phone:{normalized}"
+                    if key in identifier_to_matched:
+                        shared_identifiers.append(phone)
+                        matched_pair = identifier_to_matched[key]
+
+        if matched_pair and shared_identifiers:
+            # This is a potential duplicate!
+            matched_contact = (
+                matched_pair[0] if source_account == 1 else matched_pair[1]
+            )
+            matched_partner = (
+                matched_pair[1] if source_account == 1 else matched_pair[0]
+            )
+
+            duplicate = PotentialDuplicate(
+                unmatched_contact=contact,
+                matched_contact=matched_contact,
+                matched_partner=matched_partner,
+                shared_identifiers=shared_identifiers,
+                source_account=source_account,
+            )
+
+            result.potential_duplicates.append(duplicate)
+            result.stats.potential_duplicates_found += 1
+
+            # Handle based on strategy
+            if self.duplicate_handling == DuplicateHandling.SKIP:
+                duplicate.action_taken = "skipped"
+                result.stats.duplicates_skipped += 1
+                if mlog:
+                    mlog.info(f"POTENTIAL DUPLICATE (skipped): {contact.display_name}")
+                    mlog.info(f"  Shares: {', '.join(shared_identifiers)}")
+                    mlog.info(f"  With matched: {matched_contact.display_name}")
+
+            elif self.duplicate_handling == DuplicateHandling.AUTO_MERGE:
+                duplicate.action_taken = "merged"
+                result.stats.duplicates_merged += 1
+                # Add identifiers from unmatched to the matched partner
+                self._merge_identifiers_into_update(
+                    contact, matched_partner, source_account, result
+                )
+                if mlog:
+                    mlog.info(f"POTENTIAL DUPLICATE (merged): {contact.display_name}")
+                    mlog.info(f"  Merging into: {matched_partner.display_name}")
+
+            elif self.duplicate_handling == DuplicateHandling.REPORT_ONLY:
+                duplicate.action_taken = "reported"
+                result.stats.duplicates_reported += 1
+                # Still create the contact, but track it
+                if source_account == 1:
+                    result.to_create_in_account2.append(contact)
+                else:
+                    result.to_create_in_account1.append(contact)
+                if mlog:
+                    mlog.info(f"POTENTIAL DUPLICATE (reported): {contact.display_name}")
+                    mlog.info("  Creating anyway, flagged for review")
+        else:
+            # No duplicate detected - create normally
+            if source_account == 1:
+                result.to_create_in_account2.append(contact)
+            else:
+                result.to_create_in_account1.append(contact)
+            if mlog:
+                target = "account2" if source_account == 1 else "account1"
+                mlog.info(f"UNMATCHED: {contact.display_name} -> create in {target}")
+
+    def _merge_identifiers_into_update(
+        self,
+        source_contact: Contact,
+        target_contact: Contact,
+        source_account: int,
+        result: SyncResult,
+    ) -> None:
+        """
+        Merge identifiers from source into target contact as an update.
+
+        Args:
+            source_contact: Contact with additional identifiers
+            target_contact: Matched contact to merge into
+            source_account: Which account source_contact is from
+            result: SyncResult to add update to
+        """
+        # Create a merged contact with combined identifiers
+        merged_emails = list(target_contact.emails)
+        merged_phones = list(target_contact.phones)
+
+        for email in source_contact.emails:
+            if email and email not in merged_emails:
+                merged_emails.append(email)
+
+        for phone in source_contact.phones:
+            if phone and phone not in merged_phones:
+                merged_phones.append(phone)
+
+        # Only update if there's something new to add
+        if len(merged_emails) > len(target_contact.emails) or len(merged_phones) > len(
+            target_contact.phones
+        ):
+            # Create updated contact
+            merged_contact = Contact(
+                resource_name=target_contact.resource_name,
+                etag=target_contact.etag,
+                display_name=target_contact.display_name,
+                given_name=target_contact.given_name,
+                family_name=target_contact.family_name,
+                emails=merged_emails,
+                phones=merged_phones,
+                organizations=target_contact.organizations,
+                notes=target_contact.notes,
+                last_modified=target_contact.last_modified,
+            )
+
+            # Add to appropriate update list (update in opposite account)
+            if source_account == 1:
+                # Source is in acct1, target is in acct2, update acct2
+                result.to_update_in_account2.append(
+                    (target_contact.resource_name, merged_contact)
+                )
+            else:
+                # Source is in acct2, target is in acct1, update acct1
+                result.to_update_in_account1.append(
+                    (target_contact.resource_name, merged_contact)
+                )
 
     def execute(self, result: SyncResult) -> None:
         """
@@ -737,6 +1069,53 @@ class SyncEngine:
                 f"Index complete: {len(index)} unique contacts for {account_label}"
             )
             mlog.info("")
+
+        return index
+
+    def _build_multi_key_index(
+        self, contacts: list[Contact], account_label: str = "unknown"
+    ) -> dict[str, list[Contact]]:
+        """
+        Build a multi-key index mapping each identifier to contacts that have it.
+
+        Unlike _build_contact_index which maps each contact to ONE key,
+        this maps EACH email/phone to ALL contacts that have it.
+        This enables matching contacts that share ANY identifier, not just
+        the alphabetically-first one.
+
+        Args:
+            contacts: List of contacts to index
+            account_label: Label for the account (for logging)
+
+        Returns:
+            Dictionary mapping identifier keys to lists of contacts
+        """
+        from gcontact_sync.sync.matcher import create_matching_keys
+
+        index: dict[str, list[Contact]] = {}
+        mlog = getattr(self, "_matching_logger", None)
+
+        if mlog:
+            mlog.debug(f"Building multi-key index for {account_label}")
+
+        for contact in contacts:
+            # Skip deleted or invalid contacts
+            if contact.deleted or not contact.is_valid():
+                continue
+
+            # Generate all matching keys for this contact
+            keys = create_matching_keys(contact, self.matcher)
+
+            for key in keys:
+                if key not in index:
+                    index[key] = []
+                index[key].append(contact)
+
+        if mlog:
+            mlog.debug(
+                f"Multi-key index complete: {len(index)} unique keys "
+                f"for {account_label}"
+            )
 
         return index
 
