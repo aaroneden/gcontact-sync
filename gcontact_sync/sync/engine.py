@@ -1693,19 +1693,35 @@ class SyncEngine:
             raise
 
     def _fetch_contacts(
-        self, api: PeopleAPI, account_id: str, full_sync: bool
+        self,
+        api: PeopleAPI,
+        account_id: str,
+        full_sync: bool,
+        allowed_groups: frozenset[str] | None = None,
+        account_label: str | None = None,
     ) -> tuple[list[Contact], str | None]:
         """
         Fetch contacts from an account, optionally using sync token.
+
+        Applies group-based filtering after fetching if allowed_groups is provided.
+        Filtering is applied consistently for both full and incremental syncs.
 
         Args:
             api: PeopleAPI instance for the account
             account_id: Account identifier
             full_sync: If True, ignore stored sync token
+            allowed_groups: Optional frozenset of group resource names to filter by.
+                If provided and non-empty, only contacts belonging to at least
+                one of these groups will be returned. If None or empty, all
+                contacts are returned (backwards compatible behavior).
+            account_label: Optional human-readable label for the account
+                (used in logging). Defaults to account_id if not provided.
 
         Returns:
             Tuple of (list of contacts, new sync token)
         """
+        # Use account_label for logging, fall back to account_id
+        label = account_label or account_id
         sync_token = None
 
         if not full_sync:
@@ -1719,11 +1735,9 @@ class SyncEngine:
             if sync_token:
                 # Try incremental sync
                 contacts, new_token = api.list_contacts(sync_token=sync_token)
-                return contacts, new_token
             else:
                 # Full sync
                 contacts, new_token = api.list_contacts()
-                return contacts, new_token
 
         except PeopleAPIError as e:
             if "expired" in str(e).lower():
@@ -1733,8 +1747,20 @@ class SyncEngine:
                 )
                 self.database.clear_sync_token(account_id)
                 contacts, new_token = api.list_contacts()
-                return contacts, new_token
-            raise
+            else:
+                raise
+
+        # Apply group-based filtering if configured
+        # This happens after API call but before returning, preserving sync token
+        if allowed_groups:
+            original_count = len(contacts)
+            contacts = self._filter_contacts_by_groups(contacts, allowed_groups, label)
+            logger.debug(
+                f"Applied group filter for {label}: "
+                f"{original_count} fetched -> {len(contacts)} after filtering"
+            )
+
+        return contacts, new_token
 
     def _build_contact_index(
         self, contacts: list[Contact], account_label: str = "unknown"
