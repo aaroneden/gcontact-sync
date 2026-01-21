@@ -23,7 +23,7 @@ Usage:
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import click
 
@@ -55,8 +55,8 @@ DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
 
 
 def validate_account(
-    ctx: click.Context, param: click.Parameter, value: Optional[str]
-) -> Optional[str]:
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
     """Validate account identifier for Click option."""
     if value is None:
         return value
@@ -67,14 +67,14 @@ def validate_account(
     return value
 
 
-def get_config_dir(config_dir: Optional[str]) -> Path:
+def get_config_dir(config_dir: str | None) -> Path:
     """Get the configuration directory path."""
     if config_dir:
         return Path(config_dir)
     return DEFAULT_CONFIG_DIR
 
 
-def get_config_file(config_file: Optional[str]) -> Path:
+def get_config_file(config_file: str | None) -> Path:
     """Get the configuration file path."""
     if config_file:
         return Path(config_file)
@@ -104,8 +104,8 @@ def get_config_file(config_file: Optional[str]) -> Path:
 def cli(
     ctx: click.Context,
     verbose: bool,
-    config_dir: Optional[str],
-    config_file: Optional[str],
+    config_dir: str | None,
+    config_file: str | None,
 ) -> None:
     """
     Bidirectional Google Contacts Sync.
@@ -475,12 +475,13 @@ def sync_command(
     ctx: click.Context, dry_run: bool, full: bool, strategy: str, debug: bool
 ) -> None:
     """
-    Synchronize contacts between accounts.
+    Synchronize contacts and groups between accounts.
 
     Performs bidirectional sync to ensure both Google accounts have
-    identical contacts. Contacts only in one account are copied to
-    the other. Conflicting edits are resolved using the configured
-    strategy.
+    identical contacts and contact groups (labels). Groups are synced
+    first to ensure membership mappings work correctly. Contacts and
+    groups only in one account are copied to the other. Conflicting
+    edits are resolved using the configured strategy.
 
     Examples:
 
@@ -633,7 +634,7 @@ def sync_command(
 
         # Run sync
         mode = "Analyzing" if effective_dry_run else "Synchronizing"
-        click.echo(f"\n{mode} contacts...")
+        click.echo(f"\n{mode} contacts and groups...")
 
         result = engine.sync(dry_run=effective_dry_run, full_sync=effective_full)
 
@@ -658,6 +659,7 @@ def sync_command(
                     _show_detailed_changes(result, account1_email, account2_email)
             else:
                 click.echo(click.style("\nSync completed successfully!", fg="green"))
+                # Contact stats
                 created = (
                     result.stats.created_in_account1 + result.stats.created_in_account2
                 )
@@ -667,10 +669,32 @@ def sync_command(
                 deleted = (
                     result.stats.deleted_in_account1 + result.stats.deleted_in_account2
                 )
-                logger.info(
-                    f"Sync completed: created {created}, "
-                    f"updated {updated}, deleted {deleted}"
+                # Group stats
+                groups_created = (
+                    result.stats.groups_created_in_account1
+                    + result.stats.groups_created_in_account2
                 )
+                groups_updated = (
+                    result.stats.groups_updated_in_account1
+                    + result.stats.groups_updated_in_account2
+                )
+                groups_deleted = (
+                    result.stats.groups_deleted_in_account1
+                    + result.stats.groups_deleted_in_account2
+                )
+                # Log summary including groups if any group operations occurred
+                if groups_created or groups_updated or groups_deleted:
+                    logger.info(
+                        f"Sync completed: groups (created={groups_created}, "
+                        f"updated={groups_updated}, deleted={groups_deleted}), "
+                        f"contacts (created={created}, updated={updated}, "
+                        f"deleted={deleted})"
+                    )
+                else:
+                    logger.info(
+                        f"Sync completed: created {created}, "
+                        f"updated {updated}, deleted {deleted}"
+                    )
 
                 if result.stats.errors > 0:
                     click.echo(
@@ -716,6 +740,62 @@ def _show_detailed_changes(
         account2_label: Label for account 2 (email or 'account2')
     """
     click.echo("\n=== Detailed Changes ===")
+
+    # Show group changes first (since groups sync before contacts)
+    if result.has_group_changes():
+        click.echo("\n--- Group Changes ---")
+
+        if result.groups_to_create_in_account1:
+            click.echo(f"\nGroups to create in {account1_label}:")
+            for group in result.groups_to_create_in_account1[:10]:
+                click.echo(f"  + {group.name}")
+            if len(result.groups_to_create_in_account1) > 10:
+                remaining = len(result.groups_to_create_in_account1) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_create_in_account2:
+            click.echo(f"\nGroups to create in {account2_label}:")
+            for group in result.groups_to_create_in_account2[:10]:
+                click.echo(f"  + {group.name}")
+            if len(result.groups_to_create_in_account2) > 10:
+                remaining = len(result.groups_to_create_in_account2) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_update_in_account1:
+            click.echo(f"\nGroups to update in {account1_label}:")
+            for _resource_name, group in result.groups_to_update_in_account1[:10]:
+                click.echo(f"  ~ {group.name}")
+            if len(result.groups_to_update_in_account1) > 10:
+                remaining = len(result.groups_to_update_in_account1) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_update_in_account2:
+            click.echo(f"\nGroups to update in {account2_label}:")
+            for _resource_name, group in result.groups_to_update_in_account2[:10]:
+                click.echo(f"  ~ {group.name}")
+            if len(result.groups_to_update_in_account2) > 10:
+                remaining = len(result.groups_to_update_in_account2) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_delete_in_account1:
+            click.echo(f"\nGroups to delete in {account1_label}:")
+            for resource_name in result.groups_to_delete_in_account1[:10]:
+                click.echo(f"  - {resource_name}")
+            if len(result.groups_to_delete_in_account1) > 10:
+                remaining = len(result.groups_to_delete_in_account1) - 10
+                click.echo(f"  ... and {remaining} more")
+
+        if result.groups_to_delete_in_account2:
+            click.echo(f"\nGroups to delete in {account2_label}:")
+            for resource_name in result.groups_to_delete_in_account2[:10]:
+                click.echo(f"  - {resource_name}")
+            if len(result.groups_to_delete_in_account2) > 10:
+                remaining = len(result.groups_to_delete_in_account2) - 10
+                click.echo(f"  ... and {remaining} more")
+
+    # Show contact changes
+    if result.has_contact_changes():
+        click.echo("\n--- Contact Changes ---")
 
     if result.to_create_in_account1:
         click.echo(f"\nTo create in {account1_label}:")
@@ -779,6 +859,47 @@ def _show_debug_info(
     click.echo(click.style("DEBUG INFO", fg="cyan", bold=True))
     click.echo("=" * 50)
 
+    # Show group debug info first (since groups sync before contacts)
+    matched_groups = result.matched_groups
+    if matched_groups or result.has_group_changes():
+        click.echo(
+            f"\n{click.style('Matched Groups:', fg='green')} "
+            f"{len(matched_groups)} pairs"
+        )
+
+        if matched_groups:
+            group_sample_size = min(5, len(matched_groups))
+            group_sample = random.sample(matched_groups, group_sample_size)  # nosec B311
+            click.echo(f"\nRandom sample of {group_sample_size} matched group pairs:")
+            for group1, group2 in group_sample:
+                click.echo(f"\n  {click.style('Group Match:', fg='cyan')}")
+                click.echo(f"    {account1_label}: {group1.name}")
+                click.echo(f"    {account2_label}: {group2.name}")
+
+        # Show unmatched groups
+        groups_in_1_only = result.groups_to_create_in_account2
+        groups_in_2_only = result.groups_to_create_in_account1
+
+        click.echo(
+            f"\n{click.style('Unmatched Groups:', fg='yellow')} "
+            f"{len(groups_in_1_only)} only in {account1_label}, "
+            f"{len(groups_in_2_only)} only in {account2_label}"
+        )
+
+        if groups_in_1_only:
+            click.echo(f"\nGroups only in {account1_label}:")
+            for group in groups_in_1_only[:5]:
+                click.echo(f"  - {group.name}")
+            if len(groups_in_1_only) > 5:
+                click.echo(f"  ... and {len(groups_in_1_only) - 5} more")
+
+        if groups_in_2_only:
+            click.echo(f"\nGroups only in {account2_label}:")
+            for group in groups_in_2_only[:5]:
+                click.echo(f"  - {group.name}")
+            if len(groups_in_2_only) > 5:
+                click.echo(f"  ... and {len(groups_in_2_only) - 5} more")
+
     # Show matched contacts sample
     matched = result.matched_contacts
     # Handle case where matched_contacts might be a MagicMock in tests
@@ -788,7 +909,7 @@ def _show_debug_info(
 
     if matched:
         sample_size = min(5, len(matched))
-        sample = random.sample(list(matched), sample_size)
+        sample = random.sample(list(matched), sample_size)  # nosec B311
         click.echo(f"\nRandom sample of {sample_size} matched pairs:")
         for contact1, contact2 in sample:
             click.echo(f"\n  {click.style('Match:', fg='cyan')}")
@@ -798,12 +919,23 @@ def _show_debug_info(
                 click.echo(f"      Emails: {', '.join(contact1.emails[:2])}")
             if contact1.phones:
                 click.echo(f"      Phones: {', '.join(contact1.phones[:2])}")
+            if contact1.memberships:
+                # Show group names (strip contactGroups/ prefix for readability)
+                groups1 = [
+                    m.replace("contactGroups/", "") for m in contact1.memberships
+                ]
+                click.echo(f"      Groups: {', '.join(groups1[:3])}")
             click.echo(f"    {account2_label}:")
             click.echo(f"      Name: {contact2.display_name}")
             if contact2.emails:
                 click.echo(f"      Emails: {', '.join(contact2.emails[:2])}")
             if contact2.phones:
                 click.echo(f"      Phones: {', '.join(contact2.phones[:2])}")
+            if contact2.memberships:
+                groups2 = [
+                    m.replace("contactGroups/", "") for m in contact2.memberships
+                ]
+                click.echo(f"      Groups: {', '.join(groups2[:3])}")
 
     # Show unmatched contacts (to be created)
     # Handle case where these might be MagicMock in tests
@@ -826,7 +958,7 @@ def _show_debug_info(
 
     if unmatched_in_1:
         unmatched_sample_size_1 = min(5, len(unmatched_in_1))
-        unmatched_sample_1: list[Contact] = random.sample(
+        unmatched_sample_1: list[Contact] = random.sample(  # nosec B311
             list(unmatched_in_1), unmatched_sample_size_1
         )
         click.echo(
@@ -837,7 +969,7 @@ def _show_debug_info(
 
     if unmatched_in_2:
         unmatched_sample_size_2 = min(5, len(unmatched_in_2))
-        unmatched_sample_2: list[Contact] = random.sample(
+        unmatched_sample_2: list[Contact] = random.sample(  # nosec B311
             list(unmatched_in_2), unmatched_sample_size_2
         )
         click.echo(
@@ -853,7 +985,7 @@ def _show_debug_info(
     if conflicts:
         click.echo(f"\n{click.style('Conflicts:', fg='magenta')} {len(conflicts)}")
         conflict_sample_size = min(3, len(conflicts))
-        conflict_sample: list[ConflictResult] = random.sample(
+        conflict_sample: list[ConflictResult] = random.sample(  # nosec B311
             list(conflicts), conflict_sample_size
         )
         click.echo(f"\nSample of {conflict_sample_size} conflicts:")
@@ -940,7 +1072,7 @@ def reset_command(ctx: click.Context, yes: bool) -> None:
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
-def clear_auth_command(ctx: click.Context, account: Optional[str], yes: bool) -> None:
+def clear_auth_command(ctx: click.Context, account: str | None, yes: bool) -> None:
     """
     Clear stored authentication credentials.
 
@@ -982,6 +1114,377 @@ def clear_auth_command(ctx: click.Context, account: Optional[str], yes: bool) ->
 
     except Exception as e:
         logger.exception(f"Clear auth failed: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# List-Groups Command
+# =============================================================================
+
+
+@cli.command("list-groups")
+@click.option(
+    "--account",
+    "-a",
+    required=True,
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to list groups from (account1 or account2).",
+)
+@click.option(
+    "--all",
+    "-A",
+    "show_all",
+    is_flag=True,
+    help="Show all groups including system groups.",
+)
+@click.pass_context
+def list_groups_command(ctx: click.Context, account: str, show_all: bool) -> None:
+    """
+    List contact groups for an account.
+
+    Displays all user-created contact groups (labels) for the specified
+    Google account. System groups (myContacts, starred) are hidden by default.
+
+    Examples:
+
+        # List groups for account1
+        gcontact-sync list-groups --account account1
+
+        # List all groups including system groups
+        gcontact-sync list-groups --account account1 --all
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    verbose = ctx.obj["verbose"]
+
+    try:
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        # Check authentication
+        creds = auth.get_credentials(account)
+        if not creds:
+            click.echo(
+                click.style(f"Error: {account} is not authenticated.", fg="red"),
+                err=True,
+            )
+            click.echo(f"Run: gcontact-sync auth --account {account}", err=True)
+            sys.exit(1)
+
+        # Get account email for display
+        account_email = auth.get_account_email(account) or account
+
+        click.echo(f"Listing contact groups for {account_email}...")
+        click.echo()
+
+        # Initialize API and list groups
+        from gcontact_sync.api.people_api import PeopleAPI
+        from gcontact_sync.sync.group import ContactGroup
+
+        api = PeopleAPI(credentials=creds)
+        groups_data, _ = api.list_contact_groups()
+
+        # Parse and filter groups
+        groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+        if not show_all:
+            # Filter to user groups only
+            groups = [g for g in groups if g.is_user_group()]
+
+        if not groups:
+            if show_all:
+                click.echo("No contact groups found.")
+            else:
+                click.echo("No user contact groups found.")
+                click.echo("Use --all to include system groups.")
+            return
+
+        # Display groups
+        click.echo(f"{'Name':<40} {'Type':<20} {'Members':<10}")
+        click.echo("-" * 70)
+
+        for group in sorted(groups, key=lambda g: g.name.lower()):
+            group_type = "User" if group.is_user_group() else "System"
+            click.echo(f"{group.name:<40} {group_type:<20} {group.member_count:<10}")
+
+        click.echo()
+        click.echo(f"Total: {len(groups)} group(s)")
+
+        if verbose:
+            click.echo()
+            click.echo("Resource names:")
+            for group in sorted(groups, key=lambda g: g.name.lower()):
+                click.echo(f"  {group.name}: {group.resource_name}")
+
+    except Exception as e:
+        logger.exception(f"Failed to list groups: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# Create-Group Command
+# =============================================================================
+
+
+@cli.command("create-group")
+@click.argument("name")
+@click.option(
+    "--account",
+    "-a",
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to create group in (creates in both if not specified).",
+)
+@click.pass_context
+def create_group_command(ctx: click.Context, name: str, account: str | None) -> None:
+    """
+    Create a new contact group.
+
+    Creates a contact group with the specified NAME. By default, the group
+    is created in both accounts. Use --account to create in only one account.
+
+    Examples:
+
+        # Create group in both accounts
+        gcontact-sync create-group "Work"
+
+        # Create group in specific account
+        gcontact-sync create-group "Family" --account account1
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+
+    # Determine which accounts to create in
+    accounts_to_create = [account] if account else list(VALID_ACCOUNTS)
+
+    try:
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        # Import API module
+        from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
+
+        created_count = 0
+        errors: list[str] = []
+
+        for acc in accounts_to_create:
+            # Check authentication
+            creds = auth.get_credentials(acc)
+            if not creds:
+                errors.append(f"{acc}: Not authenticated")
+                continue
+
+            # Get account email for display
+            account_email = auth.get_account_email(acc) or acc
+
+            click.echo(f"Creating group '{name}' in {account_email}...")
+
+            try:
+                api = PeopleAPI(credentials=creds)
+                result = api.create_contact_group(name)
+                resource_name = result.get("resourceName", "unknown")
+                click.echo(
+                    click.style(
+                        f"  Created: {resource_name}",
+                        fg="green",
+                    )
+                )
+                created_count += 1
+                logger.info(f"Created group '{name}' in {acc}: {resource_name}")
+
+            except PeopleAPIError as e:
+                error_msg = str(e)
+                if "already exists" in error_msg.lower():
+                    click.echo(
+                        click.style(
+                            f"  Group '{name}' already exists in {account_email}",
+                            fg="yellow",
+                        )
+                    )
+                else:
+                    errors.append(f"{account_email}: {error_msg}")
+                    click.echo(click.style(f"  Error: {error_msg}", fg="red"))
+
+        # Summary
+        click.echo()
+        if created_count > 0:
+            msg = f"Successfully created group '{name}' in {created_count} account(s)."
+            click.echo(click.style(msg, fg="green"))
+        elif not errors:
+            click.echo(
+                click.style(
+                    f"Group '{name}' already exists in all specified accounts.",
+                    fg="yellow",
+                )
+            )
+
+        if errors:
+            for error in errors:
+                click.echo(click.style(f"Error: {error}", fg="red"), err=True)
+            sys.exit(1)
+
+    except Exception as e:
+        logger.exception(f"Failed to create group: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# Delete-Group Command
+# =============================================================================
+
+
+@cli.command("delete-group")
+@click.argument("name")
+@click.option(
+    "--account",
+    "-a",
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to delete group from (deletes from both if not specified).",
+)
+@click.option(
+    "--delete-contacts",
+    is_flag=True,
+    help="Also delete all contacts in the group (default: preserve contacts).",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def delete_group_command(
+    ctx: click.Context,
+    name: str,
+    account: str | None,
+    delete_contacts: bool,
+    yes: bool,
+) -> None:
+    """
+    Delete a contact group.
+
+    Deletes the contact group with the specified NAME. By default, the group
+    is deleted from both accounts. Use --account to delete from only one account.
+
+    Contacts in the group are preserved by default (they remain in myContacts).
+    Use --delete-contacts to also delete all contacts in the group.
+
+    Examples:
+
+        # Delete group from both accounts
+        gcontact-sync delete-group "Old Group"
+
+        # Delete group from specific account
+        gcontact-sync delete-group "Work" --account account1
+
+        # Delete group and its contacts
+        gcontact-sync delete-group "Temp" --delete-contacts
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+
+    # Determine which accounts to delete from
+    accounts_to_delete = [account] if account else list(VALID_ACCOUNTS)
+
+    # Confirmation prompt
+    if not yes:
+        warning_msg = f"Delete group '{name}'"
+        if delete_contacts:
+            warning_msg += " AND all contacts in it"
+        if not account:
+            warning_msg += " from BOTH accounts"
+        else:
+            warning_msg += f" from {account}"
+        warning_msg += "?"
+
+        click.confirm(warning_msg, abort=True)
+
+    try:
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        # Import API module
+        from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
+        from gcontact_sync.sync.group import ContactGroup
+
+        deleted_count = 0
+        not_found_count = 0
+        errors: list[str] = []
+
+        for acc in accounts_to_delete:
+            # Check authentication
+            creds = auth.get_credentials(acc)
+            if not creds:
+                errors.append(f"{acc}: Not authenticated")
+                continue
+
+            # Get account email for display
+            account_email = auth.get_account_email(acc) or acc
+
+            click.echo(f"Deleting group '{name}' from {account_email}...")
+
+            try:
+                api = PeopleAPI(credentials=creds)
+
+                # First, find the group by name
+                groups_data, _ = api.list_contact_groups()
+                groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+                # Find matching group (case-insensitive)
+                target_group = None
+                for group in groups:
+                    if group.name.lower() == name.lower() and group.is_user_group():
+                        target_group = group
+                        break
+
+                if not target_group:
+                    click.echo(
+                        click.style(
+                            f"  Group '{name}' not found in {account_email}",
+                            fg="yellow",
+                        )
+                    )
+                    not_found_count += 1
+                    continue
+
+                # Delete the group
+                api.delete_contact_group(
+                    target_group.resource_name,
+                    delete_contacts=delete_contacts,
+                )
+                click.echo(
+                    click.style(
+                        f"  Deleted: {target_group.resource_name}",
+                        fg="green",
+                    )
+                )
+                deleted_count += 1
+                logger.info(
+                    f"Deleted group '{name}' from {acc}: {target_group.resource_name}"
+                )
+
+            except PeopleAPIError as e:
+                error_msg = str(e)
+                errors.append(f"{account_email}: {error_msg}")
+                click.echo(click.style(f"  Error: {error_msg}", fg="red"))
+
+        # Summary
+        click.echo()
+        if deleted_count > 0:
+            msg = f"Deleted group '{name}' from {deleted_count} account(s)."
+            click.echo(click.style(msg, fg="green"))
+        elif not_found_count == len(accounts_to_delete):
+            click.echo(
+                click.style(
+                    f"Group '{name}' was not found in any specified account.",
+                    fg="yellow",
+                )
+            )
+
+        if errors:
+            for error in errors:
+                click.echo(click.style(f"Error: {error}", fg="red"), err=True)
+            sys.exit(1)
+
+    except Exception as e:
+        logger.exception(f"Failed to delete group: {e}")
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)
 

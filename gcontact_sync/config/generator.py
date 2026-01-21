@@ -7,7 +7,6 @@ comprehensive documentation and examples for all available options.
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +113,7 @@ def generate_default_config() -> str:
 
 def save_config_file(
     config_path: Path, overwrite: bool = False
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """
     Save default configuration file to specified path.
 

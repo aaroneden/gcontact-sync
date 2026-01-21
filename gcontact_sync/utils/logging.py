@@ -13,7 +13,6 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 # Default log format
 DEFAULT_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -74,8 +73,8 @@ class ColoredFormatter(logging.Formatter):
 
     def __init__(
         self,
-        fmt: Optional[str] = None,
-        datefmt: Optional[str] = None,
+        fmt: str | None = None,
+        datefmt: str | None = None,
         use_colors: bool = True,
     ):
         """
@@ -145,7 +144,7 @@ def get_log_level_from_env() -> int:
     return level_map.get(level_str, logging.INFO)
 
 
-def get_log_file_path() -> Optional[Path]:
+def get_log_file_path() -> Path | None:
     """
     Get the log file path from environment or default location.
 
@@ -164,10 +163,10 @@ def get_log_file_path() -> Optional[Path]:
 
 
 def setup_logging(
-    level: Optional[int] = None,
+    level: int | None = None,
     verbose: bool = False,
-    log_dir: Optional[Path] = None,
-    log_file: Optional[Path] = None,
+    log_dir: Path | None = None,
+    log_file: Path | None = None,
     enable_file_logging: bool = True,
     use_colors: bool = True,
 ) -> logging.Logger:
@@ -236,7 +235,7 @@ def setup_logging(
 
     # File handler (optional)
     if enable_file_logging:
-        file_path: Optional[Path] = None
+        file_path: Path | None = None
         if log_file:
             file_path = log_file
         elif log_dir:
@@ -278,10 +277,10 @@ def setup_logging(
 
 
 # Module-level variable to store configured log directory
-_configured_log_dir: Optional[Path] = None
+_configured_log_dir: Path | None = None
 
 
-def cleanup_old_logs(log_dir: Optional[Path] = None, keep_count: int = 10) -> int:
+def cleanup_old_logs(log_dir: Path | None = None, keep_count: int = 10) -> int:
     """
     Clean up old log files, keeping only the most recent ones.
 
@@ -401,7 +400,7 @@ def enable_logging() -> None:
     logger.disabled = False
 
 
-def get_matching_log_path(log_dir: Optional[Path] = None) -> Path:
+def get_matching_log_path(log_dir: Path | None = None) -> Path:
     """
     Get the path for the matching log file.
 
@@ -429,7 +428,7 @@ def get_matching_log_path(log_dir: Optional[Path] = None) -> Path:
 
 
 def setup_matching_logger(
-    log_file: Optional[Path] = None,
+    log_file: Path | None = None,
     level: int = logging.DEBUG,
 ) -> logging.Logger:
     """

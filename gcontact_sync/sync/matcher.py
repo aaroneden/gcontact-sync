@@ -100,7 +100,7 @@ class MatchConfig:
     use_organization_matching: bool = True
 
     # LLM API configuration
-    anthropic_api_key: Optional[str] = None
+    anthropic_api_key: str | None = None
     llm_model: str = "claude-haiku-4-5-20250514"
     llm_max_tokens: int = 500
     llm_batch_max_tokens: int = 2000
@@ -139,7 +139,7 @@ class ContactMatcher:
 
     def __init__(
         self,
-        config: Optional[MatchConfig] = None,
+        config: MatchConfig | None = None,
         database: Optional["SyncDatabase"] = None,
     ):
         """
@@ -151,7 +151,7 @@ class ContactMatcher:
         """
         self.config = config or MatchConfig()
         self._database = database
-        self._llm_client: Optional[LLMMatcher] = None  # Lazy-loaded when needed
+        self._llm_client: LLMMatcher | None = None  # Lazy-loaded when needed
 
     def match(self, contact1: "Contact", contact2: "Contact") -> MatchResult:
         """

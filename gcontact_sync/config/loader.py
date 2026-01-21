@@ -11,7 +11,7 @@ Provides YAML-based configuration file loading with support for:
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 import yaml
 
@@ -54,7 +54,7 @@ class ConfigLoader:
     """
 
     def __init__(
-        self, config_dir: Optional[Path] = None, config_file: str = DEFAULT_CONFIG_FILE
+        self, config_dir: Path | None = None, config_file: str = DEFAULT_CONFIG_FILE
     ):
         """
         Initialize the configuration loader.
@@ -102,7 +102,7 @@ class ConfigLoader:
         config_path = self._get_config_path()
         return self.load_from_file(config_path)
 
-    def load_from_file(self, path: Union[Path, str]) -> dict[str, Any]:
+    def load_from_file(self, path: Path | str) -> dict[str, Any]:
         """
         Load configuration from a specific file.
 
@@ -169,7 +169,7 @@ class ConfigLoader:
 
         # Define valid configuration keys and their expected types
         # This can be expanded as more configuration options are added
-        valid_keys: dict[str, Union[type[Any], tuple[type[Any], ...]]] = {
+        valid_keys: dict[str, type[Any] | tuple[type[Any], ...]] = {
             # CLI options
             "dry_run": bool,
             "full": bool,

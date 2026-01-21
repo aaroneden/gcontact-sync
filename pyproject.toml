@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Bidirectional Google Contacts synchronization between two accounts"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "GContact Sync", email = "gcontact-sync@example.com"}
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -32,6 +31,7 @@ dependencies = [
     "requests>=2.31.0",
     "rapidfuzz>=3.13.0",
     "pyyaml>=6.0.0",
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -57,8 +57,8 @@ Issues = "https://github.com/example/gcontact-sync/issues"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
@@ -74,7 +74,7 @@ packages = ["gcontact_sync"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
@@ -84,7 +84,7 @@ ignore = []
 known-first-party = ["gcontact_sync"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
