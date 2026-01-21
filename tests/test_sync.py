@@ -3768,3 +3768,601 @@ class TestFilterPerAccountIndependence:
 
         assert len(filtered_acc2) == 1
         assert filtered_acc2[0].display_name == "Account2 Worker"
+
+
+# ==============================================================================
+# Filter Edge Case Tests
+# ==============================================================================
+
+
+class TestFilterEdgeCases:
+    """Edge case tests for contact filtering scenarios."""
+
+    @pytest.fixture
+    def contact_in_system_group(self):
+        """Create a contact in a system group (starred)."""
+        return Contact(
+            resource_name="people/starred1",
+            etag="etag_starred1",
+            display_name="Starred Contact",
+            given_name="Starred",
+            family_name="Contact",
+            emails=["starred@example.com"],
+            memberships=["contactGroups/starred", "contactGroups/myContacts"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_many_groups(self):
+        """Create a contact with many group memberships."""
+        return Contact(
+            resource_name="people/manygroups",
+            etag="etag_manygroups",
+            display_name="Many Groups Contact",
+            given_name="Many",
+            family_name="Groups",
+            emails=["manygroups@example.com"],
+            memberships=[
+                "contactGroups/work123",
+                "contactGroups/family456",
+                "contactGroups/friends789",
+                "contactGroups/team1",
+                "contactGroups/team2",
+                "contactGroups/project_alpha",
+                "contactGroups/myContacts",
+            ],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_with_unicode_group(self):
+        """Create a contact with unicode group name."""
+        return Contact(
+            resource_name="people/unicode1",
+            etag="etag_unicode1",
+            display_name="Unicode Contact",
+            given_name="Unicode",
+            family_name="Contact",
+            emails=["unicode@example.com"],
+            memberships=["contactGroups/工作伙伴"],  # "Work Partners" in Chinese
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_with_special_chars_group(self):
+        """Create a contact with special characters in group name."""
+        return Contact(
+            resource_name="people/special1",
+            etag="etag_special1",
+            display_name="Special Chars Contact",
+            given_name="Special",
+            family_name="Chars",
+            emails=["special@example.com"],
+            memberships=["contactGroups/work-team_2024 (main)"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    # -------------------------------------------------------------------------
+    # System Group Filtering Tests
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_system_group_starred(
+        self, sync_engine, contact_in_system_group
+    ):
+        """Test filtering by system group 'starred'."""
+        contacts = [contact_in_system_group]
+        allowed_groups = frozenset(["contactGroups/starred"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Contact should be included since it's in the starred group
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Starred Contact"
+
+    def test_filter_edge_system_group_my_contacts(
+        self, sync_engine, contact_in_system_group
+    ):
+        """Test filtering by system group 'myContacts'."""
+        contacts = [contact_in_system_group]
+        allowed_groups = frozenset(["contactGroups/myContacts"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Contact should be included since it's in myContacts
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Starred Contact"
+
+    # -------------------------------------------------------------------------
+    # Many Groups Tests
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_contact_with_many_groups_first_match(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups matches on first group."""
+        contacts = [contact_in_many_groups]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Many Groups Contact"
+
+    def test_filter_edge_contact_with_many_groups_last_match(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups matches on last group."""
+        contacts = [contact_in_many_groups]
+        allowed_groups = frozenset(["contactGroups/myContacts"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Many Groups Contact"
+
+    def test_filter_edge_contact_with_many_groups_middle_match(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups matches on middle group."""
+        contacts = [contact_in_many_groups]
+        allowed_groups = frozenset(["contactGroups/project_alpha"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Many Groups Contact"
+
+    def test_filter_edge_contact_with_many_groups_multiple_allowed(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups and multiple allowed groups."""
+        contacts = [contact_in_many_groups]
+        # Allow several groups, contact is in all of them
+        allowed_groups = frozenset([
+            "contactGroups/work123",
+            "contactGroups/team1",
+            "contactGroups/nonexistent",
+        ])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should still be included (matches work123 and team1)
+        assert len(filtered) == 1
+
+    # -------------------------------------------------------------------------
+    # Unicode and Special Characters Tests
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_unicode_group_name(
+        self, sync_engine, contact_with_unicode_group
+    ):
+        """Test filtering with unicode group name."""
+        contacts = [contact_with_unicode_group]
+        allowed_groups = frozenset(["contactGroups/工作伙伴"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Unicode Contact"
+
+    def test_filter_edge_unicode_group_no_match(
+        self, sync_engine, contact_with_unicode_group
+    ):
+        """Test unicode contact excluded when group doesn't match."""
+        contacts = [contact_with_unicode_group]
+        allowed_groups = frozenset(["contactGroups/different_group"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_edge_special_chars_group_name(
+        self, sync_engine, contact_with_special_chars_group
+    ):
+        """Test filtering with special characters in group name."""
+        contacts = [contact_with_special_chars_group]
+        allowed_groups = frozenset(["contactGroups/work-team_2024 (main)"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Special Chars Contact"
+
+    # -------------------------------------------------------------------------
+    # Empty/Null Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_none_filter_treats_as_empty(self, sync_engine):
+        """Test that None filter is handled gracefully."""
+        contact = Contact(
+            resource_name="people/test",
+            etag="etag_test",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=["contactGroups/work"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contacts = [contact]
+        # Empty frozenset should pass all contacts
+        allowed_groups = frozenset()
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+
+    def test_filter_edge_contact_with_empty_membership_string(self, sync_engine):
+        """Test contact with empty string in memberships."""
+        contact = Contact(
+            resource_name="people/empty_membership",
+            etag="etag_empty",
+            display_name="Empty Membership",
+            given_name="Empty",
+            family_name="Membership",
+            emails=["empty@example.com"],
+            memberships=["", "contactGroups/work123"],  # Empty string in list
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contacts = [contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should still match on work123
+        assert len(filtered) == 1
+
+    # -------------------------------------------------------------------------
+    # Large Scale Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_many_contacts(self, sync_engine):
+        """Test filtering with many contacts (performance edge case)."""
+        # Create 100 contacts, half in allowed group
+        contacts = []
+        for i in range(100):
+            group = "contactGroups/work" if i % 2 == 0 else "contactGroups/personal"
+            contacts.append(
+                Contact(
+                    resource_name=f"people/c{i}",
+                    etag=f"etag_{i}",
+                    display_name=f"Contact {i}",
+                    given_name=f"First{i}",
+                    family_name=f"Last{i}",
+                    emails=[f"contact{i}@example.com"],
+                    memberships=[group],
+                    last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+                )
+            )
+
+        allowed_groups = frozenset(["contactGroups/work"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Half should be filtered (those with work group)
+        assert len(filtered) == 50
+        # Verify all filtered contacts have work group
+        for contact in filtered:
+            assert "contactGroups/work" in contact.memberships
+
+    def test_filter_edge_many_allowed_groups(self, sync_engine):
+        """Test filtering with many allowed groups."""
+        contact = Contact(
+            resource_name="people/test",
+            etag="etag_test",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contacts = [contact]
+        # Create 50 allowed groups, one of which matches
+        allowed_groups = frozenset(
+            [f"contactGroups/group{i}" for i in range(50)] + ["contactGroups/work123"]
+        )
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+
+    # -------------------------------------------------------------------------
+    # Resolve Group Filters Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_resolve_duplicate_config_entries(self, sync_engine):
+        """Test resolving with duplicate entries in configured groups."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        # Duplicate entries in config
+        configured_groups = ["Work", "work", "WORK", "contactGroups/work123"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should resolve to single entry (frozenset deduplicates)
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_filter_edge_resolve_whitespace_in_name(self, sync_engine):
+        """Test resolving group with whitespace variations."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work Team",  # Group with space in name
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        configured_groups = ["Work Team"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_filter_edge_resolve_similar_names(self, sync_engine):
+        """Test resolving when groups have similar names."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+        work_team_group = ContactGroup(
+            resource_name="contactGroups/workteam456",
+            etag="etag_workteam",
+            name="Work Team",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        configured_groups = ["Work"]  # Should only match exact name
+        fetched_groups = [work_group, work_team_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should only match "Work", not "Work Team"
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_filter_edge_resolve_only_nonexistent_groups(self, sync_engine):
+        """Test when all configured groups don't exist."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_USER_CONTACT_GROUP
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        # All configured groups don't exist
+        configured_groups = ["NonExistent1", "NonExistent2", "contactGroups/fake"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should return empty frozenset
+        assert len(resolved) == 0
+        assert isinstance(resolved, frozenset)
+
+    def test_filter_edge_resolve_system_group_by_name(self, sync_engine):
+        """Test resolving system groups by display name."""
+        from gcontact_sync.sync.group import ContactGroup, GROUP_TYPE_SYSTEM_CONTACT_GROUP
+
+        starred_group = ContactGroup(
+            resource_name="contactGroups/starred",
+            etag="etag_starred",
+            name="Starred",
+            group_type=GROUP_TYPE_SYSTEM_CONTACT_GROUP,
+        )
+
+        configured_groups = ["Starred"]
+        fetched_groups = [starred_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 1
+        assert "contactGroups/starred" in resolved
+
+    # -------------------------------------------------------------------------
+    # Incremental Sync Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_incremental_sync_new_contact_in_allowed_group(
+        self, sync_engine
+    ):
+        """Test incremental sync includes new contacts in allowed groups."""
+        # Simulate incremental sync scenario
+        new_contact = Contact(
+            resource_name="people/new1",
+            etag="etag_new",
+            display_name="New Contact",
+            given_name="New",
+            family_name="Contact",
+            emails=["new@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 14, 0, 0, tzinfo=timezone.utc),
+        )
+        contacts = [new_contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "New Contact"
+
+    def test_filter_edge_incremental_sync_new_contact_not_in_allowed_group(
+        self, sync_engine
+    ):
+        """Test incremental sync excludes new contacts not in allowed groups."""
+        new_contact = Contact(
+            resource_name="people/new1",
+            etag="etag_new",
+            display_name="New Contact",
+            given_name="New",
+            family_name="Contact",
+            emails=["new@example.com"],
+            memberships=["contactGroups/personal999"],
+            last_modified=datetime(2024, 6, 20, 14, 0, 0, tzinfo=timezone.utc),
+        )
+        contacts = [new_contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_edge_contact_group_membership_changed(self, sync_engine):
+        """Test filtering when contact's group membership may have changed."""
+        # Contact was in work group, now only in personal
+        updated_contact = Contact(
+            resource_name="people/updated1",
+            etag="etag_updated_new",
+            display_name="Updated Contact",
+            given_name="Updated",
+            family_name="Contact",
+            emails=["updated@example.com"],
+            memberships=["contactGroups/personal999"],  # Changed from work to personal
+            last_modified=datetime(2024, 6, 25, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        contacts = [updated_contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should be excluded since no longer in work group
+        assert len(filtered) == 0
+
+    # -------------------------------------------------------------------------
+    # Mixed Scenarios
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_mixed_contacts_various_memberships(self, sync_engine):
+        """Test filtering mix of contacts with various membership scenarios."""
+        contacts = [
+            # Contact in allowed group
+            Contact(
+                resource_name="people/c1",
+                etag="etag_1",
+                display_name="Contact 1",
+                given_name="First1",
+                family_name="Last1",
+                emails=["c1@example.com"],
+                memberships=["contactGroups/work123"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact with no memberships
+            Contact(
+                resource_name="people/c2",
+                etag="etag_2",
+                display_name="Contact 2",
+                given_name="First2",
+                family_name="Last2",
+                emails=["c2@example.com"],
+                memberships=[],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact in multiple groups including allowed
+            Contact(
+                resource_name="people/c3",
+                etag="etag_3",
+                display_name="Contact 3",
+                given_name="First3",
+                family_name="Last3",
+                emails=["c3@example.com"],
+                memberships=["contactGroups/personal", "contactGroups/work123"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact in non-allowed group only
+            Contact(
+                resource_name="people/c4",
+                etag="etag_4",
+                display_name="Contact 4",
+                given_name="First4",
+                family_name="Last4",
+                emails=["c4@example.com"],
+                memberships=["contactGroups/personal"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact in system group only
+            Contact(
+                resource_name="people/c5",
+                etag="etag_5",
+                display_name="Contact 5",
+                given_name="First5",
+                family_name="Last5",
+                emails=["c5@example.com"],
+                memberships=["contactGroups/myContacts"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Only Contact 1 and Contact 3 should be included
+        assert len(filtered) == 2
+        names = {c.display_name for c in filtered}
+        assert "Contact 1" in names
+        assert "Contact 3" in names
+        assert "Contact 2" not in names  # No memberships
+        assert "Contact 4" not in names  # Wrong group
+        assert "Contact 5" not in names  # System group only
