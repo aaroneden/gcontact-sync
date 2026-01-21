@@ -36,6 +36,7 @@ from gcontact_sync.auth.google_auth import (
 )
 from gcontact_sync.config.generator import save_config_file
 from gcontact_sync.config.loader import ConfigError, ConfigLoader
+from gcontact_sync.config.sync_config import SyncConfigError, load_config as load_sync_config
 from gcontact_sync.sync.conflict import ConflictStrategy
 from gcontact_sync.utils.logging import get_logger, setup_logging
 
@@ -582,6 +583,29 @@ def sync_command(
         database = SyncDatabase(str(db_path))
         database.initialize()
 
+        # Load sync configuration for tag-based filtering
+        sync_config = None
+        try:
+            sync_config = load_sync_config(config_dir)
+            if sync_config.has_any_filter():
+                logger.info("Sync config loaded with group filtering enabled")
+                if sync_config.account1.has_filter():
+                    logger.debug(
+                        f"Account1 filter groups: {sync_config.account1.sync_groups}"
+                    )
+                if sync_config.account2.has_filter():
+                    logger.debug(
+                        f"Account2 filter groups: {sync_config.account2.sync_groups}"
+                    )
+            else:
+                logger.debug("Sync config loaded with no group filtering (sync all)")
+        except SyncConfigError as e:
+            # Log warning but continue without filtering (backwards compatible)
+            logger.warning(f"Failed to load sync config, syncing all contacts: {e}")
+            click.echo(
+                click.style(f"Warning: Sync config error: {e}", fg="yellow"), err=True
+            )
+
         # Build MatchConfig from config file settings
         # Resolve Anthropic API key with priority:
         # 1. anthropic_api_key in config (direct key - not recommended)
@@ -617,6 +641,7 @@ def sync_command(
             account2_email=account2_email,
             match_config=match_config,
             duplicate_handling=duplicate_handling,
+            config=sync_config,
         )
 
         # Store account emails in context for summary display
@@ -630,6 +655,22 @@ def sync_command(
             click.echo(f"  Conflict strategy: {effective_strategy}")
             click.echo(f"  Full sync: {effective_full}")
             click.echo(f"  Dry run: {effective_dry_run}")
+
+            # Show group filtering configuration
+            if sync_config and sync_config.has_any_filter():
+                click.echo("  Group filtering: Enabled")
+                if sync_config.account1.has_filter():
+                    groups1 = ", ".join(sync_config.account1.sync_groups)
+                    click.echo(f"    {account1_email}: {groups1}")
+                else:
+                    click.echo(f"    {account1_email}: (all contacts)")
+                if sync_config.account2.has_filter():
+                    groups2 = ", ".join(sync_config.account2.sync_groups)
+                    click.echo(f"    {account2_email}: {groups2}")
+                else:
+                    click.echo(f"    {account2_email}: (all contacts)")
+            else:
+                click.echo("  Group filtering: Disabled (sync all contacts)")
             click.echo()
 
         # Run sync
