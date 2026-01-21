@@ -15,7 +15,7 @@ A Python-based bidirectional synchronization system that keeps Google Contacts s
 
 ## Requirements
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - [UV](https://docs.astral.sh/uv/) package manager (recommended) or pip
 - Google Cloud Project with People API enabled
 - OAuth 2.0 credentials (Desktop application type)
