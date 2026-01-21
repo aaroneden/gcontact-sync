@@ -3205,3 +3205,87 @@ class TestPhotoSync:
         api_format = contact_without_photo1.to_api_format()
 
         assert "photos" not in api_format
+
+
+# ==============================================================================
+# Backup Integration Tests
+# ==============================================================================
+
+
+class TestSyncWithBackup:
+    """Tests for sync operations with backup functionality."""
+
+    def test_sync_creates_backup(
+        self, mock_api1, mock_api2, mock_database, tmp_path
+    ):
+        """Test that sync creates a backup file before syncing."""
+        # Setup contacts
+        contact1 = Contact(
+            "people/c1",
+            "etag1",
+            "John Doe",
+            emails=["john@example.com"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact2 = Contact(
+            "people/c2",
+            "etag2",
+            "Jane Smith",
+            emails=["jane@example.com"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Mock API responses
+        mock_api1.list_contacts.return_value = ([contact1], None)
+        mock_api2.list_contacts.return_value = ([contact2], None)
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        # Mock batch creates to return the contacts
+        mock_api1.batch_create_contacts.return_value = [contact2]
+        mock_api2.batch_create_contacts.return_value = [contact1]
+
+        # Create backup directory
+        backup_dir = tmp_path / "backups"
+
+        # Create sync engine
+        engine = SyncEngine(api1=mock_api1, api2=mock_api2, database=mock_database)
+
+        # Perform sync with backup enabled
+        result = engine.sync(
+            dry_run=False,
+            backup_enabled=True,
+            backup_dir=backup_dir,
+            backup_retention_count=10,
+        )
+
+        # Verify backup directory was created
+        assert backup_dir.exists()
+        assert backup_dir.is_dir()
+
+        # Verify a backup file was created
+        backup_files = list(backup_dir.glob("backup_*.json"))
+        assert len(backup_files) == 1
+
+        # Verify backup file has valid content
+        import json
+
+        backup_file = backup_files[0]
+        with open(backup_file, "r", encoding="utf-8") as f:
+            backup_data = json.load(f)
+
+        # Check backup structure
+        assert "version" in backup_data
+        assert "timestamp" in backup_data
+        assert "contacts" in backup_data
+        assert "groups" in backup_data
+
+        # Verify contacts were backed up
+        assert len(backup_data["contacts"]) == 2
+        contact_names = {c["display_name"] for c in backup_data["contacts"]}
+        assert "John Doe" in contact_names
+        assert "Jane Smith" in contact_names
+
+        # Verify sync completed successfully
+        assert result.stats.created_in_account1 == 1
+        assert result.stats.created_in_account2 == 1
