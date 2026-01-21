@@ -1331,6 +1331,76 @@ class SyncEngine:
 
         return normalized
 
+    def _filter_contacts_by_groups(
+        self,
+        contacts: list[Contact],
+        allowed_groups: frozenset[str],
+        account_label: str = "unknown",
+    ) -> list[Contact]:
+        """
+        Filter contacts to include only those belonging to specified groups.
+
+        Implements OR logic: a contact is included if ANY of its group
+        memberships match ANY of the allowed groups. If allowed_groups
+        is empty, all contacts are returned (backwards compatibility).
+
+        Args:
+            contacts: List of contacts to filter.
+            allowed_groups: Frozenset of group resource names
+                (e.g., "contactGroups/abc123") to filter by.
+                Empty frozenset means no filtering (include all).
+            account_label: Label for the account (for logging).
+
+        Returns:
+            List of contacts that belong to at least one allowed group.
+            If allowed_groups is empty, returns all contacts unchanged.
+
+        Example:
+            # Only include contacts in "Work" or "Family" groups
+            allowed = frozenset(["contactGroups/work123", "contactGroups/family456"])
+            filtered = engine._filter_contacts_by_groups(contacts, allowed, "Account 1")
+        """
+        # Empty filter = no filtering (backwards compatibility)
+        if not allowed_groups:
+            logger.debug(
+                f"No group filter configured for {account_label}, "
+                f"including all {len(contacts)} contacts"
+            )
+            return contacts
+
+        filtered_contacts: list[Contact] = []
+        excluded_count = 0
+        included_count = 0
+
+        for contact in contacts:
+            # Check if contact belongs to any of the allowed groups (OR logic)
+            contact_groups = frozenset(contact.memberships)
+            matching_groups = contact_groups & allowed_groups
+
+            if matching_groups:
+                # Contact is in at least one allowed group - include it
+                filtered_contacts.append(contact)
+                included_count += 1
+                logger.debug(
+                    f"INCLUDED: {contact.display_name} ({contact.resource_name}) - "
+                    f"matches groups: {list(matching_groups)}"
+                )
+            else:
+                # Contact is not in any allowed group - exclude it
+                excluded_count += 1
+                logger.debug(
+                    f"EXCLUDED: {contact.display_name} ({contact.resource_name}) - "
+                    f"no matching groups (has: {list(contact_groups)})"
+                )
+
+        logger.info(
+            f"Group filter applied for {account_label}: "
+            f"{included_count} included, {excluded_count} excluded "
+            f"(filter has {len(allowed_groups)} groups)"
+        )
+
+        return filtered_contacts
+
     def _build_group_index(
         self, groups: list[ContactGroup], account_label: str = "unknown"
     ) -> dict[str, ContactGroup]:
