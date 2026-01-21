@@ -1185,6 +1185,152 @@ class SyncEngine:
             logger.error(f"Failed to fetch groups from {account_id}: {e}")
             return []
 
+    def _resolve_group_filters(
+        self,
+        configured_groups: list[str],
+        fetched_groups: list[ContactGroup],
+        account_label: str = "unknown",
+    ) -> frozenset[str]:
+        """
+        Resolve configured group names to resource names for filtering.
+
+        Converts display names (like "Work", "Family") to resource names
+        (like "contactGroups/abc123") using the fetched groups list.
+        Supports both display name matching (case-insensitive) and
+        direct resource name matching.
+
+        Args:
+            configured_groups: List of group identifiers from config.
+                Can be display names ("Work") or resource names
+                ("contactGroups/123abc").
+            fetched_groups: List of ContactGroup objects fetched from
+                the account to resolve against.
+            account_label: Label for the account (for logging).
+
+        Returns:
+            Frozenset of resolved resource names for efficient membership
+            checking. Empty frozenset if no groups could be resolved or
+            configured_groups was empty.
+
+        Note:
+            - Display names are matched case-insensitively using normalized
+              matching keys (same normalization as group.py).
+            - Resource names (starting with "contactGroups/") are matched
+              exactly.
+            - Warnings are logged for configured groups that cannot be found.
+            - If a display name matches multiple groups (ambiguous), the first
+              match is used and a warning is logged.
+        """
+        if not configured_groups:
+            return frozenset()
+
+        resolved_resource_names: set[str] = set()
+        unresolved_groups: list[str] = []
+
+        # Build lookup indexes for efficient matching
+        # 1. By resource name (exact match for contactGroups/... format)
+        by_resource_name: dict[str, ContactGroup] = {
+            g.resource_name: g for g in fetched_groups if g.resource_name
+        }
+
+        # 2. By normalized display name (case-insensitive matching)
+        # Note: We include all groups here, even non-syncable ones like system groups,
+        # in case the user wants to filter by system groups (e.g., "starred")
+        by_normalized_name: dict[str, list[ContactGroup]] = {}
+        for group in fetched_groups:
+            if group.name:
+                normalized_key = group.matching_key()
+                if normalized_key not in by_normalized_name:
+                    by_normalized_name[normalized_key] = []
+                by_normalized_name[normalized_key].append(group)
+
+        # Resolve each configured group
+        for configured_group in configured_groups:
+            resolved = False
+
+            # Try exact resource name match first (for contactGroups/... format)
+            if configured_group.startswith("contactGroups/"):
+                if configured_group in by_resource_name:
+                    resolved_resource_names.add(configured_group)
+                    resolved = True
+                    logger.debug(
+                        f"Resolved filter group by resource name: {configured_group}"
+                    )
+            else:
+                # Try case-insensitive display name match
+                # Normalize the configured name the same way group.matching_key() does
+                normalized_configured = self._normalize_group_name(configured_group)
+
+                if normalized_configured in by_normalized_name:
+                    matching_groups = by_normalized_name[normalized_configured]
+
+                    if len(matching_groups) > 1:
+                        # Ambiguous match - log warning but use first match
+                        logger.warning(
+                            f"Ambiguous group filter '{configured_group}' in "
+                            f"{account_label}: matches {len(matching_groups)} groups. "
+                            f"Using first match: {matching_groups[0].resource_name}"
+                        )
+
+                    resolved_resource_names.add(matching_groups[0].resource_name)
+                    resolved = True
+                    logger.debug(
+                        f"Resolved filter group '{configured_group}' -> "
+                        f"{matching_groups[0].resource_name} in {account_label}"
+                    )
+
+            if not resolved:
+                unresolved_groups.append(configured_group)
+
+        # Log warnings for unresolved groups
+        if unresolved_groups:
+            logger.warning(
+                f"Could not resolve {len(unresolved_groups)} filter group(s) "
+                f"in {account_label}: {', '.join(unresolved_groups)}. "
+                f"These groups will be ignored."
+            )
+
+        if resolved_resource_names:
+            logger.info(
+                f"Resolved {len(resolved_resource_names)} filter group(s) "
+                f"in {account_label}"
+            )
+
+        return frozenset(resolved_resource_names)
+
+    def _normalize_group_name(self, name: str) -> str:
+        """
+        Normalize a group name for case-insensitive matching.
+
+        Uses the same normalization logic as ContactGroup.matching_key()
+        to ensure consistent matching between config values and group names.
+
+        Args:
+            name: Group display name to normalize.
+
+        Returns:
+            Normalized lowercase string with special characters handled.
+        """
+        import re
+        import unicodedata
+
+        if not name:
+            return ""
+
+        # Normalize unicode (decompose accents, etc.)
+        normalized = unicodedata.normalize("NFKD", name)
+
+        # Remove combining characters (accents)
+        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+
+        # Convert to lowercase
+        normalized = normalized.lower()
+
+        # Replace multiple spaces with single space and strip
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        return normalized
+
     def _build_group_index(
         self, groups: list[ContactGroup], account_label: str = "unknown"
     ) -> dict[str, ContactGroup]:
