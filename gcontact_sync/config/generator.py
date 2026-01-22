@@ -91,6 +91,28 @@ def generate_default_config() -> str:
 # batch_size: 100
 
 
+# Daemon Options
+# --------------
+# These options configure the background daemon mode that automatically
+# syncs contacts at regular intervals.
+
+# Sync interval for daemon mode
+# Supports time units: s (seconds), m (minutes), h (hours), d (days)
+# Examples: 30m, 1h, 6h, 1d
+# Default: 1h (1 hour)
+# daemon_interval: 1h
+
+# Enable daemon mode in configuration
+# When true, daemon will auto-start when service is installed
+# Default: false
+# daemon_enabled: false
+
+# Custom PID file location for daemon process
+# The PID file tracks the running daemon process
+# Default: ~/.gcontact-sync/daemon.pid
+# daemon_pid_file: /var/run/gcontact-sync.pid
+
+
 # Example Configurations
 # ----------------------
 #
@@ -108,6 +130,11 @@ def generate_default_config() -> str:
 #   verbose: true
 #   debug: true
 #   dry_run: true
+#
+# Daemon mode (background sync):
+#   daemon_enabled: true
+#   daemon_interval: 6h
+#   verbose: true
 """
 
 
