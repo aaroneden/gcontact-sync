@@ -190,6 +190,33 @@
 # auth_timeout: 10
 
 
+# Daemon Options
+# --------------
+# Run gcontact-sync as a background service with automatic scheduling.
+# Use 'gcontact-sync daemon start' to run in daemon mode.
+
+# Enable daemon mode (can also be controlled via CLI)
+# When true, the daemon will start automatically when the service is enabled
+# Default: false
+# CLI equivalent: --daemon (planned)
+# daemon_enabled: false
+
+# Sync interval for daemon mode
+# Specifies how often the daemon should run a sync operation
+# Supports time units: s (seconds), m (minutes), h (hours), d (days)
+# Examples: 30m, 1h, 6h, 1d
+# Can also specify just a number (interpreted as seconds)
+# Default: 1h (1 hour)
+# CLI equivalent: --interval <value>
+# daemon_interval: 1h
+
+# PID file location for daemon process
+# The daemon writes its process ID to this file for management
+# Used by 'daemon stop' and 'daemon status' commands
+# Default: ~/.gcontact-sync/daemon.pid
+# daemon_pid_file: ~/.gcontact-sync/daemon.pid
+
+
 # Advanced Options
 # ----------------
 
@@ -246,6 +273,21 @@
 # Keep all backups (no automatic deletion):
 #   backup_enabled: true
 #   backup_retention_count: 0
+#
+# Daemon mode (automatic background sync):
+#   daemon_enabled: true
+#   daemon_interval: 1h
+#   verbose: false
+#
+# Daemon mode with frequent syncs (for testing):
+#   daemon_enabled: true
+#   daemon_interval: 5m
+#   verbose: true
+#
+# Daemon mode with custom PID file:
+#   daemon_enabled: true
+#   daemon_interval: 6h
+#   daemon_pid_file: /var/run/gcontact-sync.pid
 
 
 # Quick Start Examples
@@ -265,6 +307,21 @@
 #
 # 4. Full resync:
 #    gcontact-sync sync --full --verbose
+#
+# 5. Run daemon in foreground (for testing):
+#    gcontact-sync daemon start --foreground --interval 30s
+#
+# 6. Start daemon in background:
+#    gcontact-sync daemon start --interval 1h
+#
+# 7. Check daemon status:
+#    gcontact-sync daemon status
+#
+# 8. Stop running daemon:
+#    gcontact-sync daemon stop
+#
+# 9. Install as system service (Linux/macOS):
+#    gcontact-sync daemon install --interval 1h
 
 
 # Security Notes
