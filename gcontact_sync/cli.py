@@ -2093,6 +2093,118 @@ def daemon_start_command(
         sys.exit(1)
 
 
+@daemon_group.command("stop")
+@click.pass_context
+def daemon_stop_command(ctx: click.Context) -> None:
+    """
+    Stop the running synchronization daemon.
+
+    Sends a SIGTERM signal to the daemon process to initiate
+    graceful shutdown. The daemon will complete any in-progress
+    sync before exiting.
+
+    Examples:
+
+        # Stop the running daemon
+        gcontact-sync daemon stop
+    """
+    logger = get_logger(__name__)
+    config = ctx.obj.get("config", {})
+
+    from gcontact_sync.daemon import DEFAULT_PID_FILE, DaemonScheduler
+
+    # Get PID file from config or use default
+    pid_file = None
+    if config.get("daemon_pid_file"):
+        pid_file = Path(config["daemon_pid_file"]).expanduser()
+    else:
+        pid_file = DEFAULT_PID_FILE
+
+    # Check if daemon is running
+    pid = DaemonScheduler.get_running_pid(pid_file)
+
+    if pid is None:
+        click.echo("No daemon is currently running.")
+        return
+
+    click.echo(f"Stopping daemon (PID: {pid})...")
+
+    # Send stop signal
+    if DaemonScheduler.stop_running_daemon(pid_file):
+        click.echo(click.style("Stop signal sent successfully.", fg="green"))
+        click.echo("The daemon will shut down after completing any in-progress sync.")
+        logger.info(f"Sent stop signal to daemon (PID: {pid})")
+    else:
+        click.echo(
+            click.style("Failed to send stop signal to daemon.", fg="red"), err=True
+        )
+        sys.exit(1)
+
+
+@daemon_group.command("status")
+@click.pass_context
+def daemon_status_command(ctx: click.Context) -> None:
+    """
+    Show the status of the synchronization daemon.
+
+    Displays whether the daemon is running, its process ID,
+    and the PID file location.
+
+    Examples:
+
+        # Check daemon status
+        gcontact-sync daemon status
+    """
+    config = ctx.obj.get("config", {})
+    verbose = ctx.obj.get("verbose", False)
+
+    from gcontact_sync.daemon import DEFAULT_PID_FILE, DaemonScheduler, PIDFileManager
+
+    # Get PID file from config or use default
+    pid_file = None
+    if config.get("daemon_pid_file"):
+        pid_file = Path(config["daemon_pid_file"]).expanduser()
+    else:
+        pid_file = DEFAULT_PID_FILE
+
+    click.echo("=== Daemon Status ===\n")
+
+    # Check if daemon is running
+    pid = DaemonScheduler.get_running_pid(pid_file)
+
+    if pid is not None:
+        click.echo(f"Status: {click.style('Running', fg='green')}")
+        click.echo(f"Process ID: {pid}")
+    else:
+        # Check if there's a stale PID file
+        pid_manager = PIDFileManager(pid_file)
+        stale_pid = pid_manager.read()
+
+        if stale_pid is not None:
+            click.echo(f"Status: {click.style('Stopped', fg='yellow')}")
+            click.echo(f"Stale PID file exists (PID: {stale_pid})")
+            click.echo("The daemon process is no longer running.")
+            click.echo("\nThe stale PID file will be cleaned up on next daemon start.")
+        else:
+            click.echo(f"Status: {click.style('Stopped', fg='yellow')}")
+            click.echo("No daemon is currently running.")
+
+    if verbose:
+        click.echo(f"\nPID file: {pid_file}")
+
+    click.echo()
+
+    # Show next steps
+    if pid is None:
+        click.echo("To start the daemon, run:")
+        click.echo("  gcontact-sync daemon start")
+        click.echo("\nOr run in foreground for debugging:")
+        click.echo("  gcontact-sync daemon start --foreground")
+    else:
+        click.echo("To stop the daemon, run:")
+        click.echo("  gcontact-sync daemon stop")
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
