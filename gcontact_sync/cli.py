@@ -1311,6 +1311,27 @@ def delete_group_command(
         sys.exit(1)
 
 
+# =============================================================================
+# Health Command
+# =============================================================================
+
+
+@cli.command("health")
+def health_command() -> None:
+    """
+    Check application health status.
+
+    Returns a simple health status indicator. Useful for container
+    health checks and monitoring.
+
+    Example:
+
+        gcontact-sync health
+    """
+    click.echo("healthy")
+
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
