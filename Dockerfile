@@ -68,9 +68,9 @@ USER gcontact
 # Set volumes for persistent data
 VOLUME ["/app/config", "/app/data", "/app/credentials"]
 
-# Health check (optional - validates that the CLI can be invoked)
+# Health check using dedicated health command
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD gcontact-sync --help || exit 1
+    CMD gcontact-sync health || exit 1
 
 # Default command - show help
 ENTRYPOINT ["gcontact-sync"]
