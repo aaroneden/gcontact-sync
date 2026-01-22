@@ -741,3 +741,21 @@ class TestClearAuthCommand:
             )
             assert result.exit_code == 1
             assert "Error:" in result.output
+
+
+class TestHealthCommand:
+    """Tests for the health command."""
+
+    def test_health(self):
+        """Test that health command returns healthy status."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["health"])
+        assert result.exit_code == 0
+        assert "healthy" in result.output
+
+    def test_health_help(self):
+        """Test that health command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["health", "--help"])
+        assert result.exit_code == 0
+        assert "health" in result.output.lower()
