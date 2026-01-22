@@ -74,6 +74,19 @@ from gcontact_sync.daemon.scheduler import (
     DEFAULT_PID_DIR,
     DEFAULT_PID_FILE,
 )
+from gcontact_sync.daemon.service import (
+    get_platform,
+    ServiceManager,
+    ServiceError,
+    ServiceInstallError,
+    ServiceUninstallError,
+    UnsupportedPlatformError,
+    generate_systemd_service,
+    generate_launchd_plist,
+    PLATFORM_LINUX,
+    PLATFORM_MACOS,
+    PLATFORM_WINDOWS,
+)
 
 __all__ = [
     "parse_interval",
@@ -85,4 +98,16 @@ __all__ = [
     "PIDFileManager",
     "DEFAULT_PID_DIR",
     "DEFAULT_PID_FILE",
+    # Service management
+    "get_platform",
+    "ServiceManager",
+    "ServiceError",
+    "ServiceInstallError",
+    "ServiceUninstallError",
+    "UnsupportedPlatformError",
+    "generate_systemd_service",
+    "generate_launchd_plist",
+    "PLATFORM_LINUX",
+    "PLATFORM_MACOS",
+    "PLATFORM_WINDOWS",
 ]
