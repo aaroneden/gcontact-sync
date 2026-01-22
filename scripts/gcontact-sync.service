@@ -1,0 +1,83 @@
+# systemd service unit for gcontact-sync daemon
+#
+# This file can be installed to enable automatic Google Contacts synchronization.
+#
+# Installation options:
+#
+# 1. User service (recommended - no root required):
+#    mkdir -p ~/.config/systemd/user
+#    cp gcontact-sync.service ~/.config/systemd/user/
+#    systemctl --user daemon-reload
+#    systemctl --user enable gcontact-sync
+#    systemctl --user start gcontact-sync
+#
+# 2. System service (requires root):
+#    sudo cp gcontact-sync.service /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable gcontact-sync
+#    sudo systemctl start gcontact-sync
+#
+# 3. Automatic install via CLI:
+#    gcontact-sync daemon install
+#
+# Before using, update the ExecStart path to match your installation.
+# You may also want to adjust:
+#   - The sync interval (default: 1h)
+#   - The User/Group (for system service)
+#   - The config directory path
+
+[Unit]
+Description=Google Contacts Sync Daemon
+Documentation=https://github.com/your-org/gcontact-sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Update this path to your gcontact-sync installation
+# Option 1: Using Python module invocation (recommended)
+ExecStart=/usr/bin/python3 -m gcontact_sync daemon start --foreground --interval 1h
+
+# Option 2: Using installed script (uncomment and modify if needed)
+# ExecStart=/usr/local/bin/gcontact-sync daemon start --foreground --interval 1h
+
+# Option 3: Using uv/pipx installed version (uncomment and modify if needed)
+# ExecStart=%h/.local/bin/gcontact-sync daemon start --foreground --interval 1h
+
+# Restart policy - restart on failure after 30 seconds
+Restart=on-failure
+RestartSec=30
+
+# Stop timeout - allow graceful shutdown
+TimeoutStopSec=30
+
+# Kill mode - send SIGTERM to main process, then SIGKILL to remaining
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Environment settings
+Environment=PYTHONUNBUFFERED=1
+# Uncomment to use a specific config directory:
+# Environment=GCONTACT_SYNC_CONFIG_DIR=%h/.config/gcontact-sync
+
+# Working directory (optional - uncomment and modify if needed)
+# WorkingDirectory=%h
+
+# For system service, uncomment and set appropriate user:
+# User=gcontact-sync
+# Group=gcontact-sync
+
+# Security hardening (optional - for system service)
+# NoNewPrivileges=true
+# PrivateTmp=true
+# ProtectSystem=strict
+# ProtectHome=read-only
+# ReadWritePaths=%h/.gcontact-sync
+
+[Install]
+# For user service
+WantedBy=default.target
+
+# For system service, use this instead:
+# WantedBy=multi-user.target
