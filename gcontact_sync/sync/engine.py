@@ -8,6 +8,7 @@ handling contact creation, updates, deletions, and conflict resolution.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
 from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
 from gcontact_sync.auth.google_auth import ACCOUNT_1, ACCOUNT_2
+from gcontact_sync.backup.manager import BackupManager
 from gcontact_sync.storage.db import SyncDatabase
 from gcontact_sync.sync.conflict import (
     ConflictResolver,
@@ -418,7 +420,14 @@ class SyncEngine:
             return self.account1_email
         return self.account2_email
 
-    def sync(self, dry_run: bool = False, full_sync: bool = False) -> SyncResult:
+    def sync(
+        self,
+        dry_run: bool = False,
+        full_sync: bool = False,
+        backup_enabled: bool = True,
+        backup_dir: Path | str | None = None,
+        backup_retention_count: int = 10,
+    ) -> SyncResult:
         """
         Perform a complete sync operation.
 
@@ -429,6 +438,9 @@ class SyncEngine:
         Args:
             dry_run: If True, analyze and return changes without applying them
             full_sync: If True, ignore sync tokens and do a full comparison
+            backup_enabled: If True, create backup before sync (default True)
+            backup_dir: Directory for backups (default ~/.gcontact-sync/backups)
+            backup_retention_count: Number of backups to keep (default 10)
 
         Returns:
             SyncResult with changes made (or to be made if dry_run)
@@ -446,6 +458,47 @@ class SyncEngine:
         self._pending_key_updates: list[tuple[str, str]] = []
 
         logger.info(f"Starting sync (dry_run={dry_run}, full_sync={full_sync})")
+
+        # Create pre-sync backup if enabled (runs in all modes including dry-run)
+        if backup_enabled:
+            try:
+                # Set default backup directory if not provided
+                if backup_dir is None:
+                    backup_dir = Path.home() / ".gcontact-sync" / "backups"
+                else:
+                    backup_dir = Path(backup_dir)
+
+                # Initialize backup manager
+                backup_manager = BackupManager(
+                    backup_dir=backup_dir,
+                    retention_count=backup_retention_count,
+                )
+
+                # Fetch all contacts and groups from both accounts
+                logger.info("Fetching contacts and groups for backup...")
+                contacts1, _ = self.api1.list_contacts()
+                contacts2, _ = self.api2.list_contacts()
+                groups1, _ = self.api1.list_contact_groups()
+                groups2, _ = self.api2.list_contact_groups()
+
+                # Create backup with data organized by account
+                backup_file = backup_manager.create_backup(
+                    account1_contacts=contacts1,
+                    account1_groups=groups1,
+                    account2_contacts=contacts2,
+                    account2_groups=groups2,
+                    account1_email=self.account1_email,
+                    account2_email=self.account2_email,
+                )
+
+                if backup_file:
+                    logger.info(f"Pre-sync backup created: {backup_file}")
+                else:
+                    logger.warning("Failed to create pre-sync backup")
+
+            except Exception as e:
+                # Log error but don't fail sync - backup is optional
+                logger.warning(f"Pre-sync backup failed: {e}")
 
         # Analyze what needs to be synced
         result = self.analyze(full_sync=full_sync)

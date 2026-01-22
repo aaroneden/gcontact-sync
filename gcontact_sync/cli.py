@@ -36,7 +36,8 @@ from gcontact_sync.auth.google_auth import (
 )
 from gcontact_sync.config.generator import save_config_file
 from gcontact_sync.config.loader import ConfigError, ConfigLoader
-from gcontact_sync.config.sync_config import SyncConfigError, load_config as load_sync_config
+from gcontact_sync.config.sync_config import SyncConfigError
+from gcontact_sync.config.sync_config import load_config as load_sync_config
 from gcontact_sync.sync.conflict import ConflictStrategy
 from gcontact_sync.utils.logging import get_logger, setup_logging
 
@@ -471,16 +472,27 @@ def init_config_command(ctx: click.Context, force: bool) -> None:
     is_flag=True,
     help="Show debug info: sample matches and unmatched contacts.",
 )
+@click.option(
+    "--no-backup",
+    is_flag=True,
+    help="Skip automatic backup before sync (not recommended).",
+)
 @click.pass_context
 def sync_command(
-    ctx: click.Context, dry_run: bool, full: bool, strategy: str, debug: bool
+    ctx: click.Context,
+    dry_run: bool,
+    full: bool,
+    strategy: str,
+    debug: bool,
+    no_backup: bool,
 ) -> None:
     """
     Synchronize contacts and groups between accounts.
 
     Performs bidirectional sync to ensure both Google accounts have
-    identical contacts and contact groups (labels). Groups are synced
-    first to ensure membership mappings work correctly. Contacts and
+    identical contacts and contact groups (labels). A backup is created
+    automatically before each sync unless --no-backup is used. Groups are
+    synced first to ensure membership mappings work correctly. Contacts and
     groups only in one account are copied to the other. Conflicting
     edits are resolved using the configured strategy.
 
@@ -497,6 +509,9 @@ def sync_command(
 
         # Show debug info with sample matches
         gcontact-sync sync --dry-run --debug
+
+        # Skip automatic backup (not recommended)
+        gcontact-sync sync --no-backup
     """
     logger = get_logger(__name__)
     config_dir = ctx.obj["config_dir"]
@@ -510,6 +525,23 @@ def sync_command(
     effective_dry_run = dry_run or config.get("dry_run", False)
     effective_full = full or config.get("full", False)
     effective_debug = debug or config.get("debug", False)
+
+    # Backup configuration
+    # If --no-backup is specified, disable backup regardless of config
+    # Otherwise, use config setting (default: True)
+    if no_backup:
+        effective_backup_enabled = False
+    else:
+        effective_backup_enabled = config.get("backup_enabled", True)
+
+    # Get backup directory and retention count from config
+    backup_dir_config = config.get("backup_dir")
+    backup_dir = (
+        Path(backup_dir_config).expanduser()
+        if backup_dir_config
+        else config_dir / "backups"
+    )
+    backup_retention_count = config.get("backup_retention_count", 10)
 
     # For strategy, use config default if CLI used default value
     effective_strategy = strategy
@@ -677,7 +709,13 @@ def sync_command(
         mode = "Analyzing" if effective_dry_run else "Synchronizing"
         click.echo(f"\n{mode} contacts and groups...")
 
-        result = engine.sync(dry_run=effective_dry_run, full_sync=effective_full)
+        result = engine.sync(
+            dry_run=effective_dry_run,
+            full_sync=effective_full,
+            backup_enabled=effective_backup_enabled,
+            backup_dir=backup_dir,
+            backup_retention_count=backup_retention_count,
+        )
 
         # Display results with actual email addresses
         click.echo("\n" + "=" * 50)
@@ -1526,6 +1564,295 @@ def delete_group_command(
 
     except Exception as e:
         logger.exception(f"Failed to delete group: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# Restore Command
+# =============================================================================
+
+
+@cli.command("restore")
+@click.option(
+    "--backup-file",
+    "-b",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False),
+    help="Path to specific backup file to restore from.",
+)
+@click.option(
+    "--list",
+    "-l",
+    "list_backups_flag",
+    is_flag=True,
+    help="List available backup files.",
+)
+@click.option(
+    "--account",
+    "-a",
+    type=click.Choice(VALID_ACCOUNTS, case_sensitive=False),
+    help="Account to restore to (restores to both if not specified).",
+)
+@click.option(
+    "--dry-run", "-n", is_flag=True, help="Preview restore without applying changes."
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def restore_command(
+    ctx: click.Context,
+    backup_file: str | None,
+    list_backups_flag: bool,
+    account: str | None,
+    dry_run: bool,
+    yes: bool,
+) -> None:
+    """
+    Restore contacts from a backup file.
+
+    Restores contacts and groups from a previously created backup.
+    By default, restores to both accounts. Use --account to restore
+    to a specific account only.
+
+    Without --backup-file, lists available backups to choose from.
+
+    Examples:
+
+        # List available backups
+        gcontact-sync restore --list
+
+        # Restore from specific backup to both accounts
+        gcontact-sync restore --backup-file backup_20240120_103000.json
+
+        # Preview restore without applying
+        gcontact-sync restore --backup-file backup.json --dry-run
+
+        # Restore to specific account
+        gcontact-sync restore --backup-file backup.json --account account1
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    config = ctx.obj.get("config", {})
+
+    # Get backup directory from config or use default
+    backup_dir_config = config.get("backup_dir")
+    backup_dir = (
+        Path(backup_dir_config).expanduser()
+        if backup_dir_config
+        else config_dir / "backups"
+    )
+
+    try:
+        from gcontact_sync.backup.manager import BackupManager
+
+        # Initialize backup manager
+        bm = BackupManager(backup_dir)
+
+        # If --list flag is set or no backup file specified, list backups
+        if list_backups_flag or not backup_file:
+            backups = bm.list_backups()
+
+            if not backups:
+                click.echo("No backups found.")
+                click.echo(f"Backup directory: {backup_dir}")
+                return
+
+            click.echo(f"Available backups in {backup_dir}:\n")
+            click.echo(f"{'Filename':<40} {'Date':<20} {'Size':<10}")
+            click.echo("-" * 70)
+
+            for backup_path in backups:
+                # Extract timestamp from filename
+                filename = backup_path.name
+                size = backup_path.stat().st_size
+                size_kb = size / 1024
+
+                # Try to get timestamp from backup content
+                backup_data = bm.load_backup(backup_path)
+                if backup_data and "timestamp" in backup_data:
+                    timestamp = backup_data["timestamp"]
+                else:
+                    # Fallback to file modification time
+                    from datetime import datetime
+
+                    mtime = backup_path.stat().st_mtime
+                    timestamp = datetime.fromtimestamp(mtime).isoformat()
+
+                click.echo(f"{filename:<40} {timestamp[:19]:<20} {size_kb:>8.1f} KB")
+
+            click.echo(f"\nTotal: {len(backups)} backup(s)")
+            click.echo("\nTo restore, use: gcontact-sync restore --backup-file <path>")
+            return
+
+        # Load the specified backup file
+        backup_path = Path(backup_file)
+        click.echo(f"Loading backup from {backup_path}...")
+
+        backup_data = bm.load_backup(backup_path)
+        if not backup_data:
+            click.echo(
+                click.style(
+                    f"Error: Failed to load backup file: {backup_path}", fg="red"
+                ),
+                err=True,
+            )
+            sys.exit(1)
+
+        # Display backup info
+        timestamp = backup_data.get("timestamp", "Unknown")
+        version = backup_data.get("version", "Unknown")
+
+        click.echo(f"Backup version: {version}")
+        click.echo(f"Backup timestamp: {timestamp}")
+
+        # Determine which accounts to restore to
+        accounts_to_restore = [account] if account else list(VALID_ACCOUNTS)
+
+        # Get contact/group counts per account for v2.0 format
+        if version == "2.0":
+            accounts_data = backup_data.get("accounts", {})
+            for acc_key in accounts_to_restore:
+                acc_data = accounts_data.get(acc_key, {})
+                acc_email = acc_data.get("email", acc_key)
+                acc_contacts = acc_data.get("contacts", [])
+                acc_groups = acc_data.get("groups", [])
+                click.echo(f"\n{acc_email}:")
+                click.echo(f"  Contacts: {len(acc_contacts)}")
+                click.echo(f"  Groups: {len(acc_groups)}")
+        else:
+            # Legacy v1.0 format
+            contacts = backup_data.get("contacts", [])
+            groups = backup_data.get("groups", [])
+            click.echo(f"Contacts: {len(contacts)}")
+            click.echo(f"Groups: {len(groups)}")
+
+        click.echo()
+
+        # Calculate total contacts/groups for confirmation
+        total_contacts = 0
+        total_groups = 0
+        if version == "2.0":
+            for acc_key in accounts_to_restore:
+                acc_data = backup_data.get("accounts", {}).get(acc_key, {})
+                total_contacts += len(acc_data.get("contacts", []))
+                total_groups += len(acc_data.get("groups", []))
+        else:
+            total_contacts = len(backup_data.get("contacts", []))
+            total_groups = len(backup_data.get("groups", []))
+
+        # Confirmation prompt
+        if not yes and not dry_run:
+            warning_msg = f"Restore {total_contacts} contacts and {total_groups} groups"
+            if not account:
+                warning_msg += " to BOTH accounts"
+            else:
+                warning_msg += f" to {account}"
+            warning_msg += "?"
+
+            click.confirm(warning_msg, abort=True)
+
+        if dry_run:
+            click.echo(
+                click.style("\nDry run mode - no changes will be made.", fg="yellow")
+            )
+            click.echo(
+                f"\nWould restore to account(s): {', '.join(accounts_to_restore)}"
+            )
+
+            # Show sample of contacts that would be restored for each account
+            for acc_key in accounts_to_restore:
+                contacts_list = bm.get_contacts_for_restore(backup_data, acc_key)
+                if contacts_list:
+                    click.echo(f"\nSample contacts for {acc_key} (first 5):")
+                    for contact in contacts_list[:5]:
+                        click.echo(f"  - {contact.display_name}")
+                        if contact.emails:
+                            click.echo(f"    Emails: {', '.join(contact.emails[:2])}")
+
+            click.echo(
+                click.style(
+                    "\nDry run complete. Use without --dry-run to apply restore.",
+                    fg="green",
+                )
+            )
+            return
+
+        # Perform actual restore
+        click.echo("\nInitializing restore...")
+
+        # Initialize authentication
+        auth = GoogleAuth(config_dir=config_dir)
+
+        from gcontact_sync.api.people_api import PeopleAPI
+
+        # Map account keys to credentials
+        account_apis: dict[str, PeopleAPI] = {}
+        for acc_key in accounts_to_restore:
+            creds = auth.get_credentials(acc_key)
+            if not creds:
+                click.echo(
+                    click.style(f"Error: {acc_key} is not authenticated.", fg="red"),
+                    err=True,
+                )
+                click.echo(f"Run: gcontact-sync auth --account {acc_key}", err=True)
+                sys.exit(1)
+            account_apis[acc_key] = PeopleAPI(credentials=creds)
+
+        # Restore each account
+        for acc_key in accounts_to_restore:
+            api = account_apis[acc_key]
+            acc_email = auth.get_account_email(acc_key) or acc_key
+
+            click.echo(f"\nRestoring to {acc_email}...")
+
+            # Get contacts and groups to restore
+            contacts_to_restore = bm.get_contacts_for_restore(backup_data, acc_key)
+            groups_to_restore = bm.get_groups_for_restore(backup_data, acc_key)
+
+            # Restore groups first (contacts may reference them)
+            groups_created = 0
+            groups_failed = 0
+            for group in groups_to_restore:
+                # Skip system groups
+                if group.group_type != "USER_CONTACT_GROUP":
+                    continue
+                try:
+                    api.create_contact_group(group.name)
+                    groups_created += 1
+                    logger.debug(f"Restored group: {group.name}")
+                except Exception as e:
+                    # Group may already exist
+                    if "already exists" in str(e):
+                        logger.debug(f"Group already exists: {group.name}")
+                    else:
+                        groups_failed += 1
+                        logger.warning(f"Failed to restore group {group.name}: {e}")
+
+            click.echo(f"  Groups: {groups_created} created, {groups_failed} failed")
+
+            # Restore contacts
+            contacts_created = 0
+            contacts_failed = 0
+            for contact in contacts_to_restore:
+                try:
+                    # Create contact (resource_name will be assigned by Google)
+                    api.create_contact(contact)
+                    contacts_created += 1
+                    logger.debug(f"Restored contact: {contact.display_name}")
+                except Exception as e:
+                    contacts_failed += 1
+                    logger.warning(
+                        f"Failed to restore contact {contact.display_name}: {e}"
+                    )
+
+            click.echo(
+                f"  Contacts: {contacts_created} created, {contacts_failed} failed"
+            )
+
+        click.echo(click.style("\nRestore complete!", fg="green"))
+        logger.info(f"Restore completed from {backup_path}")
+
+    except Exception as e:
+        logger.exception(f"Restore failed: {e}")
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)
 

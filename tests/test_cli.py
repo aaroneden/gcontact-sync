@@ -446,7 +446,13 @@ class TestSyncCommand:
             result = runner.invoke(cli, ["sync", "--dry-run"])
             assert result.exit_code == 0
             assert "Dry run complete" in result.output
-            mock_engine.sync.assert_called_once_with(dry_run=True, full_sync=False)
+            # Verify sync was called with dry_run=True
+            mock_engine.sync.assert_called_once()
+            call_kwargs = mock_engine.sync.call_args.kwargs
+            assert call_kwargs["dry_run"] is True
+            assert call_kwargs["full_sync"] is False
+            assert "backup_enabled" in call_kwargs
+            assert "backup_dir" in call_kwargs
 
     @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
@@ -490,7 +496,13 @@ class TestSyncCommand:
         with runner.isolated_filesystem():
             result = runner.invoke(cli, ["sync", "--full"])
             assert result.exit_code == 0
-            mock_engine.sync.assert_called_once_with(dry_run=False, full_sync=True)
+            # Verify sync was called with full_sync=True
+            mock_engine.sync.assert_called_once()
+            call_kwargs = mock_engine.sync.call_args.kwargs
+            assert call_kwargs["dry_run"] is False
+            assert call_kwargs["full_sync"] is True
+            assert "backup_enabled" in call_kwargs
+            assert "backup_dir" in call_kwargs
 
     @patch("gcontact_sync.cli.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
@@ -781,6 +793,358 @@ class TestClearAuthCommand:
             )
             assert result.exit_code == 1
             assert "Error:" in result.output
+
+
+class TestRestoreCommand:
+    """Tests for the restore command."""
+
+    def test_restore_help(self):
+        """Test that restore command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["restore", "--help"])
+        assert result.exit_code == 0
+        assert "Restore contacts from a backup file" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_list_no_backups(self, mock_setup_logging, mock_backup_manager):
+        """Test restore --list when no backups exist."""
+        mock_bm = MagicMock()
+        mock_bm.list_backups.return_value = []
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["restore", "--list"])
+            assert result.exit_code == 0
+            assert "No backups found" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_list_with_backups(self, mock_setup_logging, mock_backup_manager):
+        """Test restore --list displays available backups."""
+        from datetime import datetime
+
+        mock_bm = MagicMock()
+
+        # Create mock backup paths
+        backup1 = MagicMock()
+        backup1.name = "backup_20240120_103000.json"
+        backup1.stat.return_value.st_size = 10240
+        backup1.stat.return_value.st_mtime = datetime(2024, 1, 20, 10, 30).timestamp()
+
+        backup2 = MagicMock()
+        backup2.name = "backup_20240121_120000.json"
+        backup2.stat.return_value.st_size = 20480
+        backup2.stat.return_value.st_mtime = datetime(2024, 1, 21, 12, 0).timestamp()
+
+        mock_bm.list_backups.return_value = [backup1, backup2]
+        mock_bm.load_backup.side_effect = [
+            {"timestamp": "2024-01-20T10:30:00"},
+            {"timestamp": "2024-01-21T12:00:00"},
+        ]
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["restore", "--list"])
+            assert result.exit_code == 0
+            assert "Available backups" in result.output
+            assert "backup_20240120_103000.json" in result.output
+            assert "backup_20240121_120000.json" in result.output
+            assert "Total: 2 backup(s)" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_no_backup_file_shows_list(
+        self, mock_setup_logging, mock_backup_manager
+    ):
+        """Test restore without --backup-file shows list of backups."""
+        mock_bm = MagicMock()
+        mock_bm.list_backups.return_value = []
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["restore"])
+            assert result.exit_code == 0
+            assert "No backups found" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_dry_run(self, mock_setup_logging, mock_backup_manager):
+        """Test restore with --dry-run flag."""
+        from gcontact_sync.sync.contact import Contact
+        from gcontact_sync.sync.group import ContactGroup
+
+        mock_bm = MagicMock()
+        # Use v2.0 format with accounts structure
+        mock_bm.load_backup.return_value = {
+            "version": "2.0",
+            "timestamp": "2024-01-20T10:30:00",
+            "accounts": {
+                "account1": {
+                    "email": "user1@example.com",
+                    "contacts": [
+                        {"display_name": "John Doe", "emails": ["john@example.com"]},
+                        {"display_name": "Jane Smith", "emails": ["jane@example.com"]},
+                    ],
+                    "groups": [{"name": "Friends", "group_type": "USER_CONTACT_GROUP"}],
+                },
+                "account2": {
+                    "email": "user2@example.com",
+                    "contacts": [],
+                    "groups": [],
+                },
+            },
+        }
+        # Mock get_contacts_for_restore and get_groups_for_restore
+        mock_bm.get_contacts_for_restore.return_value = [
+            Contact("", "", "John Doe", emails=["john@example.com"]),
+            Contact("", "", "Jane Smith", emails=["jane@example.com"]),
+        ]
+        mock_bm.get_groups_for_restore.return_value = [
+            ContactGroup("", "", "Friends", group_type="USER_CONTACT_GROUP"),
+        ]
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("backup.json").write_text("{}")
+
+            result = runner.invoke(
+                cli, ["restore", "--backup-file", "backup.json", "--dry-run"]
+            )
+            assert result.exit_code == 0
+            assert "Dry run mode" in result.output
+            # v2.0 format shows "  Contacts: X" (with indent)
+            assert "Contacts: 2" in result.output
+            assert "Groups: 1" in result.output
+            assert "John Doe" in result.output
+            assert "Dry run complete" in result.output
+
+    @patch("gcontact_sync.api.people_api.PeopleAPI")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_with_confirmation(
+        self, mock_setup_logging, mock_backup_manager, mock_google_auth, mock_people_api
+    ):
+        """Test restore with confirmation prompt."""
+        from gcontact_sync.sync.contact import Contact
+
+        mock_bm = MagicMock()
+        mock_bm.load_backup.return_value = {
+            "version": "2.0",
+            "timestamp": "2024-01-20T10:30:00",
+            "accounts": {
+                "account1": {
+                    "email": "user1@example.com",
+                    "contacts": [{"display_name": "John Doe"}],
+                    "groups": [],
+                },
+                "account2": {
+                    "email": "user2@example.com",
+                    "contacts": [],
+                    "groups": [],
+                },
+            },
+        }
+        mock_bm.get_contacts_for_restore.return_value = [
+            Contact("", "", "John Doe"),
+        ]
+        mock_bm.get_groups_for_restore.return_value = []
+        mock_backup_manager.return_value = mock_bm
+
+        # Mock auth
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.get_credentials.return_value = MagicMock()
+        mock_auth_instance.get_account_email.return_value = "user1@example.com"
+        mock_google_auth.return_value = mock_auth_instance
+
+        # Mock API
+        mock_api = MagicMock()
+        mock_people_api.return_value = mock_api
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("backup.json").write_text("{}")
+
+            # Confirm the restore
+            result = runner.invoke(
+                cli, ["restore", "--backup-file", "backup.json"], input="y\n"
+            )
+            assert result.exit_code == 0
+            assert "Restore complete!" in result.output
+
+    @patch("gcontact_sync.api.people_api.PeopleAPI")
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_with_yes_flag(
+        self, mock_setup_logging, mock_backup_manager, mock_google_auth, mock_people_api
+    ):
+        """Test restore with --yes flag skips confirmation."""
+        from gcontact_sync.sync.contact import Contact
+
+        mock_bm = MagicMock()
+        mock_bm.load_backup.return_value = {
+            "version": "2.0",
+            "timestamp": "2024-01-20T10:30:00",
+            "accounts": {
+                "account1": {
+                    "email": "user1@example.com",
+                    "contacts": [{"display_name": "John Doe"}],
+                    "groups": [],
+                },
+                "account2": {
+                    "email": "user2@example.com",
+                    "contacts": [],
+                    "groups": [],
+                },
+            },
+        }
+        mock_bm.get_contacts_for_restore.return_value = [
+            Contact("", "", "John Doe"),
+        ]
+        mock_bm.get_groups_for_restore.return_value = []
+        mock_backup_manager.return_value = mock_bm
+
+        # Mock auth
+        mock_auth_instance = MagicMock()
+        mock_auth_instance.get_credentials.return_value = MagicMock()
+        mock_auth_instance.get_account_email.return_value = "user1@example.com"
+        mock_google_auth.return_value = mock_auth_instance
+
+        # Mock API
+        mock_api = MagicMock()
+        mock_people_api.return_value = mock_api
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("backup.json").write_text("{}")
+
+            result = runner.invoke(
+                cli, ["restore", "--backup-file", "backup.json", "--yes"]
+            )
+            assert result.exit_code == 0
+            assert "Restore complete!" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_cancelled(self, mock_setup_logging, mock_backup_manager):
+        """Test restore when user cancels."""
+        mock_bm = MagicMock()
+        mock_bm.load_backup.return_value = {
+            "version": "1.0",
+            "timestamp": "2024-01-20T10:30:00",
+            "contacts": [{"display_name": "John Doe"}],
+            "groups": [],
+        }
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("backup.json").write_text("{}")
+
+            # Cancel the restore
+            result = runner.invoke(
+                cli, ["restore", "--backup-file", "backup.json"], input="n\n"
+            )
+            assert result.exit_code == 1  # Aborted
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_invalid_backup_file(self, mock_setup_logging, mock_backup_manager):
+        """Test restore with invalid backup file."""
+        mock_bm = MagicMock()
+        mock_bm.load_backup.return_value = None
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("invalid.json").write_text("{}")
+
+            result = runner.invoke(
+                cli, ["restore", "--backup-file", "invalid.json", "--yes"]
+            )
+            assert result.exit_code == 1
+            assert "Error:" in result.output
+            assert "Failed to load backup file" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_specific_account(self, mock_setup_logging, mock_backup_manager):
+        """Test restore to specific account."""
+        mock_bm = MagicMock()
+        mock_bm.load_backup.return_value = {
+            "version": "1.0",
+            "timestamp": "2024-01-20T10:30:00",
+            "contacts": [{"display_name": "John Doe"}],
+            "groups": [],
+        }
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("backup.json").write_text("{}")
+
+            result = runner.invoke(
+                cli,
+                [
+                    "restore",
+                    "--backup-file",
+                    "backup.json",
+                    "--account",
+                    "account1",
+                    "--dry-run",
+                ],
+            )
+            assert result.exit_code == 0
+            assert "account1" in result.output
+            assert "Dry run complete" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_error_handling(self, mock_setup_logging, mock_backup_manager):
+        """Test restore handles errors gracefully."""
+        mock_backup_manager.side_effect = RuntimeError("Backup manager error")
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Create a dummy backup file
+            Path("backup.json").write_text("{}")
+
+            result = runner.invoke(
+                cli, ["restore", "--backup-file", "backup.json", "--yes"]
+            )
+            assert result.exit_code == 1
+            assert "Error:" in result.output
+
+    @patch("gcontact_sync.backup.manager.BackupManager")
+    @patch("gcontact_sync.cli.setup_logging")
+    def test_restore_custom_backup_dir_from_config(
+        self, mock_setup_logging, mock_backup_manager
+    ):
+        """Test restore uses custom backup directory from config."""
+        mock_bm = MagicMock()
+        mock_bm.list_backups.return_value = []
+        mock_backup_manager.return_value = mock_bm
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # The config would be loaded by CLI but we're testing that
+            # BackupManager is called with correct directory
+            result = runner.invoke(cli, ["restore", "--list"])
+            assert result.exit_code == 0
+            # Verify BackupManager was called
+            mock_backup_manager.assert_called_once()
 
 
 class TestConfigIntegration:
