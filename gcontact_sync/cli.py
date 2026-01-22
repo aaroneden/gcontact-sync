@@ -1857,6 +1857,598 @@ def restore_command(
         sys.exit(1)
 
 
+# =============================================================================
+# Daemon Command Group
+# =============================================================================
+
+
+@cli.group("daemon")
+@click.pass_context
+def daemon_group(ctx: click.Context) -> None:
+    """
+    Manage background synchronization daemon.
+
+    The daemon runs in the background and automatically synchronizes
+    contacts at a configurable interval.
+
+    Examples:
+
+        # Start daemon in foreground (for testing)
+        gcontact-sync daemon start --foreground
+
+        # Start daemon with custom interval
+        gcontact-sync daemon start --interval 30m
+
+        # Check daemon status
+        gcontact-sync daemon status
+
+        # Stop running daemon
+        gcontact-sync daemon stop
+    """
+    # Daemon group passes context through to subcommands
+    pass
+
+
+@daemon_group.command("start")
+@click.option(
+    "--interval",
+    "-i",
+    default=None,
+    help=(
+        "Sync interval (e.g., '30s', '5m', '1h', '1d'). "
+        "Defaults to config value or '1h'."
+    ),
+)
+@click.option(
+    "--foreground",
+    "-f",
+    is_flag=True,
+    help="Run in foreground instead of daemonizing (useful for debugging).",
+)
+@click.option(
+    "--no-initial-sync",
+    is_flag=True,
+    help="Skip the initial sync on daemon startup.",
+)
+@click.pass_context
+def daemon_start_command(
+    ctx: click.Context,
+    interval: str | None,
+    foreground: bool,
+    no_initial_sync: bool,
+) -> None:
+    """
+    Start the synchronization daemon.
+
+    Runs the sync process continuously in the background (or foreground
+    with --foreground flag) at the specified interval.
+
+    The daemon will:
+    - Perform an initial sync on startup (unless --no-initial-sync)
+    - Continue syncing at the specified interval
+    - Handle SIGTERM/SIGINT for graceful shutdown
+    - Write a PID file for daemon management
+
+    Examples:
+
+        # Start daemon in foreground with verbose output
+        gcontact-sync -v daemon start --foreground
+
+        # Start with 30-minute sync interval
+        gcontact-sync daemon start --interval 30m
+
+        # Start without initial sync
+        gcontact-sync daemon start --no-initial-sync
+
+        # Start with 1 hour interval (default)
+        gcontact-sync daemon start
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    config = ctx.obj.get("config", {})
+    verbose = ctx.obj["verbose"]
+
+    # Import daemon components
+    from gcontact_sync.daemon import (
+        DaemonAlreadyRunningError,
+        DaemonError,
+        DaemonScheduler,
+        parse_interval,
+    )
+
+    # Resolve interval: CLI > config > default
+    effective_interval_str = interval or config.get("daemon_interval", "1h")
+    try:
+        interval_seconds = parse_interval(effective_interval_str)
+    except ValueError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    # Get PID file from config or use default
+    pid_file = None
+    if config.get("daemon_pid_file"):
+        pid_file = Path(config["daemon_pid_file"]).expanduser()
+
+    click.echo(f"Starting daemon with {effective_interval_str} sync interval...")
+
+    if foreground:
+        click.echo("Running in foreground mode (Ctrl+C to stop)")
+    else:
+        click.echo("Running in background mode")
+
+    if verbose:
+        click.echo(f"  Config directory: {config_dir}")
+        click.echo(f"  Interval: {interval_seconds} seconds")
+        click.echo(f"  Initial sync: {'No' if no_initial_sync else 'Yes'}")
+
+    try:
+        # Create the scheduler
+        scheduler = DaemonScheduler(
+            interval=interval_seconds,
+            pid_file=pid_file,
+            run_immediately=not no_initial_sync,
+        )
+
+        # Set up sync callback using existing sync infrastructure
+        def sync_callback() -> bool:
+            """Execute a sync operation and return success status."""
+            import os
+
+            from gcontact_sync.api.people_api import PeopleAPI
+            from gcontact_sync.storage.db import SyncDatabase
+            from gcontact_sync.sync.conflict import ConflictStrategy
+            from gcontact_sync.sync.engine import SyncEngine
+            from gcontact_sync.sync.matcher import MatchConfig
+
+            try:
+                # Initialize authentication
+                auth = GoogleAuth(config_dir=config_dir)
+
+                # Check authentication for both accounts
+                creds1 = auth.get_credentials(ACCOUNT_1)
+                creds2 = auth.get_credentials(ACCOUNT_2)
+
+                if not creds1 or not creds2:
+                    logger.error("One or both accounts not authenticated")
+                    return False
+
+                # Get account emails for logging
+                account1_email = auth.get_account_email(ACCOUNT_1) or ACCOUNT_1
+                account2_email = auth.get_account_email(ACCOUNT_2) or ACCOUNT_2
+
+                # Initialize components
+                db_path = config_dir / "sync.db"
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+
+                api1 = PeopleAPI(credentials=creds1)
+                api2 = PeopleAPI(credentials=creds2)
+                database = SyncDatabase(str(db_path))
+                database.initialize()
+
+                # Build MatchConfig from config
+                anthropic_api_key = config.get("anthropic_api_key")
+                if not anthropic_api_key:
+                    env_var_name = config.get("anthropic_api_key_env")
+                    if env_var_name:
+                        anthropic_api_key = os.environ.get(env_var_name)
+
+                match_config = MatchConfig(
+                    name_similarity_threshold=config.get(
+                        "name_similarity_threshold", 0.85
+                    ),
+                    name_only_threshold=config.get("name_only_threshold", 0.95),
+                    uncertain_threshold=config.get("uncertain_threshold", 0.7),
+                    use_llm_matching=True,
+                    llm_batch_size=config.get("llm_batch_size", 20),
+                    use_organization_matching=config.get(
+                        "use_organization_matching", True
+                    ),
+                    anthropic_api_key=anthropic_api_key,
+                    llm_model=config.get("llm_model", "claude-haiku-4-5-20250514"),
+                    llm_max_tokens=config.get("llm_max_tokens", 500),
+                    llm_batch_max_tokens=config.get("llm_batch_max_tokens", 2000),
+                )
+
+                # Get conflict strategy from config
+                strategy_str = config.get("strategy", "last_modified")
+                strategy_map = {
+                    "last_modified": ConflictStrategy.LAST_MODIFIED_WINS,
+                    "newest": ConflictStrategy.LAST_MODIFIED_WINS,
+                    "account1": ConflictStrategy.ACCOUNT1_WINS,
+                    "account2": ConflictStrategy.ACCOUNT2_WINS,
+                }
+                conflict_strategy = strategy_map.get(
+                    strategy_str, ConflictStrategy.LAST_MODIFIED_WINS
+                )
+
+                # Get backup settings from config
+                backup_enabled = config.get("backup_enabled", True)
+                backup_dir_config = config.get("backup_dir")
+                backup_dir = (
+                    Path(backup_dir_config).expanduser()
+                    if backup_dir_config
+                    else config_dir / "backups"
+                )
+                backup_retention_count = config.get("backup_retention_count", 10)
+
+                # Create sync engine
+                engine = SyncEngine(
+                    api1=api1,
+                    api2=api2,
+                    database=database,
+                    conflict_strategy=conflict_strategy,
+                    account1_email=account1_email,
+                    account2_email=account2_email,
+                    match_config=match_config,
+                    duplicate_handling=config.get("duplicate_handling", "skip"),
+                )
+
+                # Run sync
+                result = engine.sync(
+                    dry_run=False,
+                    full_sync=False,
+                    backup_enabled=backup_enabled,
+                    backup_dir=backup_dir,
+                    backup_retention_count=backup_retention_count,
+                )
+
+                created = (
+                    result.stats.created_in_account1 + result.stats.created_in_account2
+                )
+                updated = (
+                    result.stats.updated_in_account1 + result.stats.updated_in_account2
+                )
+                logger.info(
+                    f"Sync completed: {created} created, "
+                    f"{updated} updated, {result.stats.errors} errors"
+                )
+
+                return result.stats.errors == 0
+
+            except Exception as e:
+                logger.error(f"Sync failed: {e}")
+                return False
+
+        scheduler.set_sync_callback(sync_callback)
+
+        # Run the scheduler (blocks until shutdown signal)
+        logger.info(f"Daemon starting (interval={interval_seconds}s)")
+        scheduler.run()
+
+        click.echo(click.style("\nDaemon stopped gracefully.", fg="green"))
+
+    except DaemonAlreadyRunningError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        click.echo("Use 'gcontact-sync daemon stop' to stop the running daemon.")
+        sys.exit(1)
+
+    except DaemonError as e:
+        logger.error(f"Daemon error: {e}")
+        click.echo(click.style(f"Daemon error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    except Exception as e:
+        logger.exception(f"Unexpected error: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
+@daemon_group.command("stop")
+@click.pass_context
+def daemon_stop_command(ctx: click.Context) -> None:
+    """
+    Stop the running synchronization daemon.
+
+    Sends a SIGTERM signal to the daemon process to initiate
+    graceful shutdown. The daemon will complete any in-progress
+    sync before exiting.
+
+    Examples:
+
+        # Stop the running daemon
+        gcontact-sync daemon stop
+    """
+    logger = get_logger(__name__)
+    config = ctx.obj.get("config", {})
+
+    from gcontact_sync.daemon import DEFAULT_PID_FILE, DaemonScheduler
+
+    # Get PID file from config or use default
+    pid_file = None
+    if config.get("daemon_pid_file"):
+        pid_file = Path(config["daemon_pid_file"]).expanduser()
+    else:
+        pid_file = DEFAULT_PID_FILE
+
+    # Check if daemon is running
+    pid = DaemonScheduler.get_running_pid(pid_file)
+
+    if pid is None:
+        click.echo("No daemon is currently running.")
+        return
+
+    click.echo(f"Stopping daemon (PID: {pid})...")
+
+    # Send stop signal
+    if DaemonScheduler.stop_running_daemon(pid_file):
+        click.echo(click.style("Stop signal sent successfully.", fg="green"))
+        click.echo("The daemon will shut down after completing any in-progress sync.")
+        logger.info(f"Sent stop signal to daemon (PID: {pid})")
+    else:
+        click.echo(
+            click.style("Failed to send stop signal to daemon.", fg="red"), err=True
+        )
+        sys.exit(1)
+
+
+@daemon_group.command("status")
+@click.pass_context
+def daemon_status_command(ctx: click.Context) -> None:
+    """
+    Show the status of the synchronization daemon.
+
+    Displays whether the daemon is running, its process ID,
+    and the PID file location.
+
+    Examples:
+
+        # Check daemon status
+        gcontact-sync daemon status
+    """
+    config = ctx.obj.get("config", {})
+    verbose = ctx.obj.get("verbose", False)
+
+    from gcontact_sync.daemon import DEFAULT_PID_FILE, DaemonScheduler, PIDFileManager
+
+    # Get PID file from config or use default
+    pid_file = None
+    if config.get("daemon_pid_file"):
+        pid_file = Path(config["daemon_pid_file"]).expanduser()
+    else:
+        pid_file = DEFAULT_PID_FILE
+
+    click.echo("=== Daemon Status ===\n")
+
+    # Check if daemon is running
+    pid = DaemonScheduler.get_running_pid(pid_file)
+
+    if pid is not None:
+        click.echo(f"Status: {click.style('Running', fg='green')}")
+        click.echo(f"Process ID: {pid}")
+    else:
+        # Check if there's a stale PID file
+        pid_manager = PIDFileManager(pid_file)
+        stale_pid = pid_manager.read()
+
+        if stale_pid is not None:
+            click.echo(f"Status: {click.style('Stopped', fg='yellow')}")
+            click.echo(f"Stale PID file exists (PID: {stale_pid})")
+            click.echo("The daemon process is no longer running.")
+            click.echo("\nThe stale PID file will be cleaned up on next daemon start.")
+        else:
+            click.echo(f"Status: {click.style('Stopped', fg='yellow')}")
+            click.echo("No daemon is currently running.")
+
+    if verbose:
+        click.echo(f"\nPID file: {pid_file}")
+
+    click.echo()
+
+    # Show next steps
+    if pid is None:
+        click.echo("To start the daemon, run:")
+        click.echo("  gcontact-sync daemon start")
+        click.echo("\nOr run in foreground for debugging:")
+        click.echo("  gcontact-sync daemon start --foreground")
+    else:
+        click.echo("To stop the daemon, run:")
+        click.echo("  gcontact-sync daemon stop")
+
+
+@daemon_group.command("install")
+@click.option(
+    "--interval",
+    "-i",
+    default=None,
+    help=(
+        "Sync interval for the service (e.g., '30s', '5m', '1h', '1d'). "
+        "Defaults to config value or '1h'."
+    ),
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing service file if it exists.",
+)
+@click.pass_context
+def daemon_install_command(
+    ctx: click.Context,
+    interval: str | None,
+    force: bool,
+) -> None:
+    """
+    Install gcontact-sync as a system service.
+
+    Installs the daemon as a systemd user service (Linux) or launchd
+    agent (macOS) for automatic background synchronization.
+
+    The service will be configured to:
+    - Start automatically on user login
+    - Restart on failure
+    - Run with the configured sync interval
+
+    Examples:
+
+        # Install with default settings
+        gcontact-sync daemon install
+
+        # Install with custom sync interval
+        gcontact-sync daemon install --interval 30m
+
+        # Overwrite existing installation
+        gcontact-sync daemon install --force
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    config = ctx.obj.get("config", {})
+    verbose = ctx.obj.get("verbose", False)
+
+    from gcontact_sync.daemon import (
+        ServiceManager,
+        get_platform,
+        parse_interval,
+    )
+
+    # Resolve interval: CLI > config > default
+    effective_interval = interval or config.get("daemon_interval", "1h")
+
+    # Validate interval format
+    try:
+        interval_seconds = parse_interval(effective_interval)
+    except ValueError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    # Create service manager
+    service_manager = ServiceManager(config_dir=config_dir)
+
+    # Check platform support
+    platform = get_platform()
+    if not service_manager.is_platform_supported():
+        click.echo(
+            click.style(
+                f"Error: Platform '{platform}' is not supported "
+                "for service installation.",
+                fg="red",
+            ),
+            err=True,
+        )
+        click.echo(
+            "Supported platforms: Linux (systemd), macOS (launchd)",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(f"Installing gcontact-sync daemon as a {platform} service...")
+    click.echo(f"  Sync interval: {effective_interval} ({interval_seconds} seconds)")
+
+    if verbose:
+        click.echo(f"  Config directory: {config_dir}")
+        service_path = service_manager.get_service_file_path()
+        click.echo(f"  Service file: {service_path}")
+
+    # Install the service
+    success, error = service_manager.install(
+        interval=effective_interval,
+        overwrite=force,
+    )
+
+    if success:
+        service_path = service_manager.get_service_file_path()
+        click.echo(click.style("\nService installed successfully!", fg="green"))
+        click.echo(f"\nService file: {service_path}")
+        logger.info(f"Daemon service installed at {service_path}")
+
+        # Show platform-specific instructions
+        if platform == "linux":
+            click.echo("\nTo enable and start the service:")
+            click.echo("  systemctl --user enable gcontact-sync")
+            click.echo("  systemctl --user start gcontact-sync")
+            click.echo("\nTo check service status:")
+            click.echo("  systemctl --user status gcontact-sync")
+        elif platform == "macos":
+            click.echo("\nTo load and start the service:")
+            click.echo(f"  launchctl load {service_path}")
+            click.echo("\nTo check if the service is running:")
+            click.echo("  launchctl list | grep gcontact-sync")
+            click.echo("\nThe service is configured to start automatically on login.")
+    else:
+        click.echo(click.style(f"\nInstallation failed: {error}", fg="red"), err=True)
+        logger.error(f"Daemon service installation failed: {error}")
+        sys.exit(1)
+
+
+@daemon_group.command("uninstall")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation prompt.",
+)
+@click.pass_context
+def daemon_uninstall_command(ctx: click.Context, yes: bool) -> None:
+    """
+    Uninstall the gcontact-sync system service.
+
+    Stops the running service (if any) and removes the service file
+    from the system. This does not affect your configuration or
+    contact data.
+
+    Examples:
+
+        # Uninstall with confirmation
+        gcontact-sync daemon uninstall
+
+        # Uninstall without confirmation
+        gcontact-sync daemon uninstall --yes
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    verbose = ctx.obj.get("verbose", False)
+
+    from gcontact_sync.daemon import ServiceManager, get_platform
+
+    # Create service manager
+    service_manager = ServiceManager(config_dir=config_dir)
+
+    # Check platform support
+    platform = get_platform()
+    if not service_manager.is_platform_supported():
+        click.echo(
+            click.style(
+                f"Error: Platform '{platform}' is not supported "
+                "for service management.",
+                fg="red",
+            ),
+            err=True,
+        )
+        sys.exit(1)
+
+    # Check if service is installed
+    if not service_manager.is_installed():
+        click.echo("No daemon service is currently installed.")
+        return
+
+    service_path = service_manager.get_service_file_path()
+
+    if verbose:
+        click.echo(f"Service file: {service_path}")
+
+    # Confirmation prompt
+    if not yes:
+        click.confirm(
+            f"Uninstall gcontact-sync daemon service from {platform}?",
+            abort=True,
+        )
+
+    click.echo("Uninstalling gcontact-sync daemon service...")
+
+    # Uninstall the service
+    success, error = service_manager.uninstall()
+
+    if success:
+        click.echo(click.style("\nService uninstalled successfully!", fg="green"))
+        click.echo(f"Removed: {service_path}")
+        logger.info(f"Daemon service uninstalled from {service_path}")
+        click.echo("\nYour configuration and contact data are preserved.")
+        click.echo("You can reinstall the service anytime with 'daemon install'.")
+    else:
+        click.echo(click.style(f"\nUninstallation failed: {error}", fg="red"), err=True)
+        logger.error(f"Daemon service uninstallation failed: {error}")
+        sys.exit(1)
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()

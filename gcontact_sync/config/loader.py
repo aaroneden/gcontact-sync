@@ -205,6 +205,10 @@ class ConfigLoader:
             "backup_enabled": bool,
             "backup_dir": str,
             "backup_retention_count": int,
+            # Daemon options
+            "daemon_interval": str,
+            "daemon_enabled": bool,
+            "daemon_pid_file": str,
             # Legacy options (for backwards compatibility)
             "similarity_threshold": (int, float),
             "batch_size": int,

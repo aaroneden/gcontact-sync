@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    launchd plist for gcontact-sync daemon (macOS)
+
+    This file can be installed to enable automatic Google Contacts synchronization.
+
+    Installation options:
+
+    1. User agent (recommended - no root required):
+       cp com.gcontact-sync.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.gcontact-sync.plist
+
+    2. Automatic install via CLI:
+       gcontact-sync daemon install
+
+    Before using, update the ProgramArguments paths to match your installation.
+    You may also want to adjust:
+      - The sync interval (default: 1h)
+      - The log file paths
+      - The config directory path (via additional arguments)
+
+    Service control commands:
+      Start:   launchctl load ~/Library/LaunchAgents/com.gcontact-sync.plist
+      Stop:    launchctl unload ~/Library/LaunchAgents/com.gcontact-sync.plist
+      Status:  launchctl list | grep gcontact-sync
+
+    Log locations (defaults):
+      Standard output: ~/.gcontact-sync/logs/daemon.log
+      Standard error:  ~/.gcontact-sync/logs/daemon.err
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Service identifier - must be unique on the system -->
+    <key>Label</key>
+    <string>com.gcontact-sync</string>
+
+    <!--
+        Program and arguments to execute.
+        Update the Python path to match your installation.
+
+        Option 1: Using system Python (default - update path as needed)
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Path to Python - update to match your installation -->
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>gcontact_sync</string>
+        <string>daemon</string>
+        <string>start</string>
+        <string>--foreground</string>
+        <string>--interval</string>
+        <string>1h</string>
+        <!-- Uncomment to use a custom config directory:
+        <string>--config-dir</string>
+        <string>/path/to/config</string>
+        -->
+    </array>
+
+    <!--
+        Alternative ProgramArguments options:
+
+        Option 2: Using Homebrew Python
+        <key>ProgramArguments</key>
+        <array>
+            <string>/opt/homebrew/bin/python3</string>
+            <string>-m</string>
+            <string>gcontact_sync</string>
+            <string>daemon</string>
+            <string>start</string>
+            <string>--foreground</string>
+            <string>--interval</string>
+            <string>1h</string>
+        </array>
+
+        Option 3: Using pipx/uv installed script
+        <key>ProgramArguments</key>
+        <array>
+            <string>/Users/YOUR_USERNAME/.local/bin/gcontact-sync</string>
+            <string>daemon</string>
+            <string>start</string>
+            <string>--foreground</string>
+            <string>--interval</string>
+            <string>1h</string>
+        </array>
+    -->
+
+    <!-- Start the service when the user logs in -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+        KeepAlive policy - restart the service if it exits unexpectedly.
+        SuccessfulExit=false means restart on crash but not on clean exit.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!--
+        Throttle interval - minimum seconds between restarts.
+        Prevents rapid restart loops if the service keeps crashing.
+    -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!--
+        Working directory (optional - uncomment and modify if needed)
+        <key>WorkingDirectory</key>
+        <string>/Users/YOUR_USERNAME</string>
+    -->
+
+    <!--
+        Log output - ensure the log directory exists before loading.
+        Create with: mkdir -p ~/.gcontact-sync/logs
+    -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.gcontact-sync/logs/daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.gcontact-sync/logs/daemon.err</string>
+
+    <!--
+        Environment variables for proper Python behavior
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Disable Python output buffering for immediate log updates -->
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+
+        <!--
+            Add additional environment variables as needed:
+            <key>GCONTACT_SYNC_CONFIG_DIR</key>
+            <string>/path/to/config</string>
+        -->
+    </dict>
+
+    <!--
+        User context (optional - for system-wide installation only)
+        Uncomment and set if installing to /Library/LaunchDaemons/
+
+        <key>UserName</key>
+        <string>YOUR_USERNAME</string>
+
+        <key>GroupName</key>
+        <string>staff</string>
+    -->
+
+    <!--
+        Resource limits (optional - uncomment to customize)
+
+        <key>SoftResourceLimits</key>
+        <dict>
+            <key>NumberOfFiles</key>
+            <integer>256</integer>
+        </dict>
+    -->
+
+    <!--
+        Nice value (optional - lower priority if desired)
+
+        <key>Nice</key>
+        <integer>10</integer>
+    -->
+
+    <!--
+        Prevent launch when there's no network (optional)
+        Note: gcontact-sync handles network errors gracefully, but this
+        can prevent unnecessary startup attempts when offline.
+
+        <key>KeepAlive</key>
+        <dict>
+            <key>SuccessfulExit</key>
+            <false/>
+            <key>NetworkState</key>
+            <true/>
+        </dict>
+    -->
+</dict>
+</plist>
