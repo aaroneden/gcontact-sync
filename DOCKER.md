@@ -59,6 +59,88 @@ See the [Google Cloud Setup](README.md#google-cloud-setup) section in the main R
 - **Storage**: 100 MB for image + space for data volumes
 - **Network**: Outbound HTTPS access to Google APIs
 
+## Pre-Built Docker Images
+
+GContact Sync publishes official Docker images to both Docker Hub and GitHub Container Registry. Using pre-built images is the **recommended approach** for most users as it eliminates the need to build the image locally.
+
+### Available Registries
+
+**Docker Hub** (recommended for public access):
+```bash
+docker pull username/gcontact-sync:latest
+```
+
+**GitHub Container Registry** (integrated with GitHub):
+```bash
+docker pull ghcr.io/username/gcontact-sync:latest
+```
+
+### Image Tagging Strategy
+
+Choose the tag that best fits your deployment needs:
+
+| Tag Pattern | Description | Use Case | Example |
+|-------------|-------------|----------|---------|
+| `latest` | Most recent main branch build | Development, always want newest features | `username/gcontact-sync:latest` |
+| `v*.*.*` | Specific semantic version | Production, want stable specific version | `username/gcontact-sync:v1.2.3` |
+| `v*.*` | Minor version (latest patch) | Production, want latest patches for a minor version | `username/gcontact-sync:v1.2` |
+| `v*` | Major version (latest minor) | Production, want latest compatible version | `username/gcontact-sync:v1` |
+| `main-<sha>` | Specific commit from main | Testing specific changes, reproducible builds | `username/gcontact-sync:main-abc1234` |
+| `<branch>` | Latest from a specific branch | Testing feature branches | `username/gcontact-sync:feature-auth` |
+
+**Tag Update Schedule:**
+- `latest` - Updated on every push to the main branch
+- `v*.*.*` - Created when version tags are pushed (e.g., `git tag v1.2.3`)
+- `v*.*` and `v*` - Updated when new versions are released
+- `main-<sha>` - Created for every commit to main
+- `<branch>` - Updated on every push to that branch
+
+**Recommended tags for production:**
+- **Stable**: `v1.2.3` (specific version, never changes)
+- **Auto-update patches**: `v1.2` (gets patch updates like v1.2.1, v1.2.2)
+- **Auto-update minor**: `v1` (gets minor updates like v1.3.0, v1.4.0)
+
+### Multi-Platform Support
+
+All published images support multiple architectures:
+- **linux/amd64** - Standard x86_64 architecture (Intel/AMD CPUs)
+- **linux/arm64** - ARM 64-bit architecture (Raspberry Pi 4/5, Apple Silicon via Docker, AWS Graviton)
+
+Docker will automatically pull the correct image variant for your platform. No special configuration is needed.
+
+### Image Verification
+
+All images published to GitHub Container Registry include attestations for supply chain security:
+
+```bash
+# Verify image attestation (requires Docker 4.28+)
+docker buildx imagetools inspect ghcr.io/username/gcontact-sync:latest --format "{{json .Provenance}}"
+```
+
+### Using Pre-Built Images with Docker Compose
+
+To use pre-built images instead of building locally, modify your `docker-compose.yml`:
+
+```yaml
+services:
+  gcontact-sync:
+    # Replace this line:
+    # build: .
+
+    # With this line:
+    image: username/gcontact-sync:latest  # or any other tag
+
+    # Rest of your configuration...
+```
+
+Or use Docker Compose's image override without editing the file:
+
+```bash
+# Pull and use pre-built image
+docker pull username/gcontact-sync:latest
+docker compose run --rm gcontact-sync --help
+```
+
 ## Quick Start
 
 For experienced users who want to get started immediately:
@@ -75,8 +157,14 @@ cp .env.example .env
 # Place your Google OAuth credentials
 cp ~/Downloads/client_secret_*.json config/credentials.json
 
-# Build and verify
+# Option 1: Use pre-built image (recommended)
+docker pull username/gcontact-sync:latest
+# Edit docker-compose.yml to use 'image: username/gcontact-sync:latest' instead of 'build: .'
+
+# Option 2: Build locally
 docker compose build
+
+# Verify installation
 docker compose run --rm gcontact-sync --help
 
 # Authenticate both accounts
@@ -157,9 +245,54 @@ GCONTACT_SYNC_DEBUG=false
 - OAuth credentials are stored as files, NOT in environment variables
 - LLM-assisted matching (Tier 3) requires an Anthropic API key
 
-### 3. Build the Image
+### 3. Obtain the Docker Image
 
-Build the Docker image using Docker Compose:
+You have two options: use a pre-built image (recommended) or build locally.
+
+#### Option 1: Use Pre-Built Image (Recommended)
+
+Pull the official image from Docker Hub or GitHub Container Registry:
+
+```bash
+# Pull from Docker Hub (recommended)
+docker pull username/gcontact-sync:latest
+
+# Or pull from GitHub Container Registry
+docker pull ghcr.io/username/gcontact-sync:latest
+
+# Or pull a specific version
+docker pull username/gcontact-sync:v1.2.3
+
+# Verify the image was pulled
+docker images | grep gcontact-sync
+```
+
+**Expected output:**
+```
+username/gcontact-sync   latest   abc123def456   2 hours ago   200MB
+```
+
+**Using with Docker Compose:**
+
+Edit your `docker-compose.yml` file and replace the `build:` directive with `image:`:
+
+```yaml
+services:
+  gcontact-sync:
+    # Replace this:
+    # build: .
+
+    # With this:
+    image: username/gcontact-sync:latest
+
+    # ... rest of configuration
+```
+
+See the [Pre-Built Docker Images](#pre-built-docker-images) section above for details on tagging strategy and choosing the right version.
+
+#### Option 2: Build Locally
+
+Build the Docker image from source using Docker Compose:
 
 ```bash
 # Build the image
@@ -187,6 +320,12 @@ For faster rebuilds during development:
 # Build with BuildKit (faster, better caching)
 DOCKER_BUILDKIT=1 docker compose build
 ```
+
+**When to build locally:**
+- You're developing or testing changes to the codebase
+- You need a version that hasn't been released yet
+- You want to customize the Docker image
+- Pre-built images are not available for your use case
 
 ### 4. Configure OAuth Credentials
 

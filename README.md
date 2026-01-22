@@ -60,6 +60,42 @@ GContact Sync provides Docker support for containerized deployments. This is ide
 - Docker Engine 20.10+ ([Install Docker](https://docs.docker.com/engine/install/))
 - Docker Compose 2.0+ ([Install Docker Compose](https://docs.docker.com/compose/install/))
 
+#### Using Pre-Built Images
+
+Pre-built Docker images are available from both Docker Hub and GitHub Container Registry:
+
+**Docker Hub:**
+```bash
+# Pull the latest version
+docker pull username/gcontact-sync:latest
+
+# Pull a specific version
+docker pull username/gcontact-sync:v1.0.0
+```
+
+**GitHub Container Registry:**
+```bash
+# Pull the latest version
+docker pull ghcr.io/username/gcontact-sync:latest
+
+# Pull a specific version
+docker pull ghcr.io/username/gcontact-sync:v1.0.0
+```
+
+**Image Tagging Strategy:**
+
+| Tag Pattern | Description | Example | When Updated |
+|-------------|-------------|---------|--------------|
+| `latest` | Most recent main branch build | `latest` | Every push to main |
+| `v*.*.*` | Specific semantic version | `v1.2.3` | On version tags |
+| `v*.*` | Minor version (latest patch) | `v1.2` | On version tags |
+| `v*` | Major version (latest minor) | `v1` | On version tags |
+| `main-<sha>` | Specific commit from main | `main-abc1234` | Every commit |
+| `<branch>` | Latest from branch | `feature-auth` | Every push to branch |
+
+**Multi-Platform Support:**
+All images support both `linux/amd64` and `linux/arm64` architectures. Docker will automatically pull the correct image for your platform.
+
 #### Quick Start with Docker Compose
 
 ```bash
@@ -73,7 +109,10 @@ mkdir -p config data credentials
 # Copy environment template
 cp .env.example .env
 
-# Build the Docker image
+# Option 1: Use pre-built image (recommended)
+# Edit docker-compose.yml and change 'build: .' to 'image: username/gcontact-sync:latest'
+
+# Option 2: Build locally
 docker compose build
 
 # Run commands using docker compose
