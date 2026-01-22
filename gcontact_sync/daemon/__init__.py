@@ -5,10 +5,9 @@ Background service management with configurable sync intervals and signal handli
 """
 
 import re
-from typing import Union
 
 
-def parse_interval(interval: Union[str, int]) -> int:
+def parse_interval(interval: str | int) -> int:
     """Parse an interval string into seconds.
 
     Accepts interval strings with units (s, m, h, d) or plain integers.
@@ -64,28 +63,29 @@ def parse_interval(interval: Union[str, int]) -> int:
     )
 
 
-from gcontact_sync.daemon.scheduler import (
-    DaemonScheduler,
-    DaemonStats,
-    DaemonError,
-    PIDFileError,
-    DaemonAlreadyRunningError,
-    PIDFileManager,
+# Imports after parse_interval to avoid circular dependencies
+from gcontact_sync.daemon.scheduler import (  # noqa: E402
     DEFAULT_PID_DIR,
     DEFAULT_PID_FILE,
+    DaemonAlreadyRunningError,
+    DaemonError,
+    DaemonScheduler,
+    DaemonStats,
+    PIDFileError,
+    PIDFileManager,
 )
-from gcontact_sync.daemon.service import (
-    get_platform,
-    ServiceManager,
-    ServiceError,
-    ServiceInstallError,
-    ServiceUninstallError,
-    UnsupportedPlatformError,
-    generate_systemd_service,
-    generate_launchd_plist,
+from gcontact_sync.daemon.service import (  # noqa: E402
     PLATFORM_LINUX,
     PLATFORM_MACOS,
     PLATFORM_WINDOWS,
+    ServiceError,
+    ServiceInstallError,
+    ServiceManager,
+    ServiceUninstallError,
+    UnsupportedPlatformError,
+    generate_launchd_plist,
+    generate_systemd_service,
+    get_platform,
 )
 
 __all__ = [

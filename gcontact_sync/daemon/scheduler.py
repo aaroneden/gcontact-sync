@@ -13,12 +13,11 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +57,9 @@ class DaemonStats:
     sync_count: int = 0
     sync_success_count: int = 0
     sync_error_count: int = 0
-    last_sync_at: Optional[datetime] = None
+    last_sync_at: datetime | None = None
     last_sync_success: bool = False
-    last_error: Optional[str] = None
+    last_error: str | None = None
 
 
 class PIDFileManager:
@@ -116,7 +115,7 @@ class PIDFileManager:
         except OSError as e:
             raise PIDFileError(f"Failed to create PID file {self.pid_file}: {e}") from e
 
-    def read(self) -> Optional[int]:
+    def read(self) -> int | None:
         """
         Read the PID from the PID file.
 
@@ -221,11 +220,12 @@ class DaemonScheduler:
         self.interval = interval
         self.run_immediately = run_immediately
         self._pid_manager = PIDFileManager(pid_file)
-        self._sync_callback: Optional[Callable[[], bool]] = None
+        self._sync_callback: Callable[[], bool] | None = None
         self._running = False
         self._shutdown_requested = False
-        self._original_sigterm_handler: Optional[signal.Handlers] = None
-        self._original_sigint_handler: Optional[signal.Handlers] = None
+        # Signal handler types are complex in Python's type system
+        self._original_sigterm_handler: signal.Handlers | None = None  # type: ignore[assignment]
+        self._original_sigint_handler: signal.Handlers | None = None  # type: ignore[assignment]
         self.stats = DaemonStats()
 
     @property
@@ -252,10 +252,10 @@ class DaemonScheduler:
         Handles SIGTERM and SIGINT for clean daemon shutdown.
         """
         # Store original handlers for restoration
-        self._original_sigterm_handler = signal.signal(
+        self._original_sigterm_handler = signal.signal(  # type: ignore[assignment]
             signal.SIGTERM, self._signal_handler
         )
-        self._original_sigint_handler = signal.signal(
+        self._original_sigint_handler = signal.signal(  # type: ignore[assignment]
             signal.SIGINT, self._signal_handler
         )
         logger.debug("Signal handlers installed for SIGTERM and SIGINT")
@@ -406,7 +406,7 @@ class DaemonScheduler:
         return self._running
 
     @classmethod
-    def get_running_pid(cls, pid_file: Path | None = None) -> Optional[int]:
+    def get_running_pid(cls, pid_file: Path | None = None) -> int | None:
         """
         Get the PID of the currently running daemon.
 
