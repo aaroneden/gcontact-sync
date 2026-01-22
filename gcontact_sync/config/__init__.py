@@ -8,11 +8,13 @@ from gcontact_sync.config.sync_config import (
     AccountSyncConfig,
     SyncConfig,
     SyncConfigError,
+    SyncLabelConfig,
     load_config,
 )
 
 __all__ = [
     "SyncConfig",
+    "SyncLabelConfig",
     "AccountSyncConfig",
     "SyncConfigError",
     "load_config",

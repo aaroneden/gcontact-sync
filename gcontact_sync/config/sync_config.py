@@ -1,5 +1,5 @@
 """
-Sync configuration for tag-based contact filtering.
+Sync configuration for tag-based contact filtering and sync labeling.
 
 Provides configuration dataclasses for controlling which contacts
 are synchronized based on contact group/tag membership. Supports
@@ -9,6 +9,10 @@ Configuration file format (sync_config.json):
 
     {
         "version": "1.0",
+        "sync_label": {
+            "enabled": true,
+            "group_name": "Synced Contacts"
+        },
         "account1": {
             "sync_groups": ["Work", "Family", "contactGroups/456def"]
         },
@@ -22,6 +26,7 @@ Notes:
     - Groups can be specified by display name ("Work") or resource name
       ("contactGroups/123abc")
     - Both accounts can have independent filter configurations
+    - sync_label controls automatic labeling of synced contacts
 """
 
 from __future__ import annotations
@@ -44,11 +49,97 @@ DEFAULT_SYNC_CONFIG_FILE = "sync_config.json"
 # Default configuration directory
 DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
+# Default sync label group name
+DEFAULT_SYNC_LABEL_GROUP_NAME = "Synced Contacts"
+
 
 class SyncConfigError(Exception):
     """Raised when sync configuration loading or validation fails."""
 
     pass
+
+
+@dataclass
+class SyncLabelConfig:
+    """
+    Configuration for automatic sync labeling.
+
+    When enabled, all contacts created by the sync system will be automatically
+    added to a designated group, making it easy to identify synced contacts
+    regardless of which other groups they belong to.
+
+    Attributes:
+        enabled: Whether to automatically label synced contacts (default: True)
+        group_name: Name of the group to use for labeling (default: "Synced Contacts")
+
+    Usage:
+        # Create with defaults
+        config = SyncLabelConfig()  # enabled=True, group_name="Synced Contacts"
+
+        # Disable sync labeling
+        config = SyncLabelConfig(enabled=False)
+
+        # Use custom group name
+        config = SyncLabelConfig(group_name="My Synced Contacts")
+    """
+
+    enabled: bool = True
+    group_name: str = DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> SyncLabelConfig:
+        """
+        Create SyncLabelConfig from a dictionary.
+
+        Args:
+            data: Dictionary containing sync label configuration, or None
+
+        Returns:
+            SyncLabelConfig instance with defaults if data is None
+
+        Raises:
+            SyncConfigError: If configuration structure is invalid
+        """
+        if data is None:
+            return cls()
+
+        if not isinstance(data, dict):
+            raise SyncConfigError(
+                f"sync_label configuration must be a dictionary, "
+                f"got {type(data).__name__}"
+            )
+
+        # Parse enabled (default True)
+        enabled = data.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise SyncConfigError(
+                f"sync_label.enabled must be a boolean, got {type(enabled).__name__}"
+            )
+
+        # Parse group_name (default to constant)
+        group_name = data.get("group_name", DEFAULT_SYNC_LABEL_GROUP_NAME)
+        if not isinstance(group_name, str):
+            raise SyncConfigError(
+                f"sync_label.group_name must be a string, "
+                f"got {type(group_name).__name__}"
+            )
+
+        if not group_name.strip():
+            raise SyncConfigError("sync_label.group_name cannot be empty")
+
+        return cls(enabled=enabled, group_name=group_name)
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Convert to dictionary format.
+
+        Returns:
+            Dictionary representation of the sync label config
+        """
+        return {
+            "enabled": self.enabled,
+            "group_name": self.group_name,
+        }
 
 
 @dataclass
@@ -168,14 +259,15 @@ class AccountSyncConfig:
 @dataclass
 class SyncConfig:
     """
-    Main synchronization configuration for tag-based filtering.
+    Main synchronization configuration for tag-based filtering and labeling.
 
     Controls which contacts are synchronized between accounts based on
     their group/tag membership. Each account can have independent filter
-    settings.
+    settings. Also configures automatic labeling of synced contacts.
 
     Attributes:
         version: Configuration schema version (currently "1.0")
+        sync_label: Configuration for automatic sync labeling
         account1: Sync configuration for account 1
         account2: Sync configuration for account 2
 
@@ -187,17 +279,23 @@ class SyncConfig:
         if config.account1.has_filter():
             print("Account 1 has group filtering enabled")
 
+        # Check if sync labeling is enabled
+        if config.sync_label.enabled:
+            print(f"Synced contacts will be labeled: {config.sync_label.group_name}")
+
         # Get groups to sync for account 1
         groups = config.account1.sync_groups
 
         # Create programmatically
         config = SyncConfig(
+            sync_label=SyncLabelConfig(group_name="My Synced"),
             account1=AccountSyncConfig(sync_groups=["Work", "Family"]),
             account2=AccountSyncConfig(sync_groups=["Important"]),
         )
     """
 
     version: str = CONFIG_VERSION
+    sync_label: SyncLabelConfig = field(default_factory=SyncLabelConfig)
     account1: AccountSyncConfig = field(default_factory=AccountSyncConfig)
     account2: AccountSyncConfig = field(default_factory=AccountSyncConfig)
 
@@ -244,11 +342,19 @@ class SyncConfig:
                 f"version must be a string, got {type(version).__name__}"
             )
 
+        # Parse sync label configuration
+        sync_label = SyncLabelConfig.from_dict(data.get("sync_label"))
+
         # Parse account configurations
         account1 = AccountSyncConfig.from_dict(data.get("account1"))
         account2 = AccountSyncConfig.from_dict(data.get("account2"))
 
-        return cls(version=version, account1=account1, account2=account2)
+        return cls(
+            version=version,
+            sync_label=sync_label,
+            account1=account1,
+            account2=account2,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -259,6 +365,7 @@ class SyncConfig:
         """
         return {
             "version": self.version,
+            "sync_label": self.sync_label.to_dict(),
             "account1": self.account1.to_dict(),
             "account2": self.account2.to_dict(),
         }
@@ -337,6 +444,8 @@ class SyncConfig:
         """Return a readable string representation."""
         return (
             f"SyncConfig(version={self.version!r}, "
+            f"sync_label={self.sync_label.group_name!r} "
+            f"(enabled={self.sync_label.enabled}), "
             f"account1_groups={self.account1.sync_groups!r}, "
             f"account2_groups={self.account2.sync_groups!r})"
         )

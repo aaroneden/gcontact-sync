@@ -1212,6 +1212,8 @@ class TestSyncConfigToDict:
 
     def test_to_dict_full_config(self):
         """Test conversion to dictionary with all fields."""
+        from gcontact_sync.config.sync_config import DEFAULT_SYNC_LABEL_GROUP_NAME
+
         config = SyncConfig(
             version="1.0",
             account1=AccountSyncConfig(sync_groups=["Work"]),
@@ -1220,16 +1222,26 @@ class TestSyncConfigToDict:
         result = config.to_dict()
         assert result == {
             "version": "1.0",
+            "sync_label": {
+                "enabled": True,
+                "group_name": DEFAULT_SYNC_LABEL_GROUP_NAME,
+            },
             "account1": {"sync_groups": ["Work"]},
             "account2": {"sync_groups": ["Family"]},
         }
 
     def test_to_dict_empty_config(self):
         """Test conversion of empty config to dictionary."""
+        from gcontact_sync.config.sync_config import DEFAULT_SYNC_LABEL_GROUP_NAME
+
         config = SyncConfig()
         result = config.to_dict()
         assert result == {
             "version": CONFIG_VERSION,
+            "sync_label": {
+                "enabled": True,
+                "group_name": DEFAULT_SYNC_LABEL_GROUP_NAME,
+            },
             "account1": {"sync_groups": []},
             "account2": {"sync_groups": []},
         }
@@ -1687,3 +1699,328 @@ class TestSyncConfigErrorException:
         except Exception as e:
             assert isinstance(e, SyncConfigError)
             assert str(e) == "Test error"
+
+
+# ==============================================================================
+# SyncLabelConfig Tests (Sync Label Group Feature)
+# ==============================================================================
+
+
+class TestSyncLabelConfigBasics:
+    """Tests for basic SyncLabelConfig instantiation and attributes."""
+
+    def test_create_sync_label_config_default(self):
+        """Test creating SyncLabelConfig with defaults."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncLabelConfig,
+        )
+
+        config = SyncLabelConfig()
+        assert config.enabled is True
+        assert config.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_create_sync_label_config_disabled(self):
+        """Test creating SyncLabelConfig with enabled=False."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        config = SyncLabelConfig(enabled=False)
+        assert config.enabled is False
+
+    def test_create_sync_label_config_custom_name(self):
+        """Test creating SyncLabelConfig with custom group name."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        config = SyncLabelConfig(group_name="My Custom Sync Label")
+        assert config.group_name == "My Custom Sync Label"
+
+    def test_create_sync_label_config_all_custom(self):
+        """Test creating SyncLabelConfig with all custom values."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        config = SyncLabelConfig(enabled=False, group_name="Custom Label")
+        assert config.enabled is False
+        assert config.group_name == "Custom Label"
+
+
+class TestSyncLabelConfigFromDict:
+    """Tests for SyncLabelConfig.from_dict() method."""
+
+    def test_from_dict_valid_config(self):
+        """Test creating from valid dictionary."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        data = {"enabled": True, "group_name": "Test Label"}
+        config = SyncLabelConfig.from_dict(data)
+        assert config.enabled is True
+        assert config.group_name == "Test Label"
+
+    def test_from_dict_disabled(self):
+        """Test creating from dictionary with enabled=False."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        data = {"enabled": False, "group_name": "Test Label"}
+        config = SyncLabelConfig.from_dict(data)
+        assert config.enabled is False
+
+    def test_from_dict_missing_enabled_defaults_true(self):
+        """Test that missing enabled defaults to True."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        data = {"group_name": "Test Label"}
+        config = SyncLabelConfig.from_dict(data)
+        assert config.enabled is True
+
+    def test_from_dict_missing_group_name_uses_default(self):
+        """Test that missing group_name uses default."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncLabelConfig,
+        )
+
+        data = {"enabled": True}
+        config = SyncLabelConfig.from_dict(data)
+        assert config.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_from_dict_empty_dict_uses_defaults(self):
+        """Test that empty dictionary uses all defaults."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncLabelConfig,
+        )
+
+        data = {}
+        config = SyncLabelConfig.from_dict(data)
+        assert config.enabled is True
+        assert config.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_from_dict_none_returns_default(self):
+        """Test that None input returns default config."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncLabelConfig,
+        )
+
+        config = SyncLabelConfig.from_dict(None)
+        assert config.enabled is True
+        assert config.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_from_dict_invalid_not_dict_raises_error(self):
+        """Test that non-dict input raises SyncConfigError."""
+        from gcontact_sync.config.sync_config import SyncConfigError, SyncLabelConfig
+
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncLabelConfig.from_dict("not a dict")
+        assert "must be a dictionary" in str(exc_info.value)
+
+    def test_from_dict_invalid_enabled_not_bool(self):
+        """Test that non-bool enabled raises SyncConfigError."""
+        from gcontact_sync.config.sync_config import SyncConfigError, SyncLabelConfig
+
+        data = {"enabled": "yes"}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncLabelConfig.from_dict(data)
+        assert "must be a boolean" in str(exc_info.value)
+
+    def test_from_dict_invalid_group_name_not_string(self):
+        """Test that non-string group_name raises SyncConfigError."""
+        from gcontact_sync.config.sync_config import SyncConfigError, SyncLabelConfig
+
+        data = {"group_name": 123}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncLabelConfig.from_dict(data)
+        assert "must be a string" in str(exc_info.value)
+
+    def test_from_dict_invalid_empty_group_name(self):
+        """Test that empty group_name raises SyncConfigError."""
+        from gcontact_sync.config.sync_config import SyncConfigError, SyncLabelConfig
+
+        data = {"group_name": ""}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncLabelConfig.from_dict(data)
+        assert "cannot be empty" in str(exc_info.value)
+
+    def test_from_dict_invalid_whitespace_only_group_name(self):
+        """Test that whitespace-only group_name raises SyncConfigError."""
+        from gcontact_sync.config.sync_config import SyncConfigError, SyncLabelConfig
+
+        data = {"group_name": "   "}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncLabelConfig.from_dict(data)
+        assert "cannot be empty" in str(exc_info.value)
+
+
+class TestSyncLabelConfigToDict:
+    """Tests for SyncLabelConfig.to_dict() method."""
+
+    def test_to_dict_default(self):
+        """Test conversion of default config to dictionary."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncLabelConfig,
+        )
+
+        config = SyncLabelConfig()
+        result = config.to_dict()
+        assert result == {"enabled": True, "group_name": DEFAULT_SYNC_LABEL_GROUP_NAME}
+
+    def test_to_dict_custom(self):
+        """Test conversion of custom config to dictionary."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        config = SyncLabelConfig(enabled=False, group_name="Custom")
+        result = config.to_dict()
+        assert result == {"enabled": False, "group_name": "Custom"}
+
+    def test_to_dict_roundtrip(self):
+        """Test that to_dict and from_dict are inverse operations."""
+        from gcontact_sync.config.sync_config import SyncLabelConfig
+
+        original = SyncLabelConfig(enabled=False, group_name="Roundtrip Test")
+        result = SyncLabelConfig.from_dict(original.to_dict())
+        assert result.enabled == original.enabled
+        assert result.group_name == original.group_name
+
+
+class TestSyncConfigWithSyncLabel:
+    """Tests for SyncConfig integration with SyncLabelConfig."""
+
+    def test_sync_config_default_has_sync_label(self):
+        """Test that default SyncConfig has sync_label enabled."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncConfig,
+        )
+
+        config = SyncConfig()
+        assert config.sync_label.enabled is True
+        assert config.sync_label.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_sync_config_with_custom_sync_label(self):
+        """Test creating SyncConfig with custom SyncLabelConfig."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False, group_name="Custom"),
+        )
+        assert config.sync_label.enabled is False
+        assert config.sync_label.group_name == "Custom"
+
+    def test_sync_config_from_dict_with_sync_label(self):
+        """Test SyncConfig.from_dict with sync_label configuration."""
+        from gcontact_sync.config.sync_config import SyncConfig
+
+        data = {
+            "version": "1.0",
+            "sync_label": {"enabled": True, "group_name": "My Synced"},
+            "account1": {"sync_groups": ["Work"]},
+            "account2": {"sync_groups": []},
+        }
+        config = SyncConfig.from_dict(data)
+        assert config.sync_label.enabled is True
+        assert config.sync_label.group_name == "My Synced"
+
+    def test_sync_config_from_dict_without_sync_label_uses_defaults(self):
+        """Test SyncConfig.from_dict uses defaults when sync_label missing."""
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncConfig,
+        )
+
+        data = {
+            "version": "1.0",
+            "account1": {"sync_groups": ["Work"]},
+        }
+        config = SyncConfig.from_dict(data)
+        assert config.sync_label.enabled is True
+        assert config.sync_label.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_sync_config_to_dict_includes_sync_label(self):
+        """Test SyncConfig.to_dict includes sync_label."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False, group_name="Custom"),
+        )
+        result = config.to_dict()
+        assert "sync_label" in result
+        assert result["sync_label"] == {"enabled": False, "group_name": "Custom"}
+
+    def test_sync_config_repr_includes_sync_label(self):
+        """Test SyncConfig.__repr__ includes sync_label info."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        config = SyncConfig(
+            sync_label=SyncLabelConfig(group_name="Test Label"),
+        )
+        repr_str = repr(config)
+        assert "Test Label" in repr_str
+        assert "enabled=True" in repr_str
+
+    def test_sync_config_load_from_file_with_sync_label(self, tmp_path):
+        """Test loading config file with sync_label configuration."""
+        import json
+
+        from gcontact_sync.config.sync_config import SyncConfig
+
+        config_file = tmp_path / "sync_config.json"
+        config_data = {
+            "version": "1.0",
+            "sync_label": {"enabled": True, "group_name": "Loaded Label"},
+            "account1": {"sync_groups": ["Work"]},
+            "account2": {"sync_groups": []},
+        }
+        config_file.write_text(json.dumps(config_data))
+
+        config = SyncConfig.load_from_file(config_file)
+
+        assert config.sync_label.enabled is True
+        assert config.sync_label.group_name == "Loaded Label"
+
+    def test_sync_config_load_from_file_without_sync_label(self, tmp_path):
+        """Test loading config file without sync_label uses defaults."""
+        import json
+
+        from gcontact_sync.config.sync_config import (
+            DEFAULT_SYNC_LABEL_GROUP_NAME,
+            SyncConfig,
+        )
+
+        config_file = tmp_path / "sync_config.json"
+        config_data = {
+            "version": "1.0",
+            "account1": {"sync_groups": ["Work"]},
+        }
+        config_file.write_text(json.dumps(config_data))
+
+        config = SyncConfig.load_from_file(config_file)
+
+        assert config.sync_label.enabled is True
+        assert config.sync_label.group_name == DEFAULT_SYNC_LABEL_GROUP_NAME
+
+    def test_sync_config_save_and_load_roundtrip(self, tmp_path):
+        """Test save then load preserves sync_label data."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        config_file = tmp_path / "sync_config.json"
+        original = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False, group_name="Roundtrip"),
+        )
+
+        original.save_to_file(config_file)
+        loaded = SyncConfig.load_from_file(config_file)
+
+        assert loaded.sync_label.enabled == original.sync_label.enabled
+        assert loaded.sync_label.group_name == original.sync_label.group_name
+
+
+class TestSyncLabelConfigConstants:
+    """Tests for sync label configuration constants."""
+
+    def test_default_sync_label_group_name_is_defined(self):
+        """Test that DEFAULT_SYNC_LABEL_GROUP_NAME is defined."""
+        from gcontact_sync.config.sync_config import DEFAULT_SYNC_LABEL_GROUP_NAME
+
+        assert DEFAULT_SYNC_LABEL_GROUP_NAME is not None
+        assert isinstance(DEFAULT_SYNC_LABEL_GROUP_NAME, str)
+        assert DEFAULT_SYNC_LABEL_GROUP_NAME == "Synced Contacts"

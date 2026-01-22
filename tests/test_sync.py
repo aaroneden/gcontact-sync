@@ -5678,3 +5678,582 @@ class TestSyncWithBackup:
         # Verify sync completed successfully
         assert result.stats.created_in_account1 == 1
         assert result.stats.created_in_account2 == 1
+
+
+# ==============================================================================
+# Sync Label Group Tests
+# ==============================================================================
+
+
+class TestSyncLabelFeature:
+    """Tests for the sync label group feature.
+
+    The sync label feature automatically adds all synced contacts to a designated
+    group (e.g., "Synced Contacts") to help users identify which contacts were
+    created by the sync system.
+    """
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    @pytest.fixture
+    def sync_label_group_api_data(self):
+        """API response dict for Synced Contacts group."""
+        return {
+            "resourceName": "contactGroups/syncedcontacts123",
+            "etag": "etag_synced",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 0,
+        }
+
+    def test_ensure_sync_label_groups_creates_groups(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _ensure_sync_label_groups creates groups in both accounts."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        # Set up config with sync label enabled
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Set up mock APIs - no existing "Synced Contacts" group
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        # Mock create_contact_group to return the created group as dict
+        mock_api1.create_contact_group.return_value = {
+            "resourceName": "contactGroups/sync1",
+            "etag": "etag_sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        mock_api2.create_contact_group.return_value = {
+            "resourceName": "contactGroups/sync2",
+            "etag": "etag_sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Call _ensure_sync_label_groups
+        engine._ensure_sync_label_groups()
+
+        # Verify groups were created
+        mock_api1.create_contact_group.assert_called_once_with("Synced Contacts")
+        mock_api2.create_contact_group.assert_called_once_with("Synced Contacts")
+
+        # Verify resource names were stored
+        assert engine._sync_label_group_resources[1] == "contactGroups/sync1"
+        assert engine._sync_label_group_resources[2] == "contactGroups/sync2"
+
+    def test_ensure_sync_label_groups_finds_existing(
+        self, mock_api1, mock_api2, real_database, sync_label_group_api_data
+    ):
+        """Test that _ensure_sync_label_groups finds existing groups."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Set up mock APIs with existing "Synced Contacts" group
+        mock_api1.list_contact_groups.return_value = (
+            [sync_label_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/syncedcontacts456",
+                    "name": "Synced Contacts",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify create was NOT called (groups already exist)
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Verify resource names were stored from existing groups
+        assert (
+            engine._sync_label_group_resources[1] == "contactGroups/syncedcontacts123"
+        )
+        assert (
+            engine._sync_label_group_resources[2] == "contactGroups/syncedcontacts456"
+        )
+
+    def test_ensure_sync_label_groups_disabled(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _ensure_sync_label_groups does nothing when disabled."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False),
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify no API calls were made
+        mock_api1.list_contact_groups.assert_not_called()
+        mock_api2.list_contact_groups.assert_not_called()
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Verify resources are None
+        assert engine._sync_label_group_resources[1] is None
+        assert engine._sync_label_group_resources[2] is None
+
+    def test_sync_label_added_to_created_contacts(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test sync label added to created contacts via _execute_creates."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Contact to create
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="etag1",
+            display_name="John Doe",
+            given_name="John",
+            family_name="Doe",
+            emails=["john@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 10, 8, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # Groups setup - only need sync label group for this test
+        sync_label_api1 = {
+            "resourceName": "contactGroups/sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api2 = {
+            "resourceName": "contactGroups/sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        mock_api1.list_contact_groups.return_value = ([sync_label_api1], None)
+        mock_api2.list_contact_groups.return_value = ([sync_label_api2], None)
+
+        # Track what contacts are created
+        created_contacts = []
+
+        def capture_batch_create(contacts):
+            created_contacts.extend(contacts)
+            return [
+                Contact(
+                    resource_name="people/new_c1",
+                    etag="new_etag1",
+                    display_name=c.display_name,
+                    memberships=c.memberships,
+                )
+                for c in contacts
+            ]
+
+        mock_api2.batch_create_contacts.side_effect = capture_batch_create
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Set up the sync label group resources directly
+        engine._ensure_sync_label_groups()
+
+        # Create a SyncResult to hold stats
+        result = SyncResult(stats=SyncStats())
+
+        # Call _execute_creates directly with the contact
+        engine._execute_creates([contact1], mock_api2, account=2, result=result)
+
+        # Verify a contact was created
+        assert result.stats.created_in_account2 == 1
+
+        # Verify the created contact has the sync label group
+        assert len(created_contacts) == 1
+        created_memberships = created_contacts[0].memberships
+        assert "contactGroups/sync2" in created_memberships
+
+    def test_sync_label_added_to_updated_contacts(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that sync label is added to updated contacts via _execute_updates."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Source contact (from account 2) with newer data
+        source_contact = Contact(
+            resource_name="people/c2",
+            etag="etag2",
+            display_name="John Doe",
+            given_name="John",
+            family_name="Doe",
+            emails=["john@example.com", "john.doe@work.com"],
+            memberships=["contactGroups/work456"],
+            last_modified=datetime(2024, 6, 15, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # Groups setup
+        sync_label_api1 = {
+            "resourceName": "contactGroups/sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api2 = {
+            "resourceName": "contactGroups/sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        mock_api1.list_contact_groups.return_value = ([sync_label_api1], None)
+        mock_api2.list_contact_groups.return_value = ([sync_label_api2], None)
+
+        # Mock get_contact to return current etag
+        def get_contact_side_effect(resource_name):
+            return Contact(
+                resource_name=resource_name,
+                etag="current_etag",
+                display_name="John Doe",
+            )
+
+        mock_api1.get_contact.side_effect = get_contact_side_effect
+
+        # Track what contacts are updated
+        updated_contacts = []
+
+        def capture_batch_update(contacts):
+            updated_contacts.extend([c for _, c in contacts])
+            return [
+                Contact(
+                    resource_name=c.resource_name,
+                    etag="updated_etag",
+                    display_name=c.display_name,
+                    memberships=c.memberships,
+                )
+                for _, c in contacts
+            ]
+
+        mock_api1.batch_update_contacts.side_effect = capture_batch_update
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Set up the sync label group resources directly
+        engine._ensure_sync_label_groups()
+
+        # Create a SyncResult to hold stats
+        result = SyncResult(stats=SyncStats())
+
+        # Call _execute_updates directly
+        # Format is (target_resource_name, source_contact)
+        updates = [("people/c1", source_contact)]
+        engine._execute_updates(updates, mock_api1, account=1, result=result)
+
+        # Verify a contact was updated
+        assert result.stats.updated_in_account1 == 1
+
+        # Verify the updated contact has the sync label group
+        assert len(updated_contacts) == 1
+        updated_memberships = updated_contacts[0].memberships
+        assert "contactGroups/sync1" in updated_memberships
+
+    def test_sync_label_not_duplicated_if_already_present(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that sync label is not duplicated if contact already has it."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Contact already has sync label group
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="etag1",
+            display_name="John Doe",
+            given_name="John",
+            family_name="Doe",
+            emails=["john@example.com"],
+            memberships=[
+                "contactGroups/work123",
+                "contactGroups/sync1",
+            ],  # Already has sync label
+            last_modified=datetime(2024, 6, 10, 8, 0, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contacts.return_value = ([contact1], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        # Groups setup
+        work_group_api1 = {
+            "resourceName": "contactGroups/work123",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        work_group_api2 = {
+            "resourceName": "contactGroups/work456",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api1 = {
+            "resourceName": "contactGroups/sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api2 = {
+            "resourceName": "contactGroups/sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api1, sync_label_api1],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api2, sync_label_api2],
+            None,
+        )
+
+        created_contacts = []
+
+        def capture_batch_create(contacts):
+            created_contacts.extend(contacts)
+            return [
+                Contact(
+                    resource_name="people/new_c1",
+                    etag="new_etag1",
+                    display_name=c.display_name,
+                    memberships=c.memberships,
+                )
+                for c in contacts
+            ]
+
+        mock_api2.batch_create_contacts.side_effect = capture_batch_create
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run sync - analyze then execute
+        result = engine.analyze(full_sync=True)
+        engine.execute(result)
+
+        # Verify contact was created
+        assert result.stats.created_in_account2 == 1
+
+        # Verify sync label appears only once
+        assert len(created_contacts) == 1
+        created_memberships = created_contacts[0].memberships
+        assert created_memberships.count("contactGroups/sync2") == 1
+
+    def test_sync_label_custom_group_name(self, mock_api1, mock_api2, real_database):
+        """Test sync label with a custom group name."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="My Custom Sync Label"),
+        )
+
+        # No existing groups with that name
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        mock_api1.create_contact_group.return_value = {
+            "resourceName": "contactGroups/custom1",
+            "etag": "etag_custom1",
+            "name": "My Custom Sync Label",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        mock_api2.create_contact_group.return_value = {
+            "resourceName": "contactGroups/custom2",
+            "etag": "etag_custom2",
+            "name": "My Custom Sync Label",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify groups were created with custom name
+        mock_api1.create_contact_group.assert_called_once_with("My Custom Sync Label")
+        mock_api2.create_contact_group.assert_called_once_with("My Custom Sync Label")
+
+    def test_sync_label_case_insensitive_group_match(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that sync label group matching is case-insensitive."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Existing group with different case
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/sync1",
+                    "name": "SYNCED CONTACTS",  # Different case
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/sync2",
+                    "name": "synced contacts",  # Different case
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify groups were NOT created (existing groups should be used)
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Verify existing group resource names were stored
+        assert engine._sync_label_group_resources[1] == "contactGroups/sync1"
+        assert engine._sync_label_group_resources[2] == "contactGroups/sync2"
+
+    def test_sync_label_no_config(self, mock_api1, mock_api2, real_database):
+        """Test that sync label works correctly when no config is provided."""
+        # Engine with no config (default behavior)
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=None,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # When config is None, sync label should be disabled
+        mock_api1.list_contact_groups.assert_not_called()
+        mock_api2.list_contact_groups.assert_not_called()
+
+        # Resources should be None
+        assert engine._sync_label_group_resources[1] is None
+        assert engine._sync_label_group_resources[2] is None
+
+    def test_get_sync_label_resource_returns_correct_value(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _get_sync_label_resource helper method."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        mock_api1.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/sync1", "name": "Synced Contacts"}],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/sync2", "name": "Synced Contacts"}],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Test helper method returns correct values
+        assert engine._get_sync_label_resource(1) == "contactGroups/sync1"
+        assert engine._get_sync_label_resource(2) == "contactGroups/sync2"
+
+    def test_get_sync_label_resource_returns_none_when_disabled(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _get_sync_label_resource returns None when disabled."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False),
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Helper method should return None
+        assert engine._get_sync_label_resource(1) is None
+        assert engine._get_sync_label_resource(2) is None

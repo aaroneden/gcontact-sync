@@ -420,6 +420,143 @@ class SyncEngine:
             return self.account1_email
         return self.account2_email
 
+    def _ensure_sync_label_groups(self) -> None:
+        """
+        Ensure the sync label group exists in both accounts.
+
+        If sync labeling is enabled in the config, this method checks if the
+        configured sync label group exists in each account. If not, it creates
+        the group. The resource names are stored in _sync_label_group_resources
+        for use when creating/updating contacts.
+
+        This method should be called at the start of execute() before any
+        contact operations.
+        """
+        # Initialize the resource name storage
+        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+
+        # Check if sync labeling is enabled
+        if not self.config or not self.config.sync_label.enabled:
+            logger.debug("Sync label disabled or no config provided")
+            return
+
+        group_name = self.config.sync_label.group_name
+        logger.info(f"Ensuring sync label group '{group_name}' exists in both accounts")
+
+        # Process each account
+        for account, api in [(1, self.api1), (2, self.api2)]:
+            account_label = self._get_account_label(account)
+            try:
+                # Fetch existing groups (returns list of dicts)
+                groups_data, _ = api.list_contact_groups()
+
+                # Convert to ContactGroup objects
+                groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+                # Search for existing group with matching name (case-insensitive)
+                existing_group = None
+                for group in groups:
+                    if group.name.lower() == group_name.lower():
+                        existing_group = group
+                        break
+
+                if existing_group:
+                    # Group already exists
+                    self._sync_label_group_resources[account] = (
+                        existing_group.resource_name
+                    )
+                    logger.debug(
+                        f"Sync label group '{group_name}' already exists in "
+                        f"{account_label}: {existing_group.resource_name}"
+                    )
+                else:
+                    # Create the group
+                    created = api.create_contact_group(group_name)
+                    resource_name = created.get("resourceName", "")
+                    self._sync_label_group_resources[account] = resource_name
+                    logger.info(
+                        f"Created sync label group '{group_name}' in "
+                        f"{account_label}: {resource_name}"
+                    )
+
+            except PeopleAPIError as e:
+                logger.warning(
+                    f"Failed to ensure sync label group in {account_label}: {e}"
+                )
+                # Don't fail the entire sync if we can't create the label group
+                self._sync_label_group_resources[account] = None
+
+    def _get_sync_label_resource(self, account: int) -> str | None:
+        """
+        Get the sync label group resource name for an account.
+
+        Args:
+            account: Account number (1 or 2)
+
+        Returns:
+            The resource name of the sync label group, or None if not available
+        """
+        if not hasattr(self, "_sync_label_group_resources"):
+            return None
+        return self._sync_label_group_resources.get(account)
+
+    def _resolve_sync_label_groups(
+        self, groups1: list[ContactGroup], groups2: list[ContactGroup]
+    ) -> None:
+        """
+        Resolve sync label group resource names from already-fetched groups.
+
+        This method finds existing sync label groups by name matching. It does
+        NOT create groups - that happens during execute(). This is used during
+        analyze() to detect contacts that need the sync label added.
+
+        Args:
+            groups1: Groups already fetched from account 1
+            groups2: Groups already fetched from account 2
+        """
+        # Initialize the resource name storage
+        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+
+        # Check if sync labeling is enabled
+        if not self.config or not self.config.sync_label.enabled:
+            return
+
+        group_name = self.config.sync_label.group_name.lower()
+
+        # Find in account 1
+        for group in groups1:
+            if group.name.lower() == group_name:
+                self._sync_label_group_resources[1] = group.resource_name
+                break
+
+        # Find in account 2
+        for group in groups2:
+            if group.name.lower() == group_name:
+                self._sync_label_group_resources[2] = group.resource_name
+                break
+
+    def _contact_needs_sync_label(self, contact: Contact, account: int) -> bool:
+        """
+        Check if a contact needs the sync label added.
+
+        Args:
+            contact: Contact to check
+            account: Account number (1 or 2)
+
+        Returns:
+            True if sync label is enabled and contact is missing it
+        """
+        if not self.config or not self.config.sync_label.enabled:
+            return False
+
+        sync_label_resource = self._get_sync_label_resource(account)
+        if not sync_label_resource:
+            # Group doesn't exist yet - will be created during execute
+            # We should still flag for update so the label gets added
+            return True
+
+        return sync_label_resource not in contact.memberships
+
     def sync(
         self,
         dry_run: bool = False,
@@ -555,6 +692,11 @@ class SyncEngine:
         # Groups must be synced first so memberships can be mapped correctly
         # Returns groups for filter resolution
         groups1, groups2 = self._analyze_groups(result)
+
+        # === RESOLVE SYNC LABEL GROUPS ===
+        # Find existing sync label groups (if configured) for use in detecting
+        # contacts that need the sync label added during analysis
+        self._resolve_sync_label_groups(groups1, groups2)
 
         # === RESOLVE GROUP FILTERS ===
         # Convert configured group names to resource names for filtering
@@ -1780,6 +1922,10 @@ class SyncEngine:
         logger.info("Executing sync operations")
 
         try:
+            # === ENSURE SYNC LABEL GROUP EXISTS ===
+            # Create the sync label group in both accounts if configured
+            self._ensure_sync_label_groups()
+
             # === EXECUTE GROUP OPERATIONS FIRST ===
             # Groups must be synced before contacts so membership mappings exist
 
@@ -2299,11 +2445,46 @@ class SyncEngine:
         hash1 = contact1.content_hash()
         hash2 = contact2.content_hash()
 
-        # Same content - no sync needed
+        # Check if either contact needs sync label added
+        c1_needs_label = self._contact_needs_sync_label(contact1, 1)
+        c2_needs_label = self._contact_needs_sync_label(contact2, 2)
+
+        # Same content - check if sync label needs to be added
         # Note: Photos are NOT compared here because photo URLs differ between
         # accounts even for the same photo. Photo sync happens when contact
         # content changes and the winner's photo is propagated.
         if hash1 == hash2:
+            # Even if content matches, we may need to add sync labels
+            if c1_needs_label or c2_needs_label:
+                logger.debug(
+                    f"Contact in sync but needs sync label: {contact1.display_name}"
+                )
+                if mlog:
+                    mlog.info("  STATUS: In sync but needs sync label added")
+                    if c1_needs_label:
+                        mlog.info(
+                            f"    -> Will add sync label in {self.account1_email}"
+                        )
+                    if c2_needs_label:
+                        mlog.info(
+                            f"    -> Will add sync label in {self.account2_email}"
+                        )
+                    mlog.info("")
+
+                # Schedule updates to add sync label
+                # IMPORTANT: Use contact from OTHER account as source because
+                # _execute_updates maps memberships from source_account to target
+                # (e.g., for account1 updates, source_account=2)
+                if c1_needs_label:
+                    result.to_update_in_account1.append(
+                        (contact1.resource_name, contact2)
+                    )
+                if c2_needs_label:
+                    result.to_update_in_account2.append(
+                        (contact2.resource_name, contact1)
+                    )
+                return
+
             logger.debug(f"Contact in sync: {contact1.display_name}")
             if mlog:
                 mlog.info("  STATUS: In sync (content hashes match)")
@@ -2642,11 +2823,25 @@ class SyncEngine:
             # Map memberships from source account to target account
             # If creating in account 1, source is account 2 (and vice versa)
             source_account = 2 if account == 1 else 1
+
+            # Get sync label group resource name for target account (if enabled)
+            sync_label_resource = self._get_sync_label_resource(account)
+
             contacts_with_mapped_memberships = []
             for contact in contacts:
                 mapped_memberships = self._map_memberships(
                     contact.memberships, source_account, account
                 )
+
+                # Add sync label group membership if enabled
+                if (
+                    sync_label_resource
+                    and sync_label_resource not in mapped_memberships
+                ):
+                    mapped_memberships = list(mapped_memberships) + [
+                        sync_label_resource
+                    ]
+
                 # Create new contact with mapped memberships
                 mapped_contact = Contact(
                     resource_name=contact.resource_name,
@@ -2664,6 +2859,9 @@ class SyncEngine:
 
             # Use batch create for efficiency
             created = api.batch_create_contacts(contacts_with_mapped_memberships)
+
+            # Collect created contact resource names for sync label
+            created_resource_names: list[str] = []
 
             # Update mappings with new resource names
             for original, created_contact in zip(contacts, created, strict=True):
@@ -2696,6 +2894,26 @@ class SyncEngine:
                     result=result,
                 )
 
+                # Track for sync label group membership
+                created_resource_names.append(created_contact.resource_name)
+
+            # Add created contacts to sync label group
+            # (must use modify_group_members, not batch_create_contacts)
+            if sync_label_resource and created_resource_names:
+                try:
+                    api.modify_group_members(
+                        resource_name=sync_label_resource,
+                        add_resource_names=created_resource_names,
+                    )
+                    logger.debug(
+                        f"Added {len(created_resource_names)} created contacts to "
+                        f"sync label group in {account_label}"
+                    )
+                except PeopleAPIError as e:
+                    logger.warning(
+                        f"Failed to add created contacts to sync label group: {e}"
+                    )
+
         except PeopleAPIError as e:
             logger.error(f"Failed to create contacts in {account_label}: {e}")
             result.stats.errors += len(contacts)
@@ -2726,6 +2944,9 @@ class SyncEngine:
         # Determine source account for membership mapping
         source_account = 2 if account == 1 else 1
 
+        # Get sync label group resource name for target account (if enabled)
+        sync_label_resource = self._get_sync_label_resource(account)
+
         try:
             # Get current etags for the contacts being updated
             updates_with_etags = []
@@ -2736,6 +2957,16 @@ class SyncEngine:
                     mapped_memberships = self._map_memberships(
                         source_contact.memberships, source_account, account
                     )
+
+                    # Add sync label group membership if enabled
+                    if (
+                        sync_label_resource
+                        and sync_label_resource not in mapped_memberships
+                    ):
+                        mapped_memberships = list(mapped_memberships) + [
+                            sync_label_resource
+                        ]
+
                     # Create a contact with source data but target's resource name
                     update_contact = Contact(
                         resource_name=resource_name,
@@ -2760,6 +2991,9 @@ class SyncEngine:
             # Use batch update for efficiency
             if updates_with_etags:
                 updated = api.batch_update_contacts(updates_with_etags)
+
+                # Collect contacts that need sync label added
+                contacts_for_sync_label: list[str] = []
 
                 # Update mappings with new etags and sync photos
                 for (resource_name, source_contact), updated_contact in zip(
@@ -2796,6 +3030,27 @@ class SyncEngine:
                         account_label=account_label,
                         result=result,
                     )
+
+                    # Track contacts that need sync label added
+                    # (must use modify_group_members, not batch_update_contacts)
+                    if sync_label_resource:
+                        contacts_for_sync_label.append(resource_name)
+
+                # Add contacts to sync label group (must be done via group API)
+                if sync_label_resource and contacts_for_sync_label:
+                    try:
+                        api.modify_group_members(
+                            resource_name=sync_label_resource,
+                            add_resource_names=contacts_for_sync_label,
+                        )
+                        logger.debug(
+                            f"Added {len(contacts_for_sync_label)} contacts to "
+                            f"sync label group in {account_label}"
+                        )
+                    except PeopleAPIError as e:
+                        logger.warning(
+                            f"Failed to add contacts to sync label group: {e}"
+                        )
 
         except PeopleAPIError as e:
             logger.error(f"Failed to update contacts in {account_label}: {e}")
