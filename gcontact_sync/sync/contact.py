@@ -63,6 +63,9 @@ class Contact:
     notes: str | None = None
     last_modified: datetime | None = None
     memberships: list[str] = field(default_factory=list)  # Contact group resource names
+    membership_names: list[str] = field(
+        default_factory=list
+    )  # Human-readable group names
 
     # Photo fields
     photo_url: str | None = None
@@ -273,8 +276,9 @@ class Contact:
             match even when one account has additional emails that the other
             doesn't have. This is the common case in contact sync scenarios.
         """
-        # Normalize and lowercase the display name
-        name = self._normalize_string(self.display_name)
+        # Normalize and lowercase the display name, sorting words alphabetically
+        # This handles name order variations like "Last, First" vs "First Last"
+        name = self._normalize_string(self.display_name, sort_words=True)
 
         # Get all normalized emails, sorted for consistency
         normalized_emails = sorted(
@@ -352,14 +356,23 @@ class Contact:
             - resource_name (different per account)
             - etag (different per account)
             - last_modified (metadata, not content)
+            - photo_url/photo_data (handled separately via _analyze_photo_change)
+            - memberships/membership_names (not synced between accounts)
 
         Returns:
             SHA-256 hash string of contact content
 
         Note:
             Lists are sorted before hashing to ensure consistent ordering.
+            Photos are excluded because: (1) photo_data isn't populated during
+            contact listing (too expensive), and (2) photos are compared separately
+            via photo_url in _analyze_photo_change.
+            Memberships are excluded because group assignments are not synced
+            between accounts (UPDATE_PERSON_FIELDS doesn't include memberships).
         """
         # Build a deterministic string from all content fields
+        # Photos excluded - they're compared separately via photo_url
+        # Memberships excluded - not synced between accounts
         content_parts = [
             f"display_name:{self.display_name}",
             f"given_name:{self.given_name or ''}",
@@ -368,8 +381,6 @@ class Contact:
             f"phones:{','.join(sorted(self._normalize_phones()))}",
             f"organizations:{','.join(sorted(self.organizations))}",
             f"notes:{self.notes or ''}",
-            f"memberships:{','.join(sorted(self.memberships))}",
-            f"photo_url:{self.photo_url or ''}",
         ]
 
         content_string = "\n".join(content_parts)
@@ -377,12 +388,15 @@ class Contact:
         # Generate SHA-256 hash
         return hashlib.sha256(content_string.encode("utf-8")).hexdigest()
 
-    def _normalize_string(self, value: str) -> str:
+    def _normalize_string(self, value: str, sort_words: bool = False) -> str:
         """
         Normalize a string for matching key generation.
 
         Args:
             value: String to normalize
+            sort_words: If True, sort words alphabetically before joining.
+                       This handles name order variations like "Last, First"
+                       vs "First Last".
 
         Returns:
             Normalized lowercase string with special characters removed
@@ -404,8 +418,14 @@ class Contact:
         normalized = re.sub(r"[^a-z0-9@\s]", "", normalized)
         normalized = re.sub(r"\s+", " ", normalized).strip()
 
-        # Remove spaces for key generation
-        normalized = normalized.replace(" ", "")
+        # Sort words alphabetically if requested (for name normalization)
+        # This handles "Last, First" vs "First Last" variations
+        if sort_words:
+            words = normalized.split()
+            normalized = "".join(sorted(words))
+        else:
+            # Remove spaces for key generation
+            normalized = normalized.replace(" ", "")
 
         return normalized
 
