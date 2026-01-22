@@ -377,8 +377,9 @@ class TestContactMatchingKey:
         key = contact.matching_key()
 
         # Uses first email (singular) format
+        # Name words are sorted alphabetically: "doe" < "john" -> "doejohn"
         assert "|email:" in key
-        assert "johndoe" in key
+        assert "doejohn" in key
         assert "john@examplecom" in key
 
     def test_matching_key_name_only(self):
@@ -394,7 +395,8 @@ class TestContactMatchingKey:
         key = contact.matching_key()
 
         # Without email or phone, uses name_only suffix
-        assert key == "johndoe|name_only"
+        # Name words are sorted alphabetically: "doe" < "john" -> "doejohn"
+        assert key == "doejohn|name_only"
 
     def test_matching_key_name_and_phone_no_email(self):
         """Test matching key falls back to phone when no email."""
@@ -409,8 +411,9 @@ class TestContactMatchingKey:
         key = contact.matching_key()
 
         # Uses first phone (singular) format
+        # Name words are sorted alphabetically: "doe" < "john" -> "doejohn"
         assert "|phone:" in key
-        assert "johndoe" in key
+        assert "doejohn" in key
         assert "1234567890" in key
 
     def test_matching_key_normalizes_unicode(self):
@@ -528,6 +531,75 @@ class TestContactMatchingKey:
         )
 
         # Both should match (phones sorted)
+        assert contact1.matching_key() == contact2.matching_key()
+
+    def test_matching_key_handles_name_word_order_variations(self):
+        """Test that different name formats produce the same matching key.
+
+        This is a common data quality issue where the same person has different
+        display name formats in different accounts:
+        - "Tiss, Susan" (Last, First format)
+        - "Susan Tiss" (First Last format)
+
+        Both should produce the same matching key to prevent cycling during sync.
+        """
+        # "Last, First" format (common in some contact systems)
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag1",
+            display_name="Tiss, Susan",
+            emails=["susan.tiss@example.com"],
+        )
+        # "First Last" format (common natural format)
+        contact2 = Contact(
+            resource_name="people/c456",
+            etag="etag2",
+            display_name="Susan Tiss",
+            emails=["susan.tiss@example.com"],
+        )
+
+        # Both contacts should produce the same matching key since they have
+        # the same email and represent the same person
+        assert contact1.matching_key() == contact2.matching_key()
+
+    def test_matching_key_handles_name_word_order_without_email(self):
+        """Test name word order normalization without shared email identifier."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag1",
+            display_name="Tiss, Susan",
+            emails=[],
+            phones=["+15551234567"],
+        )
+        contact2 = Contact(
+            resource_name="people/c456",
+            etag="etag2",
+            display_name="Susan Tiss",
+            emails=[],
+            phones=["+15551234567"],
+        )
+
+        # With same phone number, should match regardless of name order
+        assert contact1.matching_key() == contact2.matching_key()
+
+    def test_matching_key_handles_name_only_word_order(self):
+        """Test name word order normalization with name-only contacts."""
+        contact1 = Contact(
+            resource_name="people/c123",
+            etag="etag1",
+            display_name="Tiss, Susan",
+            emails=[],
+            phones=[],
+        )
+        contact2 = Contact(
+            resource_name="people/c456",
+            etag="etag2",
+            display_name="Susan Tiss",
+            emails=[],
+            phones=[],
+        )
+
+        # Name-only contacts should match regardless of word order
         assert contact1.matching_key() == contact2.matching_key()
 
 
@@ -1326,116 +1398,74 @@ class TestContactPhoto:
 
         assert "photos" not in result
 
-    def test_content_hash_includes_photo_url(self):
-        """Test that content hash includes photo URL."""
+    def test_content_hash_excludes_photos(self):
+        """Test that content hash excludes all photo fields.
+
+        Photos are compared separately via photo_url in _analyze_photo_change
+        because photo_data isn't populated during contact listing (too expensive).
+        """
         contact1 = Contact(
             resource_name="people/c123",
             etag="etag",
             display_name="John Doe",
             photo_url="https://example.com/photo1.jpg",
-        )
-        contact2 = Contact(
-            resource_name="people/c123",
-            etag="etag",
-            display_name="John Doe",
-            photo_url="https://example.com/photo2.jpg",
-        )
-
-        # Different photo URLs should produce different hashes
-        assert contact1.content_hash() != contact2.content_hash()
-
-    def test_content_hash_same_with_same_photo_url(self):
-        """Test that content hash is same with same photo URL."""
-        contact1 = Contact(
-            resource_name="people/c1",
-            etag="e1",
-            display_name="John Doe",
-            photo_url="https://example.com/photo.jpg",
-        )
-        contact2 = Contact(
-            resource_name="people/c2",
-            etag="e2",
-            display_name="John Doe",
-            photo_url="https://example.com/photo.jpg",
-        )
-
-        # Same photo URL should produce same hash (resource_name/etag ignored)
-        assert contact1.content_hash() == contact2.content_hash()
-
-    def test_content_hash_with_no_photo_url(self):
-        """Test that content hash works when photo_url is None."""
-        contact1 = Contact(
-            resource_name="people/c123",
-            etag="etag",
-            display_name="John Doe",
-            photo_url=None,
-        )
-        contact2 = Contact(
-            resource_name="people/c123",
-            etag="etag",
-            display_name="John Doe",
-            photo_url="",
-        )
-
-        # None and empty string should produce same hash for photo_url
-        assert contact1.content_hash() == contact2.content_hash()
-
-    def test_content_hash_excludes_photo_data(self):
-        """Test that content hash does not include photo_data (binary data)."""
-        contact1 = Contact(
-            resource_name="people/c123",
-            etag="etag",
-            display_name="John Doe",
-            photo_url="https://example.com/photo.jpg",
-            photo_data=b"photo_data_1",
-        )
-        contact2 = Contact(
-            resource_name="people/c123",
-            etag="etag",
-            display_name="John Doe",
-            photo_url="https://example.com/photo.jpg",
-            photo_data=b"photo_data_2",
-        )
-
-        # Different photo_data should not affect hash (only URL matters)
-        assert contact1.content_hash() == contact2.content_hash()
-
-    def test_content_hash_excludes_photo_etag(self):
-        """Test that content hash does not include photo_etag (metadata)."""
-        contact1 = Contact(
-            resource_name="people/c123",
-            etag="etag",
-            display_name="John Doe",
-            photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content_1",
             photo_etag="etag1",
         )
         contact2 = Contact(
             resource_name="people/c123",
             etag="etag",
             display_name="John Doe",
-            photo_url="https://example.com/photo.jpg",
+            photo_url="https://example.com/photo2.jpg",
+            photo_data=b"photo_content_2",
             photo_etag="etag2",
         )
 
-        # Different photo_etag should not affect hash
+        # All photo fields excluded from hash - contacts are equal
         assert contact1.content_hash() == contact2.content_hash()
 
-    def test_equality_with_different_photo_url(self):
-        """Test that contacts with different photo URLs are not equal."""
+    def test_content_hash_same_without_photos(self):
+        """Test that content hash is same for contacts without photos."""
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Doe",
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="John Doe",
+        )
+
+        # Same content without photos = same hash
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_equality_ignores_all_photo_fields(self):
+        """Test that contacts with different photo fields are still equal.
+
+        Photos are excluded from content_hash because:
+        1. photo_data isn't populated during contact listing (too expensive)
+        2. Photos are compared separately via photo_url in _analyze_photo_change
+        """
         contact1 = Contact(
             resource_name="people/c123",
             etag="etag",
             display_name="John Doe",
             photo_url="https://example.com/photo1.jpg",
+            photo_data=b"photo_content_1",
+            photo_etag="etag1",
         )
         contact2 = Contact(
             resource_name="people/c123",
             etag="etag",
             display_name="John Doe",
             photo_url="https://example.com/photo2.jpg",
+            photo_data=b"photo_content_2",
+            photo_etag="etag2",
         )
 
-        assert contact1 != contact2
+        # All photo fields ignored - contacts are equal
+        assert contact1 == contact2
 
     def test_roundtrip_conversion_photo_not_preserved(self):
         """Test that photo does NOT survive API format roundtrip.
@@ -1531,36 +1561,61 @@ class TestContactMemberships:
         api_format = contact.to_api_format()
         assert "memberships" not in api_format
 
-    def test_content_hash_includes_memberships(self):
-        """Verify content hash changes when memberships change."""
-        contact1 = Contact(
-            resource_name="people/1",
-            etag="e1",
-            display_name="Test Person",
-            memberships=["contactGroups/a"],
-        )
-        contact2 = Contact(
-            resource_name="people/2",
-            etag="e2",
-            display_name="Test Person",
-            memberships=["contactGroups/b"],
-        )
-        # Different memberships should produce different hashes
-        assert contact1.content_hash() != contact2.content_hash()
+    def test_content_hash_excludes_memberships(self):
+        """Verify content hash excludes membership_names.
 
-    def test_content_hash_stable_with_same_memberships(self):
-        """Verify content hash is stable for same memberships."""
+        Memberships are excluded from content_hash because group assignments
+        are not synced between accounts (UPDATE_PERSON_FIELDS doesn't include
+        memberships). Including them would cause infinite sync cycling when
+        contacts have different group assignments in each account.
+        """
+        contact1 = Contact(
+            resource_name="people/1",
+            etag="e1",
+            display_name="Test Person",
+            memberships=["contactGroups/abc123"],
+            membership_names=["Family"],
+        )
+        contact2 = Contact(
+            resource_name="people/2",
+            etag="e2",
+            display_name="Test Person",
+            memberships=["contactGroups/xyz789"],  # Different memberships
+            membership_names=["Work", "Friends"],  # Different names
+        )
+        # Memberships are excluded, so same content = same hash
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_content_hash_ignores_different_membership_names(self):
+        """Verify content hash ignores different membership_names."""
+        contact1 = Contact(
+            resource_name="people/1",
+            etag="e1",
+            display_name="Test Person",
+            membership_names=["Family"],
+        )
+        contact2 = Contact(
+            resource_name="people/2",
+            etag="e2",
+            display_name="Test Person",
+            membership_names=["Work"],  # Different groups
+        )
+        # Memberships excluded - same content produces same hash
+        assert contact1.content_hash() == contact2.content_hash()
+
+    def test_content_hash_ignores_membership_order(self):
+        """Verify content hash ignores membership_names entirely."""
         contact1 = Contact(
             resource_name="people/1",
             etag="e1",
             display_name="Test",
-            memberships=["contactGroups/a", "contactGroups/b"],
+            membership_names=["Family", "Friends"],
         )
         contact2 = Contact(
             resource_name="people/2",
             etag="e2",
             display_name="Test",
-            memberships=["contactGroups/b", "contactGroups/a"],  # Different order
+            membership_names=[],  # No memberships
         )
-        # Same memberships (different order) should produce same hash
+        # Memberships excluded - hash based only on syncable content
         assert contact1.content_hash() == contact2.content_hash()

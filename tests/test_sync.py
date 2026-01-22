@@ -141,6 +141,7 @@ def contact_with_photo1():
         family_name="Doe",
         emails=["john@example.com"],
         photo_url="https://example.com/photo1.jpg",
+        photo_data=b"photo_content_1",
         photo_etag="photo_etag1",
         last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
     )
@@ -156,6 +157,7 @@ def contact_without_photo1():
         given_name="John",
         family_name="Doe",
         emails=["john@example.com"],
+        photo_data=None,
         last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
     )
 
@@ -171,6 +173,7 @@ def contact_with_different_photo2():
         family_name="Doe",
         emails=["john@example.com"],
         photo_url="https://example.com/photo2.jpg",
+        photo_data=b"photo_content_2",  # Different photo data
         photo_etag="photo_etag2",
         last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
     )
@@ -2921,45 +2924,58 @@ class TestMembershipSyncInContactOperations:
 class TestPhotoSync:
     """Tests for photo synchronization functionality."""
 
-    def test_contact_hash_includes_photo_url(
+    def test_contact_hash_excludes_photo_fields(
         self, contact_with_photo1, contact_without_photo1
     ):
-        """Test that photo URL is included in content hash."""
+        """Test that photo fields are excluded from content hash.
+
+        Photos are compared separately via photo_url in _analyze_photo_change
+        because photo_data isn't populated during contact listing (too expensive).
+        """
         hash_with_photo = contact_with_photo1.content_hash()
         hash_without_photo = contact_without_photo1.content_hash()
 
-        # Hashes should differ when photo URL differs
-        assert hash_with_photo != hash_without_photo
+        # Hashes should be SAME - photos excluded from hash
+        assert hash_with_photo == hash_without_photo
 
-    def test_contact_hash_different_photo_urls(
+    def test_contact_hash_same_with_different_photos(
         self, contact_with_photo1, contact_with_different_photo2
     ):
-        """Test that different photo URLs produce different hashes."""
+        """Test that different photo data does not affect content hash."""
         hash1 = contact_with_photo1.content_hash()
         hash2 = contact_with_different_photo2.content_hash()
 
-        # Hashes should differ when photo URLs differ
-        assert hash1 != hash2
+        # Hashes should be SAME - photos excluded from hash
+        assert hash1 == hash2
 
-    def test_analyze_detects_photo_change(
+    def test_photo_only_changes_do_not_trigger_sync(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test analyze detects when photo changes between accounts."""
-        # Contact in account 1 has photo
+        """Test that photo-only differences do NOT trigger contact sync.
+
+        Photos are excluded from content_hash because:
+        1. photo_data isn't populated during contact listing (too expensive)
+        2. Photo URLs differ between accounts even for the same photo
+        3. This prevents infinite cycling when photos are synced
+
+        Photos sync when content changes (as part of conflict resolution).
+        """
+        # Same contact content, different photos
         contact1 = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
-        # Contact in account 2 has no photo
         contact2 = Contact(
             "people/2",
             "e2",
             "John Doe",
             emails=["john@example.com"],
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
@@ -2968,29 +2984,30 @@ class TestPhotoSync:
 
         result = sync_engine.analyze()
 
-        # Should detect photo change and update account 2
-        assert len(result.to_update_in_account2) == 1
-        assert result.to_update_in_account2[0][0] == "people/2"
+        # Photo-only differences don't trigger sync (same content hash)
+        assert len(result.to_update_in_account2) == 0
+        assert len(result.matched_contacts) == 1
 
-    def test_analyze_photo_added_to_account1(
+    def test_photo_syncs_when_content_changes(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test analyze handles photo added to account 1."""
-        # Contact in account 1 now has photo
+        """Test that photos sync when contact content changes."""
+        # Contact with different content AND photo
         contact1 = Contact(
             "people/1",
             "e1",
             "John Doe",
-            emails=["john@example.com"],
+            emails=["john@example.com", "johnd@work.com"],  # Different emails
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"new_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
-        # Contact in account 2 unchanged
         contact2 = Contact(
             "people/2",
             "e2",
             "John Doe",
-            emails=["john@example.com"],
+            emails=["john@example.com"],  # Missing email
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
@@ -2999,68 +3016,7 @@ class TestPhotoSync:
 
         result = sync_engine.analyze()
 
-        # Should propagate photo to account 2
-        assert len(result.to_update_in_account2) == 1
-
-    def test_analyze_photo_removed_from_account1(
-        self, sync_engine, mock_api1, mock_api2, mock_database
-    ):
-        """Test analyze handles photo removed from account 1."""
-        # Contact in account 1 has no photo (was removed)
-        contact1 = Contact(
-            "people/1",
-            "e1",
-            "John Doe",
-            emails=["john@example.com"],
-            last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
-        )
-        # Contact in account 2 still has old photo
-        contact2 = Contact(
-            "people/2",
-            "e2",
-            "John Doe",
-            emails=["john@example.com"],
-            photo_url="https://example.com/old_photo.jpg",
-            last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
-        )
-
-        mock_api1.list_contacts.return_value = ([contact1], "token1")
-        mock_api2.list_contacts.return_value = ([contact2], "token2")
-
-        result = sync_engine.analyze()
-
-        # Should remove photo from account 2
-        assert len(result.to_update_in_account2) == 1
-
-    def test_analyze_photo_conflict_last_modified_wins(
-        self, sync_engine, mock_api1, mock_api2, mock_database
-    ):
-        """Test photo conflict resolution using last modified wins strategy."""
-        # Contact in account 1 is newer with photo A
-        contact1 = Contact(
-            "people/1",
-            "e1",
-            "John Doe",
-            emails=["john@example.com"],
-            photo_url="https://example.com/photo_a.jpg",
-            last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
-        )
-        # Contact in account 2 is older with photo B
-        contact2 = Contact(
-            "people/2",
-            "e2",
-            "John Doe",
-            emails=["john@example.com"],
-            photo_url="https://example.com/photo_b.jpg",
-            last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
-        )
-
-        mock_api1.list_contacts.return_value = ([contact1], "token1")
-        mock_api2.list_contacts.return_value = ([contact2], "token2")
-
-        result = sync_engine.analyze()
-
-        # Account 1 is newer, so photo A should win
+        # Content differs, so sync triggers (photo syncs as part of update)
         assert len(result.to_update_in_account2) == 1
         assert result.stats.conflicts_resolved == 1
 
@@ -3074,6 +3030,7 @@ class TestPhotoSync:
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content",
         )
         created = Contact(
             "people/new",
@@ -3081,6 +3038,7 @@ class TestPhotoSync:
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content",
         )
 
         mock_api1.list_contacts.return_value = ([contact], "token1")
@@ -3093,26 +3051,33 @@ class TestPhotoSync:
         assert result.stats.created_in_account2 == 1
         mock_api2.batch_create_contacts.assert_called_once()
 
-    def test_sync_photo_only_in_dry_run(
+    def test_sync_photo_only_does_not_trigger_update(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test dry run mode detects photo changes without applying them."""
-        # Contact in account 1 has new photo
+        """Test that photo-only differences don't trigger sync.
+
+        Photo-only changes are excluded from content_hash to prevent
+        infinite sync cycling (photo URLs always differ between accounts).
+        Photos are synced when content changes, via _analyze_photo_change.
+        """
+        # Contact in account 1 has one photo
         contact1 = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/new_photo.jpg",
+            photo_data=b"new_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
-        # Contact in account 2 has old photo
+        # Contact in account 2 has different photo (same content otherwise)
         contact2 = Contact(
             "people/2",
             "e2",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/old_photo.jpg",
+            photo_data=b"old_photo_content",
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
@@ -3121,22 +3086,29 @@ class TestPhotoSync:
 
         result = sync_engine.sync(dry_run=True)
 
-        # Should detect photo change
-        assert len(result.to_update_in_account2) == 1
-        # But not execute the update
-        mock_api2.batch_update_contacts.assert_not_called()
+        # Photo-only differences should NOT trigger updates
+        assert len(result.to_update_in_account2) == 0
+        assert len(result.to_update_in_account1) == 0
+        # Contacts should be matched
+        assert len(result.matched_contacts) == 1
 
-    def test_sync_bidirectional_photo_changes(
+    def test_sync_bidirectional_photo_only_does_not_trigger_update(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test bidirectional sync with photo changes in both accounts."""
-        # Account 1: Contact A has photo (newer), Contact B has no photo (older)
+        """Test that photo-only differences don't trigger bidirectional sync.
+
+        Photo-only changes are excluded from content_hash to prevent
+        infinite sync cycling. Contacts with matching content but different
+        photos should NOT generate updates.
+        """
+        # Account 1: Contact A has photo, Contact B has no photo
         contact1a = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/john.jpg",
+            photo_data=b"john_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
         contact1b = Contact(
@@ -3144,15 +3116,18 @@ class TestPhotoSync:
             "e2",
             "Jane Smith",
             emails=["jane@example.com"],
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
-        # Account 2: Contact A has no photo (older), Contact B has photo (newer)
+        # Account 2: Contact A has no photo, Contact B has photo
+        # (Same content as Account 1, just different photos)
         contact2a = Contact(
             "people/3",
             "e3",
             "John Doe",
             emails=["john@example.com"],
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
         contact2b = Contact(
@@ -3161,6 +3136,7 @@ class TestPhotoSync:
             "Jane Smith",
             emails=["jane@example.com"],
             photo_url="https://example.com/jane.jpg",
+            photo_data=b"jane_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
 
@@ -3169,9 +3145,11 @@ class TestPhotoSync:
 
         result = sync_engine.analyze()
 
-        # Both should have updates
-        assert len(result.to_update_in_account1) == 1  # Jane gets photo
-        assert len(result.to_update_in_account2) == 1  # John gets photo
+        # Photo-only differences should NOT trigger any updates
+        assert len(result.to_update_in_account1) == 0
+        assert len(result.to_update_in_account2) == 0
+        # Both contacts should be matched
+        assert len(result.matched_contacts) == 2
 
     def test_contact_with_photo_data(self):
         """Test contact can hold binary photo data."""

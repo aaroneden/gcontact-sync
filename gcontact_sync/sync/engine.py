@@ -605,6 +605,11 @@ class SyncEngine:
             account_label=self.account2_email,
         )
 
+        # Populate membership_names for proper content_hash comparison
+        # (uses group names instead of resource IDs which differ between accounts)
+        self._populate_membership_names(contacts1, groups1)
+        self._populate_membership_names(contacts2, groups2)
+
         # Track total contact counts (all contacts, for matching)
         result.stats.contacts_in_account1 = len(contacts1)
         result.stats.contacts_in_account2 = len(contacts2)
@@ -1975,6 +1980,31 @@ class SyncEngine:
         logger.info(f"Fetched {len(contacts)} contacts from {label}")
         return contacts, new_token
 
+    def _populate_membership_names(
+        self,
+        contacts: list[Contact],
+        groups: list[ContactGroup],
+    ) -> None:
+        """
+        Populate membership_names field for contacts using group resource→name mapping.
+
+        This allows content_hash to use human-readable group names instead of
+        resource IDs, enabling proper cross-account comparison (since the same
+        group has different resource IDs in each account).
+
+        Args:
+            contacts: List of contacts to update (modified in place)
+            groups: List of contact groups to build mapping from
+        """
+        # Build resource_name → group_name mapping
+        resource_to_name: dict[str, str] = {g.resource_name: g.name for g in groups}
+
+        for contact in contacts:
+            contact.membership_names = [
+                resource_to_name.get(res, res)  # Fall back to resource if unknown
+                for res in contact.memberships
+            ]
+
     def _build_contact_index(
         self, contacts: list[Contact], account_label: str = "unknown"
     ) -> dict[str, Contact]:
@@ -2270,6 +2300,9 @@ class SyncEngine:
         hash2 = contact2.content_hash()
 
         # Same content - no sync needed
+        # Note: Photos are NOT compared here because photo URLs differ between
+        # accounts even for the same photo. Photo sync happens when contact
+        # content changes and the winner's photo is propagated.
         if hash1 == hash2:
             logger.debug(f"Contact in sync: {contact1.display_name}")
             if mlog:
