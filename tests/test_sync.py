@@ -141,6 +141,7 @@ def contact_with_photo1():
         family_name="Doe",
         emails=["john@example.com"],
         photo_url="https://example.com/photo1.jpg",
+        photo_data=b"photo_content_1",
         photo_etag="photo_etag1",
         last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
     )
@@ -156,6 +157,7 @@ def contact_without_photo1():
         given_name="John",
         family_name="Doe",
         emails=["john@example.com"],
+        photo_data=None,
         last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
     )
 
@@ -171,6 +173,7 @@ def contact_with_different_photo2():
         family_name="Doe",
         emails=["john@example.com"],
         photo_url="https://example.com/photo2.jpg",
+        photo_data=b"photo_content_2",  # Different photo data
         photo_etag="photo_etag2",
         last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
     )
@@ -2921,45 +2924,58 @@ class TestMembershipSyncInContactOperations:
 class TestPhotoSync:
     """Tests for photo synchronization functionality."""
 
-    def test_contact_hash_includes_photo_url(
+    def test_contact_hash_excludes_photo_fields(
         self, contact_with_photo1, contact_without_photo1
     ):
-        """Test that photo URL is included in content hash."""
+        """Test that photo fields are excluded from content hash.
+
+        Photos are compared separately via photo_url in _analyze_photo_change
+        because photo_data isn't populated during contact listing (too expensive).
+        """
         hash_with_photo = contact_with_photo1.content_hash()
         hash_without_photo = contact_without_photo1.content_hash()
 
-        # Hashes should differ when photo URL differs
-        assert hash_with_photo != hash_without_photo
+        # Hashes should be SAME - photos excluded from hash
+        assert hash_with_photo == hash_without_photo
 
-    def test_contact_hash_different_photo_urls(
+    def test_contact_hash_same_with_different_photos(
         self, contact_with_photo1, contact_with_different_photo2
     ):
-        """Test that different photo URLs produce different hashes."""
+        """Test that different photo data does not affect content hash."""
         hash1 = contact_with_photo1.content_hash()
         hash2 = contact_with_different_photo2.content_hash()
 
-        # Hashes should differ when photo URLs differ
-        assert hash1 != hash2
+        # Hashes should be SAME - photos excluded from hash
+        assert hash1 == hash2
 
-    def test_analyze_detects_photo_change(
+    def test_photo_only_changes_do_not_trigger_sync(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test analyze detects when photo changes between accounts."""
-        # Contact in account 1 has photo
+        """Test that photo-only differences do NOT trigger contact sync.
+
+        Photos are excluded from content_hash because:
+        1. photo_data isn't populated during contact listing (too expensive)
+        2. Photo URLs differ between accounts even for the same photo
+        3. This prevents infinite cycling when photos are synced
+
+        Photos sync when content changes (as part of conflict resolution).
+        """
+        # Same contact content, different photos
         contact1 = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
-        # Contact in account 2 has no photo
         contact2 = Contact(
             "people/2",
             "e2",
             "John Doe",
             emails=["john@example.com"],
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
@@ -2968,29 +2984,30 @@ class TestPhotoSync:
 
         result = sync_engine.analyze()
 
-        # Should detect photo change and update account 2
-        assert len(result.to_update_in_account2) == 1
-        assert result.to_update_in_account2[0][0] == "people/2"
+        # Photo-only differences don't trigger sync (same content hash)
+        assert len(result.to_update_in_account2) == 0
+        assert len(result.matched_contacts) == 1
 
-    def test_analyze_photo_added_to_account1(
+    def test_photo_syncs_when_content_changes(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test analyze handles photo added to account 1."""
-        # Contact in account 1 now has photo
+        """Test that photos sync when contact content changes."""
+        # Contact with different content AND photo
         contact1 = Contact(
             "people/1",
             "e1",
             "John Doe",
-            emails=["john@example.com"],
+            emails=["john@example.com", "johnd@work.com"],  # Different emails
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"new_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
-        # Contact in account 2 unchanged
         contact2 = Contact(
             "people/2",
             "e2",
             "John Doe",
-            emails=["john@example.com"],
+            emails=["john@example.com"],  # Missing email
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
@@ -2999,68 +3016,7 @@ class TestPhotoSync:
 
         result = sync_engine.analyze()
 
-        # Should propagate photo to account 2
-        assert len(result.to_update_in_account2) == 1
-
-    def test_analyze_photo_removed_from_account1(
-        self, sync_engine, mock_api1, mock_api2, mock_database
-    ):
-        """Test analyze handles photo removed from account 1."""
-        # Contact in account 1 has no photo (was removed)
-        contact1 = Contact(
-            "people/1",
-            "e1",
-            "John Doe",
-            emails=["john@example.com"],
-            last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
-        )
-        # Contact in account 2 still has old photo
-        contact2 = Contact(
-            "people/2",
-            "e2",
-            "John Doe",
-            emails=["john@example.com"],
-            photo_url="https://example.com/old_photo.jpg",
-            last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
-        )
-
-        mock_api1.list_contacts.return_value = ([contact1], "token1")
-        mock_api2.list_contacts.return_value = ([contact2], "token2")
-
-        result = sync_engine.analyze()
-
-        # Should remove photo from account 2
-        assert len(result.to_update_in_account2) == 1
-
-    def test_analyze_photo_conflict_last_modified_wins(
-        self, sync_engine, mock_api1, mock_api2, mock_database
-    ):
-        """Test photo conflict resolution using last modified wins strategy."""
-        # Contact in account 1 is newer with photo A
-        contact1 = Contact(
-            "people/1",
-            "e1",
-            "John Doe",
-            emails=["john@example.com"],
-            photo_url="https://example.com/photo_a.jpg",
-            last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
-        )
-        # Contact in account 2 is older with photo B
-        contact2 = Contact(
-            "people/2",
-            "e2",
-            "John Doe",
-            emails=["john@example.com"],
-            photo_url="https://example.com/photo_b.jpg",
-            last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
-        )
-
-        mock_api1.list_contacts.return_value = ([contact1], "token1")
-        mock_api2.list_contacts.return_value = ([contact2], "token2")
-
-        result = sync_engine.analyze()
-
-        # Account 1 is newer, so photo A should win
+        # Content differs, so sync triggers (photo syncs as part of update)
         assert len(result.to_update_in_account2) == 1
         assert result.stats.conflicts_resolved == 1
 
@@ -3074,6 +3030,7 @@ class TestPhotoSync:
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content",
         )
         created = Contact(
             "people/new",
@@ -3081,6 +3038,7 @@ class TestPhotoSync:
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/photo.jpg",
+            photo_data=b"photo_content",
         )
 
         mock_api1.list_contacts.return_value = ([contact], "token1")
@@ -3093,26 +3051,33 @@ class TestPhotoSync:
         assert result.stats.created_in_account2 == 1
         mock_api2.batch_create_contacts.assert_called_once()
 
-    def test_sync_photo_only_in_dry_run(
+    def test_sync_photo_only_does_not_trigger_update(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test dry run mode detects photo changes without applying them."""
-        # Contact in account 1 has new photo
+        """Test that photo-only differences don't trigger sync.
+
+        Photo-only changes are excluded from content_hash to prevent
+        infinite sync cycling (photo URLs always differ between accounts).
+        Photos are synced when content changes, via _analyze_photo_change.
+        """
+        # Contact in account 1 has one photo
         contact1 = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/new_photo.jpg",
+            photo_data=b"new_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
-        # Contact in account 2 has old photo
+        # Contact in account 2 has different photo (same content otherwise)
         contact2 = Contact(
             "people/2",
             "e2",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/old_photo.jpg",
+            photo_data=b"old_photo_content",
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
@@ -3121,22 +3086,29 @@ class TestPhotoSync:
 
         result = sync_engine.sync(dry_run=True)
 
-        # Should detect photo change
-        assert len(result.to_update_in_account2) == 1
-        # But not execute the update
-        mock_api2.batch_update_contacts.assert_not_called()
+        # Photo-only differences should NOT trigger updates
+        assert len(result.to_update_in_account2) == 0
+        assert len(result.to_update_in_account1) == 0
+        # Contacts should be matched
+        assert len(result.matched_contacts) == 1
 
-    def test_sync_bidirectional_photo_changes(
+    def test_sync_bidirectional_photo_only_does_not_trigger_update(
         self, sync_engine, mock_api1, mock_api2, mock_database
     ):
-        """Test bidirectional sync with photo changes in both accounts."""
-        # Account 1: Contact A has photo (newer), Contact B has no photo (older)
+        """Test that photo-only differences don't trigger bidirectional sync.
+
+        Photo-only changes are excluded from content_hash to prevent
+        infinite sync cycling. Contacts with matching content but different
+        photos should NOT generate updates.
+        """
+        # Account 1: Contact A has photo, Contact B has no photo
         contact1a = Contact(
             "people/1",
             "e1",
             "John Doe",
             emails=["john@example.com"],
             photo_url="https://example.com/john.jpg",
+            photo_data=b"john_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
         contact1b = Contact(
@@ -3144,15 +3116,18 @@ class TestPhotoSync:
             "e2",
             "Jane Smith",
             emails=["jane@example.com"],
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
 
-        # Account 2: Contact A has no photo (older), Contact B has photo (newer)
+        # Account 2: Contact A has no photo, Contact B has photo
+        # (Same content as Account 1, just different photos)
         contact2a = Contact(
             "people/3",
             "e3",
             "John Doe",
             emails=["john@example.com"],
+            photo_data=None,
             last_modified=datetime(2024, 6, 10, tzinfo=timezone.utc),
         )
         contact2b = Contact(
@@ -3161,6 +3136,7 @@ class TestPhotoSync:
             "Jane Smith",
             emails=["jane@example.com"],
             photo_url="https://example.com/jane.jpg",
+            photo_data=b"jane_photo_content",
             last_modified=datetime(2024, 6, 20, tzinfo=timezone.utc),
         )
 
@@ -3169,9 +3145,11 @@ class TestPhotoSync:
 
         result = sync_engine.analyze()
 
-        # Both should have updates
-        assert len(result.to_update_in_account1) == 1  # Jane gets photo
-        assert len(result.to_update_in_account2) == 1  # John gets photo
+        # Photo-only differences should NOT trigger any updates
+        assert len(result.to_update_in_account1) == 0
+        assert len(result.to_update_in_account2) == 0
+        # Both contacts should be matched
+        assert len(result.matched_contacts) == 2
 
     def test_contact_with_photo_data(self):
         """Test contact can hold binary photo data."""
@@ -3208,6 +3186,2412 @@ class TestPhotoSync:
         api_format = contact_without_photo1.to_api_format()
 
         assert "photos" not in api_format
+
+
+# ==============================================================================
+# Contact Filtering Tests
+# ==============================================================================
+
+
+class TestFilterContactsByGroups:
+    """Tests for the _filter_contacts_by_groups method."""
+
+    @pytest.fixture
+    def contact_in_work_group(self):
+        """Create a contact in the 'Work' group."""
+        return Contact(
+            resource_name="people/work1",
+            etag="etag_work1",
+            display_name="Alice Work",
+            given_name="Alice",
+            family_name="Work",
+            emails=["alice@work.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_family_group(self):
+        """Create a contact in the 'Family' group."""
+        return Contact(
+            resource_name="people/family1",
+            etag="etag_family1",
+            display_name="Bob Family",
+            given_name="Bob",
+            family_name="Family",
+            emails=["bob@family.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_multiple_groups(self):
+        """Create a contact in multiple groups (Work and Family)."""
+        return Contact(
+            resource_name="people/multi1",
+            etag="etag_multi1",
+            display_name="Charlie Multi",
+            given_name="Charlie",
+            family_name="Multi",
+            emails=["charlie@example.com"],
+            memberships=["contactGroups/work123", "contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_with_no_groups(self):
+        """Create a contact with no group memberships."""
+        return Contact(
+            resource_name="people/nogroup1",
+            etag="etag_nogroup1",
+            display_name="Dave NoGroup",
+            given_name="Dave",
+            family_name="NoGroup",
+            emails=["dave@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_friends_group(self):
+        """Create a contact in the 'Friends' group."""
+        return Contact(
+            resource_name="people/friends1",
+            etag="etag_friends1",
+            display_name="Eve Friends",
+            given_name="Eve",
+            family_name="Friends",
+            emails=["eve@friends.com"],
+            memberships=["contactGroups/friends789"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    def test_filter_contacts_matching_group_included(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test that contacts with matching groups are included."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].resource_name == "people/work1"
+        assert filtered[0].display_name == "Alice Work"
+
+    def test_filter_contacts_no_match_excluded(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test that contacts without matching groups are excluded."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/friends789"])  # Neither has this
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_contacts_multiple_groups_or_logic(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test that contacts matching ANY allowed group are included (OR logic)."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/work123", "contactGroups/family456"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Both contacts should be included since each matches one group
+        assert len(filtered) == 2
+        assert contact_in_work_group in filtered
+        assert contact_in_family_group in filtered
+
+    def test_filter_contacts_contact_in_multiple_groups_matches_one(
+        self, sync_engine, contact_in_multiple_groups
+    ):
+        """Test contact with multiple groups is included if ANY group matches."""
+        contacts = [contact_in_multiple_groups]
+        # Only allow "work" group, but contact is in both "work" and "family"
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Charlie Multi"
+
+    def test_filter_contacts_empty_filter_includes_all(
+        self,
+        sync_engine,
+        contact_in_work_group,
+        contact_in_family_group,
+        contact_with_no_groups,
+    ):
+        """Test that empty filter includes all contacts (backwards compatibility)."""
+        contacts = [
+            contact_in_work_group,
+            contact_in_family_group,
+            contact_with_no_groups,
+        ]
+        allowed_groups = frozenset()  # Empty filter
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # All contacts should be included when filter is empty
+        assert len(filtered) == 3
+        assert contact_in_work_group in filtered
+        assert contact_in_family_group in filtered
+        assert contact_with_no_groups in filtered
+
+    def test_filter_contacts_no_memberships_excluded_when_filter_active(
+        self, sync_engine, contact_with_no_groups, contact_in_work_group
+    ):
+        """Test contacts with no group memberships are excluded when filter active."""
+        contacts = [contact_with_no_groups, contact_in_work_group]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Only contact with matching group should be included
+        assert len(filtered) == 1
+        assert filtered[0].resource_name == "people/work1"
+        # Contact with no memberships should be excluded
+        assert contact_with_no_groups not in filtered
+
+    def test_filter_contacts_preserves_order(
+        self,
+        sync_engine,
+        contact_in_work_group,
+        contact_in_family_group,
+        contact_in_friends_group,
+    ):
+        """Test that filter preserves the original order of contacts."""
+        contacts = [
+            contact_in_work_group,
+            contact_in_family_group,
+            contact_in_friends_group,
+        ]
+        allowed_groups = frozenset(
+            ["contactGroups/work123", "contactGroups/friends789"]
+        )
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should preserve order: work first, then friends (family excluded)
+        assert len(filtered) == 2
+        assert filtered[0].display_name == "Alice Work"
+        assert filtered[1].display_name == "Eve Friends"
+
+    def test_filter_contacts_empty_list(self, sync_engine):
+        """Test filtering an empty contacts list."""
+        contacts = []
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_contacts_all_excluded(
+        self, sync_engine, contact_in_work_group, contact_in_family_group
+    ):
+        """Test when all contacts are filtered out."""
+        contacts = [contact_in_work_group, contact_in_family_group]
+        allowed_groups = frozenset(["contactGroups/nonexistent999"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_contacts_single_group_single_contact(
+        self, sync_engine, contact_in_work_group
+    ):
+        """Test filtering with single contact and single allowed group."""
+        contacts = [contact_in_work_group]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0] == contact_in_work_group
+
+
+class TestResolveGroupFilters:
+    """Tests for the _resolve_group_filters method."""
+
+    @pytest.fixture
+    def work_group(self):
+        """Create a Work contact group."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        return ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+    @pytest.fixture
+    def family_group(self):
+        """Create a Family contact group."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        return ContactGroup(
+            resource_name="contactGroups/family456",
+            etag="etag_family",
+            name="Family",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+    @pytest.fixture
+    def friends_group(self):
+        """Create a Friends contact group."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        return ContactGroup(
+            resource_name="contactGroups/friends789",
+            etag="etag_friends",
+            name="Friends",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+    def test_resolve_group_filters_by_display_name(
+        self, sync_engine, work_group, family_group
+    ):
+        """Test resolving group filters by display name."""
+        configured_groups = ["Work", "Family"]
+        fetched_groups = [work_group, family_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 2
+        assert "contactGroups/work123" in resolved
+        assert "contactGroups/family456" in resolved
+
+    def test_resolve_group_filters_by_resource_name(
+        self, sync_engine, work_group, family_group
+    ):
+        """Test resolving group filters by resource name."""
+        configured_groups = ["contactGroups/work123", "contactGroups/family456"]
+        fetched_groups = [work_group, family_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 2
+        assert "contactGroups/work123" in resolved
+        assert "contactGroups/family456" in resolved
+
+    def test_resolve_group_filters_case_insensitive_display_name(
+        self, sync_engine, work_group
+    ):
+        """Test that display name matching is case-insensitive."""
+        # Test various case variations
+        for name in ["work", "WORK", "Work", "wOrK"]:
+            configured_groups = [name]
+            fetched_groups = [work_group]
+
+            resolved = sync_engine._resolve_group_filters(
+                configured_groups, fetched_groups, "Account 1"
+            )
+
+            assert len(resolved) == 1
+            assert "contactGroups/work123" in resolved
+
+    def test_resolve_group_filters_mixed_display_and_resource_names(
+        self, sync_engine, work_group, family_group, friends_group
+    ):
+        """Test resolving with mix of display names and resource names."""
+        configured_groups = ["Work", "contactGroups/family456", "friends"]
+        fetched_groups = [work_group, family_group, friends_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 3
+        assert "contactGroups/work123" in resolved
+        assert "contactGroups/family456" in resolved
+        assert "contactGroups/friends789" in resolved
+
+    def test_resolve_group_filters_nonexistent_group_skipped(
+        self, sync_engine, work_group
+    ):
+        """Test that non-existent groups are skipped and warning is logged."""
+        configured_groups = ["Work", "NonexistentGroup"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Only the existing group should be resolved
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_resolve_group_filters_empty_config(
+        self, sync_engine, work_group, family_group
+    ):
+        """Test resolving with empty configured groups list."""
+        configured_groups = []
+        fetched_groups = [work_group, family_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should return empty frozenset
+        assert len(resolved) == 0
+
+    def test_resolve_group_filters_empty_fetched_groups(self, sync_engine):
+        """Test resolving when no groups are fetched from the account."""
+        configured_groups = ["Work", "Family"]
+        fetched_groups = []
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # No groups can be resolved
+        assert len(resolved) == 0
+
+    def test_resolve_group_filters_returns_frozenset(self, sync_engine, work_group):
+        """Test that the method returns a frozenset for efficient lookup."""
+        configured_groups = ["Work"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert isinstance(resolved, frozenset)
+
+    def test_resolve_group_filters_all_nonexistent(self, sync_engine, work_group):
+        """Test when all configured groups don't exist."""
+        configured_groups = ["NonexistentGroup1", "NonexistentGroup2"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 0
+
+
+class TestFilterPerAccountIndependence:
+    """Tests for per-account filter independence."""
+
+    @pytest.fixture
+    def account1_contact_work(self):
+        """Contact from account 1 in Work group."""
+        return Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Account1 Worker",
+            given_name="Account1",
+            family_name="Worker",
+            emails=["acc1.worker@example.com"],
+            memberships=["contactGroups/work_acc1"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def account1_contact_family(self):
+        """Contact from account 1 in Family group."""
+        return Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Account1 Family",
+            given_name="Account1",
+            family_name="FamilyMember",
+            emails=["acc1.family@example.com"],
+            memberships=["contactGroups/family_acc1"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def account2_contact_work(self):
+        """Contact from account 2 in Work group."""
+        return Contact(
+            resource_name="people/acc2_work",
+            etag="etag_acc2_work",
+            display_name="Account2 Worker",
+            given_name="Account2",
+            family_name="Worker",
+            emails=["acc2.worker@example.com"],
+            memberships=["contactGroups/work_acc2"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def account2_contact_friends(self):
+        """Contact from account 2 in Friends group."""
+        return Contact(
+            resource_name="people/acc2_friends",
+            etag="etag_acc2_friends",
+            display_name="Account2 Friend",
+            given_name="Account2",
+            family_name="Friend",
+            emails=["acc2.friend@example.com"],
+            memberships=["contactGroups/friends_acc2"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    def test_filter_accounts_independent_different_filters(
+        self,
+        sync_engine,
+        account1_contact_work,
+        account1_contact_family,
+        account2_contact_work,
+        account2_contact_friends,
+    ):
+        """Test that account1 and account2 can have different filter configurations."""
+        # Account 1 contacts
+        account1_contacts = [account1_contact_work, account1_contact_family]
+        # Account 2 contacts
+        account2_contacts = [account2_contact_work, account2_contact_friends]
+
+        # Different filters for each account
+        account1_filter = frozenset(["contactGroups/work_acc1"])  # Only Work
+        account2_filter = frozenset(["contactGroups/friends_acc2"])  # Only Friends
+
+        # Apply filters independently
+        filtered_acc1 = sync_engine._filter_contacts_by_groups(
+            account1_contacts, account1_filter, "Account 1"
+        )
+        filtered_acc2 = sync_engine._filter_contacts_by_groups(
+            account2_contacts, account2_filter, "Account 2"
+        )
+
+        # Account 1: only work contact
+        assert len(filtered_acc1) == 1
+        assert filtered_acc1[0].display_name == "Account1 Worker"
+
+        # Account 2: only friends contact
+        assert len(filtered_acc2) == 1
+        assert filtered_acc2[0].display_name == "Account2 Friend"
+
+    def test_filter_account1_filtered_account2_unfiltered(
+        self,
+        sync_engine,
+        account1_contact_work,
+        account1_contact_family,
+        account2_contact_work,
+        account2_contact_friends,
+    ):
+        """Test account1 with filter, account2 without filter (empty = sync all)."""
+        account1_contacts = [account1_contact_work, account1_contact_family]
+        account2_contacts = [account2_contact_work, account2_contact_friends]
+
+        # Account 1 has filter, Account 2 has no filter
+        account1_filter = frozenset(["contactGroups/family_acc1"])  # Only Family
+        account2_filter = frozenset()  # Empty = sync all
+
+        filtered_acc1 = sync_engine._filter_contacts_by_groups(
+            account1_contacts, account1_filter, "Account 1"
+        )
+        filtered_acc2 = sync_engine._filter_contacts_by_groups(
+            account2_contacts, account2_filter, "Account 2"
+        )
+
+        # Account 1: only family contact
+        assert len(filtered_acc1) == 1
+        assert filtered_acc1[0].display_name == "Account1 Family"
+
+        # Account 2: all contacts (no filter)
+        assert len(filtered_acc2) == 2
+        assert account2_contact_work in filtered_acc2
+        assert account2_contact_friends in filtered_acc2
+
+    def test_filter_both_accounts_same_filter_different_results(
+        self,
+        sync_engine,
+        account1_contact_work,
+        account1_contact_family,
+        account2_contact_work,
+        account2_contact_friends,
+    ):
+        """Test same filter type gives different contacts per resource names."""
+        account1_contacts = [account1_contact_work, account1_contact_family]
+        account2_contacts = [account2_contact_work, account2_contact_friends]
+
+        # Both filter for "work" but resource names are different per account
+        account1_filter = frozenset(["contactGroups/work_acc1"])
+        account2_filter = frozenset(["contactGroups/work_acc2"])
+
+        filtered_acc1 = sync_engine._filter_contacts_by_groups(
+            account1_contacts, account1_filter, "Account 1"
+        )
+        filtered_acc2 = sync_engine._filter_contacts_by_groups(
+            account2_contacts, account2_filter, "Account 2"
+        )
+
+        # Each account gets their respective work contact
+        assert len(filtered_acc1) == 1
+        assert filtered_acc1[0].display_name == "Account1 Worker"
+
+        assert len(filtered_acc2) == 1
+        assert filtered_acc2[0].display_name == "Account2 Worker"
+
+
+# ==============================================================================
+# Filter Edge Case Tests
+# ==============================================================================
+
+
+class TestFilterEdgeCases:
+    """Edge case tests for contact filtering scenarios."""
+
+    @pytest.fixture
+    def contact_in_system_group(self):
+        """Create a contact in a system group (starred)."""
+        return Contact(
+            resource_name="people/starred1",
+            etag="etag_starred1",
+            display_name="Starred Contact",
+            given_name="Starred",
+            family_name="Contact",
+            emails=["starred@example.com"],
+            memberships=["contactGroups/starred", "contactGroups/myContacts"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_in_many_groups(self):
+        """Create a contact with many group memberships."""
+        return Contact(
+            resource_name="people/manygroups",
+            etag="etag_manygroups",
+            display_name="Many Groups Contact",
+            given_name="Many",
+            family_name="Groups",
+            emails=["manygroups@example.com"],
+            memberships=[
+                "contactGroups/work123",
+                "contactGroups/family456",
+                "contactGroups/friends789",
+                "contactGroups/team1",
+                "contactGroups/team2",
+                "contactGroups/project_alpha",
+                "contactGroups/myContacts",
+            ],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_with_unicode_group(self):
+        """Create a contact with unicode group name."""
+        return Contact(
+            resource_name="people/unicode1",
+            etag="etag_unicode1",
+            display_name="Unicode Contact",
+            given_name="Unicode",
+            family_name="Contact",
+            emails=["unicode@example.com"],
+            memberships=["contactGroups/工作伙伴"],  # "Work Partners" in Chinese
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    @pytest.fixture
+    def contact_with_special_chars_group(self):
+        """Create a contact with special characters in group name."""
+        return Contact(
+            resource_name="people/special1",
+            etag="etag_special1",
+            display_name="Special Chars Contact",
+            given_name="Special",
+            family_name="Chars",
+            emails=["special@example.com"],
+            memberships=["contactGroups/work-team_2024 (main)"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+    # -------------------------------------------------------------------------
+    # System Group Filtering Tests
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_system_group_starred(
+        self, sync_engine, contact_in_system_group
+    ):
+        """Test filtering by system group 'starred'."""
+        contacts = [contact_in_system_group]
+        allowed_groups = frozenset(["contactGroups/starred"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Contact should be included since it's in the starred group
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Starred Contact"
+
+    def test_filter_edge_system_group_my_contacts(
+        self, sync_engine, contact_in_system_group
+    ):
+        """Test filtering by system group 'myContacts'."""
+        contacts = [contact_in_system_group]
+        allowed_groups = frozenset(["contactGroups/myContacts"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Contact should be included since it's in myContacts
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Starred Contact"
+
+    # -------------------------------------------------------------------------
+    # Many Groups Tests
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_contact_with_many_groups_first_match(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups matches on first group."""
+        contacts = [contact_in_many_groups]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Many Groups Contact"
+
+    def test_filter_edge_contact_with_many_groups_last_match(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups matches on last group."""
+        contacts = [contact_in_many_groups]
+        allowed_groups = frozenset(["contactGroups/myContacts"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Many Groups Contact"
+
+    def test_filter_edge_contact_with_many_groups_middle_match(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups matches on middle group."""
+        contacts = [contact_in_many_groups]
+        allowed_groups = frozenset(["contactGroups/project_alpha"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Many Groups Contact"
+
+    def test_filter_edge_contact_with_many_groups_multiple_allowed(
+        self, sync_engine, contact_in_many_groups
+    ):
+        """Test contact with many groups and multiple allowed groups."""
+        contacts = [contact_in_many_groups]
+        # Allow several groups, contact is in all of them
+        allowed_groups = frozenset(
+            [
+                "contactGroups/work123",
+                "contactGroups/team1",
+                "contactGroups/nonexistent",
+            ]
+        )
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should still be included (matches work123 and team1)
+        assert len(filtered) == 1
+
+    # -------------------------------------------------------------------------
+    # Unicode and Special Characters Tests
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_unicode_group_name(
+        self, sync_engine, contact_with_unicode_group
+    ):
+        """Test filtering with unicode group name."""
+        contacts = [contact_with_unicode_group]
+        allowed_groups = frozenset(["contactGroups/工作伙伴"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Unicode Contact"
+
+    def test_filter_edge_unicode_group_no_match(
+        self, sync_engine, contact_with_unicode_group
+    ):
+        """Test unicode contact excluded when group doesn't match."""
+        contacts = [contact_with_unicode_group]
+        allowed_groups = frozenset(["contactGroups/different_group"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_edge_special_chars_group_name(
+        self, sync_engine, contact_with_special_chars_group
+    ):
+        """Test filtering with special characters in group name."""
+        contacts = [contact_with_special_chars_group]
+        allowed_groups = frozenset(["contactGroups/work-team_2024 (main)"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "Special Chars Contact"
+
+    # -------------------------------------------------------------------------
+    # Empty/Null Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_none_filter_treats_as_empty(self, sync_engine):
+        """Test that None filter is handled gracefully."""
+        contact = Contact(
+            resource_name="people/test",
+            etag="etag_test",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=["contactGroups/work"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contacts = [contact]
+        # Empty frozenset should pass all contacts
+        allowed_groups = frozenset()
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+
+    def test_filter_edge_contact_with_empty_membership_string(self, sync_engine):
+        """Test contact with empty string in memberships."""
+        contact = Contact(
+            resource_name="people/empty_membership",
+            etag="etag_empty",
+            display_name="Empty Membership",
+            given_name="Empty",
+            family_name="Membership",
+            emails=["empty@example.com"],
+            memberships=["", "contactGroups/work123"],  # Empty string in list
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contacts = [contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should still match on work123
+        assert len(filtered) == 1
+
+    # -------------------------------------------------------------------------
+    # Large Scale Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_many_contacts(self, sync_engine):
+        """Test filtering with many contacts (performance edge case)."""
+        # Create 100 contacts, half in allowed group
+        contacts = []
+        for i in range(100):
+            group = "contactGroups/work" if i % 2 == 0 else "contactGroups/personal"
+            contacts.append(
+                Contact(
+                    resource_name=f"people/c{i}",
+                    etag=f"etag_{i}",
+                    display_name=f"Contact {i}",
+                    given_name=f"First{i}",
+                    family_name=f"Last{i}",
+                    emails=[f"contact{i}@example.com"],
+                    memberships=[group],
+                    last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+                )
+            )
+
+        allowed_groups = frozenset(["contactGroups/work"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Half should be filtered (those with work group)
+        assert len(filtered) == 50
+        # Verify all filtered contacts have work group
+        for contact in filtered:
+            assert "contactGroups/work" in contact.memberships
+
+    def test_filter_edge_many_allowed_groups(self, sync_engine):
+        """Test filtering with many allowed groups."""
+        contact = Contact(
+            resource_name="people/test",
+            etag="etag_test",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contacts = [contact]
+        # Create 50 allowed groups, one of which matches
+        allowed_groups = frozenset(
+            [f"contactGroups/group{i}" for i in range(50)] + ["contactGroups/work123"]
+        )
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+
+    # -------------------------------------------------------------------------
+    # Resolve Group Filters Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_resolve_duplicate_config_entries(self, sync_engine):
+        """Test resolving with duplicate entries in configured groups."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        # Duplicate entries in config
+        configured_groups = ["Work", "work", "WORK", "contactGroups/work123"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should resolve to single entry (frozenset deduplicates)
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_filter_edge_resolve_whitespace_in_name(self, sync_engine):
+        """Test resolving group with whitespace variations."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work Team",  # Group with space in name
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        configured_groups = ["Work Team"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_filter_edge_resolve_similar_names(self, sync_engine):
+        """Test resolving when groups have similar names."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+        work_team_group = ContactGroup(
+            resource_name="contactGroups/workteam456",
+            etag="etag_workteam",
+            name="Work Team",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        configured_groups = ["Work"]  # Should only match exact name
+        fetched_groups = [work_group, work_team_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should only match "Work", not "Work Team"
+        assert len(resolved) == 1
+        assert "contactGroups/work123" in resolved
+
+    def test_filter_edge_resolve_only_nonexistent_groups(self, sync_engine):
+        """Test when all configured groups don't exist."""
+        from gcontact_sync.sync.group import GROUP_TYPE_USER_CONTACT_GROUP, ContactGroup
+
+        work_group = ContactGroup(
+            resource_name="contactGroups/work123",
+            etag="etag_work",
+            name="Work",
+            group_type=GROUP_TYPE_USER_CONTACT_GROUP,
+        )
+
+        # All configured groups don't exist
+        configured_groups = ["NonExistent1", "NonExistent2", "contactGroups/fake"]
+        fetched_groups = [work_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        # Should return empty frozenset
+        assert len(resolved) == 0
+        assert isinstance(resolved, frozenset)
+
+    def test_filter_edge_resolve_system_group_by_name(self, sync_engine):
+        """Test resolving system groups by display name."""
+        from gcontact_sync.sync.group import (
+            GROUP_TYPE_SYSTEM_CONTACT_GROUP,
+            ContactGroup,
+        )
+
+        starred_group = ContactGroup(
+            resource_name="contactGroups/starred",
+            etag="etag_starred",
+            name="Starred",
+            group_type=GROUP_TYPE_SYSTEM_CONTACT_GROUP,
+        )
+
+        configured_groups = ["Starred"]
+        fetched_groups = [starred_group]
+
+        resolved = sync_engine._resolve_group_filters(
+            configured_groups, fetched_groups, "Account 1"
+        )
+
+        assert len(resolved) == 1
+        assert "contactGroups/starred" in resolved
+
+    # -------------------------------------------------------------------------
+    # Incremental Sync Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_incremental_sync_new_contact_in_allowed_group(
+        self, sync_engine
+    ):
+        """Test incremental sync includes new contacts in allowed groups."""
+        # Simulate incremental sync scenario
+        new_contact = Contact(
+            resource_name="people/new1",
+            etag="etag_new",
+            display_name="New Contact",
+            given_name="New",
+            family_name="Contact",
+            emails=["new@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 14, 0, 0, tzinfo=timezone.utc),
+        )
+        contacts = [new_contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].display_name == "New Contact"
+
+    def test_filter_edge_incremental_sync_new_contact_not_in_allowed_group(
+        self, sync_engine
+    ):
+        """Test incremental sync excludes new contacts not in allowed groups."""
+        new_contact = Contact(
+            resource_name="people/new1",
+            etag="etag_new",
+            display_name="New Contact",
+            given_name="New",
+            family_name="Contact",
+            emails=["new@example.com"],
+            memberships=["contactGroups/personal999"],
+            last_modified=datetime(2024, 6, 20, 14, 0, 0, tzinfo=timezone.utc),
+        )
+        contacts = [new_contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        assert len(filtered) == 0
+
+    def test_filter_edge_contact_group_membership_changed(self, sync_engine):
+        """Test filtering when contact's group membership may have changed."""
+        # Contact was in work group, now only in personal
+        updated_contact = Contact(
+            resource_name="people/updated1",
+            etag="etag_updated_new",
+            display_name="Updated Contact",
+            given_name="Updated",
+            family_name="Contact",
+            emails=["updated@example.com"],
+            memberships=["contactGroups/personal999"],  # Changed from work to personal
+            last_modified=datetime(2024, 6, 25, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        contacts = [updated_contact]
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Should be excluded since no longer in work group
+        assert len(filtered) == 0
+
+    # -------------------------------------------------------------------------
+    # Mixed Scenarios
+    # -------------------------------------------------------------------------
+
+    def test_filter_edge_mixed_contacts_various_memberships(self, sync_engine):
+        """Test filtering mix of contacts with various membership scenarios."""
+        contacts = [
+            # Contact in allowed group
+            Contact(
+                resource_name="people/c1",
+                etag="etag_1",
+                display_name="Contact 1",
+                given_name="First1",
+                family_name="Last1",
+                emails=["c1@example.com"],
+                memberships=["contactGroups/work123"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact with no memberships
+            Contact(
+                resource_name="people/c2",
+                etag="etag_2",
+                display_name="Contact 2",
+                given_name="First2",
+                family_name="Last2",
+                emails=["c2@example.com"],
+                memberships=[],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact in multiple groups including allowed
+            Contact(
+                resource_name="people/c3",
+                etag="etag_3",
+                display_name="Contact 3",
+                given_name="First3",
+                family_name="Last3",
+                emails=["c3@example.com"],
+                memberships=["contactGroups/personal", "contactGroups/work123"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact in non-allowed group only
+            Contact(
+                resource_name="people/c4",
+                etag="etag_4",
+                display_name="Contact 4",
+                given_name="First4",
+                family_name="Last4",
+                emails=["c4@example.com"],
+                memberships=["contactGroups/personal"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+            # Contact in system group only
+            Contact(
+                resource_name="people/c5",
+                etag="etag_5",
+                display_name="Contact 5",
+                given_name="First5",
+                family_name="Last5",
+                emails=["c5@example.com"],
+                memberships=["contactGroups/myContacts"],
+                last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+        allowed_groups = frozenset(["contactGroups/work123"])
+
+        filtered = sync_engine._filter_contacts_by_groups(
+            contacts, allowed_groups, "Account 1"
+        )
+
+        # Only Contact 1 and Contact 3 should be included
+        assert len(filtered) == 2
+        names = {c.display_name for c in filtered}
+        assert "Contact 1" in names
+        assert "Contact 3" in names
+        assert "Contact 2" not in names  # No memberships
+        assert "Contact 4" not in names  # Wrong group
+        assert "Contact 5" not in names  # System group only
+
+
+# ==============================================================================
+# Tag Filter Integration Tests
+# ==============================================================================
+
+
+class TestTagFilterIntegration:
+    """Integration tests for full sync flow with tag filtering."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    @pytest.fixture
+    def work_group_api_data(self):
+        """API response dict for Work group."""
+        return {
+            "resourceName": "contactGroups/work123",
+            "etag": "etag_work",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 10,
+        }
+
+    @pytest.fixture
+    def family_group_api_data(self):
+        """API response dict for Family group."""
+        return {
+            "resourceName": "contactGroups/family456",
+            "etag": "etag_family",
+            "name": "Family",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 5,
+        }
+
+    @pytest.fixture
+    def friends_group_api_data(self):
+        """API response dict for Friends group."""
+        return {
+            "resourceName": "contactGroups/friends789",
+            "etag": "etag_friends",
+            "name": "Friends",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 3,
+        }
+
+
+class TestSyncWithTagFiltersIntegration(TestTagFilterIntegration):
+    """Integration test for full sync with tag filters applied to both accounts."""
+
+    def test_sync_with_tag_filters_integration(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+        friends_group_api_data,
+    ):
+        """Test full sync flow with tag filters applied to both accounts.
+
+        This tests:
+        - Config with different filters per account
+        - Only contacts matching filters are synced
+        - SyncStats correctly reflects filtered contact counts
+        - Filter groups are resolved from display names
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Create sync config with different filters for each account
+        # Account 1: only sync "Work" contacts
+        # Account 2: only sync "Family" and "Friends" contacts
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=["Family", "Friends"]),
+        )
+
+        # Set up contacts for account 1
+        # Contact 1: in Work group (should be synced)
+        contact1_work = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 2: in Family group (should be filtered out from account 1)
+        contact1_family = Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Bob Johnson",
+            given_name="Bob",
+            family_name="Johnson",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 3: in no group (should be filtered out from account 1)
+        contact1_none = Contact(
+            resource_name="people/acc1_none",
+            etag="etag_acc1_none",
+            display_name="Charlie Brown",
+            given_name="Charlie",
+            family_name="Brown",
+            emails=["charlie@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Set up contacts for account 2
+        # Contact 4: in Family group (should be synced)
+        contact2_family = Contact(
+            resource_name="people/acc2_family",
+            etag="etag_acc2_family",
+            display_name="Diana Lee",
+            given_name="Diana",
+            family_name="Lee",
+            emails=["diana@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 5: in Friends group (should be synced)
+        contact2_friends = Contact(
+            resource_name="people/acc2_friends",
+            etag="etag_acc2_friends",
+            display_name="Eve Wilson",
+            given_name="Eve",
+            family_name="Wilson",
+            emails=["eve@example.com"],
+            memberships=["contactGroups/friends789"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact 6: in Work group (should be filtered out from account 2)
+        contact2_work = Contact(
+            resource_name="people/acc2_work",
+            etag="etag_acc2_work",
+            display_name="Frank Miller",
+            given_name="Frank",
+            family_name="Miller",
+            emails=["frank@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs to return groups and contacts
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data, friends_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data, friends_group_api_data],
+            None,
+        )
+
+        mock_api1.list_contacts.return_value = (
+            [contact1_work, contact1_family, contact1_none],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = (
+            [contact2_family, contact2_friends, contact2_work],
+            "token2",
+        )
+
+        # Create SyncEngine with config
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run analyze (dry_run equivalent)
+        result = engine.analyze(full_sync=True)
+
+        # Verify filter statistics
+        # New behavior: contacts_in_account* = total contacts (all, for matching)
+        # contacts_filtered_out_* = contacts not synced due to filter
+        # Account 1: 3 contacts total, 2 filtered out (only Work contact synced)
+        assert result.stats.contacts_before_filter_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 2
+        assert result.stats.contacts_in_account1 == 3  # All contacts for matching
+
+        # Account 2: 3 contacts total, 1 filtered out (Family and Friends synced)
+        assert result.stats.contacts_before_filter_account2 == 3
+        assert result.stats.contacts_filtered_out_account2 == 1
+        assert result.stats.contacts_in_account2 == 3  # All contacts for matching
+
+        # Verify filter groups were resolved
+        assert result.stats.filter_groups_account1 == 1  # Work
+        assert result.stats.filter_groups_account2 == 2  # Family, Friends
+
+        # Verify that only filtered contacts are in sync operations
+        # Account 1's Alice (Work) should be synced to Account 2
+        # Account 2's Diana (Family) and Eve (Friends) should be synced to Account 1
+        # The "filtered out" contacts should not appear in sync operations
+
+        # Check to_create lists - contacts should only include those that passed filter
+        # Since contacts don't match between accounts (different people),
+        # we should see creates happening for filtered contacts only
+
+        # Verify Alice (Work) from account 1 is in to_create_in_account2
+        # (since there's no matching contact in account 2 after filtering)
+        create_names_2 = [c.display_name for c in result.to_create_in_account2]
+        assert "Alice Smith" in create_names_2
+        # Bob (Family) and Charlie (no group) should NOT be synced from account 1
+        assert "Bob Johnson" not in create_names_2
+        assert "Charlie Brown" not in create_names_2
+
+        # Verify Diana (Family) and Eve (Friends) from account 2 go to account1
+        create_names_1 = [c.display_name for c in result.to_create_in_account1]
+        assert "Diana Lee" in create_names_1
+        assert "Eve Wilson" in create_names_1
+        # Frank (Work) should NOT be synced from account 2
+        assert "Frank Miller" not in create_names_1
+
+    def test_sync_with_tag_filters_stats_in_summary(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test that SyncResult.summary() includes filter statistics."""
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Create sync config with filter for account 1 only
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # No filter
+        )
+
+        # Contact in Work group
+        contact1_work = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Contact not in Work group
+        contact1_other = Contact(
+            resource_name="people/acc1_other",
+            etag="etag_acc1_other",
+            display_name="Bob Johnson",
+            given_name="Bob",
+            family_name="Johnson",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/other"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api1.list_contacts.return_value = (
+            [contact1_work, contact1_other],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+        summary = result.summary()
+
+        # Verify filter stats are shown in summary
+        # New behavior: contacts_in_account* = total contacts for matching
+        # So "2 after filter" because we now match against all contacts
+        assert "Group filtering applied" in summary
+        assert "2 fetched" in summary  # contacts_before_filter_account1
+        assert "2 after filter" in summary  # contacts_in_account1 (all for matching)
+        assert "1 excluded" in summary  # contacts_filtered_out_account1
+
+    def test_sync_with_tag_filters_execute_creates_only_filtered(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test that execute() only creates contacts that passed the filter."""
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Only sync Work contacts
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # No filter
+        )
+
+        # Account 1: Work contact only
+        contact1 = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # Account 1: Family contact (filtered out)
+        contact2 = Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Bob Johnson",
+            given_name="Bob",
+            family_name="Johnson",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Mock API returns
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([contact1, contact2], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        # Mock the batch create to return a created contact
+        created_contact = Contact(
+            resource_name="people/new_acc2",
+            etag="etag_new_acc2",
+            display_name="Alice Smith",
+            given_name="Alice",
+            family_name="Smith",
+            emails=["alice@example.com"],
+        )
+        mock_api2.batch_create_contacts.return_value = [created_contact]
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run full sync (not dry run)
+        result = engine.sync(dry_run=False, full_sync=True)
+
+        # Verify only 1 contact was created (Alice, the Work contact)
+        assert result.stats.created_in_account2 == 1
+
+        # Verify batch_create_contacts was called with only Alice
+        mock_api2.batch_create_contacts.assert_called_once()
+        created_contacts = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(created_contacts) == 1
+        assert created_contacts[0].display_name == "Alice Smith"
+
+    def test_sync_with_tag_filters_contact_in_multiple_groups(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test contact in multiple groups syncs if ANY group matches filter."""
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Only sync Work contacts
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Contact in both Work AND Family groups - should be included
+        contact_multi = Contact(
+            resource_name="people/acc1_multi",
+            etag="etag_acc1_multi",
+            display_name="Multi Group User",
+            given_name="Multi",
+            family_name="Group User",
+            emails=["multi@example.com"],
+            memberships=["contactGroups/work123", "contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([contact_multi], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Contact should not be filtered out (it's in Work group)
+        assert result.stats.contacts_before_filter_account1 == 1
+        assert result.stats.contacts_filtered_out_account1 == 0
+        assert result.stats.contacts_in_account1 == 1
+
+        # Contact should be in to_create_in_account2
+        assert len(result.to_create_in_account2) == 1
+        assert result.to_create_in_account2[0].display_name == "Multi Group User"
+
+
+class TestIncrementalSyncWithFilters(TestTagFilterIntegration):
+    """Integration tests for incremental sync with tag filters."""
+
+    def test_incremental_sync_with_filters(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test that filters apply correctly in incremental sync mode.
+
+        This verifies:
+        - Filters are applied during incremental sync (not just full sync)
+        - Sync token behavior is preserved when filtering is active
+        - New contacts returned by incremental sync are correctly filtered
+        - Filter statistics are accurate for incremental sync results
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Create sync config - Account 1: only Work, Account 2: only Family
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=["Family"]),
+        )
+
+        # Set up initial sync state (simulating a previous sync)
+        real_database.update_sync_state("account1", "initial_token1")
+        real_database.update_sync_state("account2", "initial_token2")
+
+        # New contact from incremental sync that matches Work filter
+        new_work_contact = Contact(
+            resource_name="people/inc_work",
+            etag="etag_inc_work",
+            display_name="New Worker",
+            given_name="New",
+            family_name="Worker",
+            emails=["newworker@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # New contact from incremental sync that does NOT match Work filter
+        new_personal_contact = Contact(
+            resource_name="people/inc_personal",
+            etag="etag_inc_personal",
+            display_name="Personal Contact",
+            given_name="Personal",
+            family_name="Contact",
+            emails=["personal@example.com"],
+            memberships=["contactGroups/personal999"],  # Not in Work group
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # New contact from account 2 that matches Family filter
+        new_family_contact = Contact(
+            resource_name="people/inc_family",
+            etag="etag_inc_family",
+            display_name="New Family Member",
+            given_name="New",
+            family_name="Family Member",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        # New contact from account 2 that does NOT match Family filter
+        new_other_contact = Contact(
+            resource_name="people/inc_other",
+            etag="etag_inc_other",
+            display_name="Other Contact",
+            given_name="Other",
+            family_name="Contact",
+            emails=["other@example.com"],
+            memberships=["contactGroups/other888"],  # Not in Family group
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs to return groups and incremental contacts
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+
+        # API returns new contacts from incremental sync with new tokens
+        mock_api1.list_contacts.return_value = (
+            [new_work_contact, new_personal_contact],
+            "new_token1",  # New sync token after incremental sync
+        )
+        mock_api2.list_contacts.return_value = (
+            [new_family_contact, new_other_contact],
+            "new_token2",
+        )
+
+        # Create SyncEngine with config
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run incremental sync (full_sync=False)
+        result = engine.analyze(full_sync=False)
+
+        # Verify filter statistics for account 1
+        # New behavior: contacts_in_account* = total contacts for matching
+        # 2 contacts fetched, 1 filtered out (only Work contact synced)
+        assert result.stats.contacts_before_filter_account1 == 2
+        assert result.stats.contacts_filtered_out_account1 == 1
+        assert result.stats.contacts_in_account1 == 2  # All contacts for matching
+
+        # Verify filter statistics for account 2
+        # 2 contacts fetched, 1 filtered out (only Family contact synced)
+        assert result.stats.contacts_before_filter_account2 == 2
+        assert result.stats.contacts_filtered_out_account2 == 1
+        assert result.stats.contacts_in_account2 == 2  # All contacts for matching
+
+        # Verify only filtered contacts are in sync operations
+        # New Worker (Work) from account 1 -> should create in account 2
+        create_names_2 = [c.display_name for c in result.to_create_in_account2]
+        assert "New Worker" in create_names_2
+        assert "Personal Contact" not in create_names_2
+
+        # New Family Member (Family) from account 2 -> should create in account 1
+        create_names_1 = [c.display_name for c in result.to_create_in_account1]
+        assert "New Family Member" in create_names_1
+        assert "Other Contact" not in create_names_1
+
+    def test_incremental_sync_with_filters_preserves_sync_tokens(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test that sync token behavior is preserved when filtering is active.
+
+        Verifies that:
+        - Existing sync tokens are used for incremental fetch
+        - New sync tokens are returned and can be stored
+        - Filtering doesn't interfere with sync token management
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # No filter
+        )
+
+        # Set up initial sync tokens
+        real_database.update_sync_state("account1", "token_v1")
+        real_database.update_sync_state("account2", "token_v2")
+
+        # Contact that passes filter
+        work_contact = Contact(
+            resource_name="people/work1",
+            etag="etag_work1",
+            display_name="Worker One",
+            given_name="Worker",
+            family_name="One",
+            emails=["worker1@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+
+        # API returns contacts with new sync tokens
+        mock_api1.list_contacts.return_value = ([work_contact], "token_v3")
+        mock_api2.list_contacts.return_value = ([], "token_v4")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run incremental sync
+        result = engine.analyze(full_sync=False)
+
+        # Verify the APIs were called (sync tokens are used internally)
+        mock_api1.list_contacts.assert_called()
+        mock_api2.list_contacts.assert_called()
+
+        # Verify filtered contact passed through
+        assert result.stats.contacts_in_account1 == 1
+        assert result.stats.contacts_filtered_out_account1 == 0
+
+    def test_incremental_sync_with_filters_membership_change(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test filtering when a contact's group membership changes.
+
+        Simulates a scenario where:
+        - A contact previously wasn't in the filtered group
+        - The contact gets added to the filtered group
+        - Incremental sync should now include this contact
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Set up existing sync state
+        real_database.update_sync_state("account1", "prev_token")
+        real_database.update_sync_state("account2", "prev_token2")
+
+        # Contact that was updated to now be in Work group
+        # (simulating membership change detected by incremental sync)
+        updated_contact = Contact(
+            resource_name="people/updated1",
+            etag="etag_updated_v2",  # New etag indicates update
+            display_name="Recently Added to Work",
+            given_name="Recently",
+            family_name="Added to Work",
+            emails=["updated@example.com"],
+            memberships=["contactGroups/work123"],  # Now in Work group
+            last_modified=datetime(2024, 6, 25, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Contact that remains outside Work group
+        unchanged_contact = Contact(
+            resource_name="people/unchanged1",
+            etag="etag_unchanged",
+            display_name="Still Not Work",
+            given_name="Still",
+            family_name="Not Work",
+            emails=["unchanged@example.com"],
+            memberships=["contactGroups/family456"],  # Still in Family, not Work
+            last_modified=datetime(2024, 6, 25, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+
+        # Incremental sync returns both contacts
+        mock_api1.list_contacts.return_value = (
+            [updated_contact, unchanged_contact],
+            "new_token",
+        )
+        mock_api2.list_contacts.return_value = ([], "new_token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=False)
+
+        # Verify filter applied correctly
+        # New behavior: contacts_in_account* = total contacts for matching
+        assert result.stats.contacts_before_filter_account1 == 2
+        assert result.stats.contacts_filtered_out_account1 == 1  # unchanged_contact
+        assert result.stats.contacts_in_account1 == 2  # All contacts for matching
+
+        # Only the contact now in Work group should be synced
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Recently Added to Work" in create_names
+        assert "Still Not Work" not in create_names
+
+    def test_incremental_sync_with_no_filter_syncs_all(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test that incremental sync with no filter syncs all contacts.
+
+        Verifies backwards compatibility - when no filter is configured,
+        all contacts from incremental sync should be processed.
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # No filters configured (empty sync_groups)
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=[]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Set up existing sync state
+        real_database.update_sync_state("account1", "prev_token")
+        real_database.update_sync_state("account2", "prev_token2")
+
+        # Multiple contacts with different group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Contact",
+            given_name="Work",
+            family_name="Contact",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_personal = Contact(
+            resource_name="people/c_personal",
+            etag="etag_personal",
+            display_name="Personal Contact",
+            given_name="Personal",
+            family_name="Contact",
+            emails=["personal@example.com"],
+            memberships=["contactGroups/personal"],
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_nogroup",
+            etag="etag_nogroup",
+            display_name="No Group Contact",
+            given_name="No Group",
+            family_name="Contact",
+            emails=["nogroup@example.com"],
+            memberships=[],  # No group membership
+            last_modified=datetime(2024, 6, 20, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+
+        # All contacts returned from incremental sync
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_personal, contact_no_group],
+            "new_token",
+        )
+        mock_api2.list_contacts.return_value = ([], "new_token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=False)
+
+        # With no filter, all contacts should be processed
+        # contacts_before_filter should equal contacts_in_account (no filtering)
+        assert result.stats.contacts_before_filter_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 0
+        assert result.stats.contacts_in_account1 == 3
+
+        # All contacts should be in sync operations
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Contact" in create_names
+        assert "Personal Contact" in create_names
+        assert "No Group Contact" in create_names
+
+
+class TestBackwardsCompatibility(TestTagFilterIntegration):
+    """Integration tests for backwards compatibility with tag filtering.
+
+    Verifies that when no config or empty config is provided,
+    all contacts are synced as before (no filtering applied).
+    """
+
+    def test_backwards_compatibility_no_config(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test sync without config file (config=None).
+
+        When SyncEngine is created without a config parameter,
+        it should sync all contacts from both accounts.
+        """
+        # Set up contacts with various group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Person",
+            given_name="Work",
+            family_name="Person",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_family = Contact(
+            resource_name="people/c_family",
+            etag="etag_family",
+            display_name="Family Person",
+            given_name="Family",
+            family_name="Person",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_none",
+            etag="etag_none",
+            display_name="No Group Person",
+            given_name="No Group",
+            family_name="Person",
+            emails=["nogroup@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_family, contact_no_group],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        # Create engine WITHOUT config (backwards compatible mode)
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            # config is not passed - defaults to None
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # All contacts should be processed (no filtering)
+        assert result.stats.contacts_in_account1 == 3
+
+        # All contacts should be synced to account 2
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Person" in create_names
+        assert "Family Person" in create_names
+        assert "No Group Person" in create_names
+
+    def test_backwards_compatibility_empty_config(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test sync with config file but empty groups.
+
+        When config has empty sync_groups for both accounts,
+        it should sync all contacts (backwards compatible).
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Empty sync_groups means "sync all"
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=[]),
+            account2=AccountSyncConfig(sync_groups=[]),
+        )
+
+        # Set up contacts with various group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Person",
+            given_name="Work",
+            family_name="Person",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_family = Contact(
+            resource_name="people/c_family",
+            etag="etag_family",
+            display_name="Family Person",
+            given_name="Family",
+            family_name="Person",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_none",
+            etag="etag_none",
+            display_name="No Group Person",
+            given_name="No Group",
+            family_name="Person",
+            emails=["nogroup@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_family, contact_no_group],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # All contacts should be processed (empty filter = no filtering)
+        assert result.stats.contacts_in_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 0
+        assert result.stats.contacts_before_filter_account1 == 3
+
+        # All contacts should be synced to account 2
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Person" in create_names
+        assert "Family Person" in create_names
+        assert "No Group Person" in create_names
+
+    def test_backwards_compatibility_default_config_from_load(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+        tmp_path,
+    ):
+        """Test sync with default config from load_config (no file exists).
+
+        When load_config is called on a directory without sync_config.json,
+        it returns a default config with empty groups, which syncs all.
+        """
+        from gcontact_sync.config.sync_config import load_config
+
+        # Load config from empty directory (no sync_config.json)
+        sync_config = load_config(str(tmp_path))
+
+        # Set up contacts with various group memberships
+        contact_work = Contact(
+            resource_name="people/c_work",
+            etag="etag_work",
+            display_name="Work Person",
+            given_name="Work",
+            family_name="Person",
+            emails=["work@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_family = Contact(
+            resource_name="people/c_family",
+            etag="etag_family",
+            display_name="Family Person",
+            given_name="Family",
+            family_name="Person",
+            emails=["family@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact_no_group = Contact(
+            resource_name="people/c_none",
+            etag="etag_none",
+            display_name="No Group Person",
+            given_name="No Group",
+            family_name="Person",
+            emails=["nogroup@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact_work, contact_family, contact_no_group],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Default config has empty groups, so all contacts synced
+        assert result.stats.contacts_in_account1 == 3
+        assert result.stats.contacts_filtered_out_account1 == 0
+
+        # All contacts should be synced to account 2
+        create_names = [c.display_name for c in result.to_create_in_account2]
+        assert "Work Person" in create_names
+        assert "Family Person" in create_names
+        assert "No Group Person" in create_names
+
+    def test_backwards_compatibility_mixed_one_account_filtered(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+        family_group_api_data,
+    ):
+        """Test sync with filter on one account, empty on other.
+
+        When only account1 has a filter and account2 has empty groups,
+        account1 contacts are filtered and account2 syncs all.
+        """
+        from gcontact_sync.config.sync_config import AccountSyncConfig, SyncConfig
+
+        # Account 1 has filter, Account 2 syncs all (empty groups)
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(sync_groups=["Work"]),
+            account2=AccountSyncConfig(sync_groups=[]),  # Empty = sync all
+        )
+
+        # Set up contacts for account 1
+        contact1_work = Contact(
+            resource_name="people/acc1_work",
+            etag="etag_acc1_work",
+            display_name="Alice at Work",
+            given_name="Alice",
+            family_name="Worker",
+            emails=["alice@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact1_family = Contact(
+            resource_name="people/acc1_family",
+            etag="etag_acc1_family",
+            display_name="Bob in Family",
+            given_name="Bob",
+            family_name="FamilyMember",
+            emails=["bob@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Set up contacts for account 2
+        contact2_work = Contact(
+            resource_name="people/acc2_work",
+            etag="etag_acc2_work",
+            display_name="Carol at Work",
+            given_name="Carol",
+            family_name="Worker",
+            emails=["carol@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact2_family = Contact(
+            resource_name="people/acc2_family",
+            etag="etag_acc2_family",
+            display_name="David in Family",
+            given_name="David",
+            family_name="FamilyMember",
+            emails=["david@example.com"],
+            memberships=["contactGroups/family456"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact2_none = Contact(
+            resource_name="people/acc2_none",
+            etag="etag_acc2_none",
+            display_name="Eve No Group",
+            given_name="Eve",
+            family_name="NoGroup",
+            emails=["eve@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api_data, family_group_api_data],
+            None,
+        )
+        mock_api1.list_contacts.return_value = (
+            [contact1_work, contact1_family],
+            "token1",
+        )
+        mock_api2.list_contacts.return_value = (
+            [contact2_work, contact2_family, contact2_none],
+            "token2",
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Account 1: 1 contact synced (Work), 1 filtered (Family)
+        # New behavior: contacts_in_account* = total contacts for matching
+        assert result.stats.contacts_before_filter_account1 == 2
+        assert result.stats.contacts_filtered_out_account1 == 1
+        assert result.stats.contacts_in_account1 == 2  # All contacts for matching
+
+        # Account 2: all 3 contacts synced (empty filter)
+        assert result.stats.contacts_before_filter_account2 == 3
+        assert result.stats.contacts_filtered_out_account2 == 0
+        assert result.stats.contacts_in_account2 == 3
+
+        # Only Work contact from account 1 goes to account 2
+        create_in_acc2 = [c.display_name for c in result.to_create_in_account2]
+        assert "Alice at Work" in create_in_acc2
+        assert "Bob in Family" not in create_in_acc2
+
+        # All account 2 contacts go to account 1
+        create_in_acc1 = [c.display_name for c in result.to_create_in_account1]
+        assert "Carol at Work" in create_in_acc1
+        assert "David in Family" in create_in_acc1
+        assert "Eve No Group" in create_in_acc1
+
+    def test_backwards_compatibility_execute_no_config(
+        self,
+        mock_api1,
+        mock_api2,
+        real_database,
+        work_group_api_data,
+    ):
+        """Test execute() works correctly without config (backwards compatible).
+
+        Verifies the full sync execute flow works when no config is provided.
+        """
+        # Set up simple contact
+        contact = Contact(
+            resource_name="people/c1",
+            etag="etag1",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Created contact (returned after create)
+        created_contact = Contact(
+            resource_name="people/c2_new",
+            etag="etag_new",
+            display_name="Test Contact",
+            given_name="Test",
+            family_name="Contact",
+            emails=["test@example.com"],
+            memberships=[],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Configure mock APIs
+        mock_api1.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api2.list_contact_groups.return_value = ([work_group_api_data], None)
+        mock_api1.list_contacts.return_value = ([contact], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+        mock_api2.batch_create_contacts.return_value = [created_contact]
+
+        # Engine without config
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+        )
+
+        result = engine.analyze(full_sync=True)
+
+        # Contact should be synced
+        assert len(result.to_create_in_account2) == 1
+
+        # Execute should work (dry_run is handled at CLI level, not in execute)
+        engine.execute(result)
+
+        # Verify batch create was called
+        mock_api2.batch_create_contacts.assert_called_once()
 
 
 # ==============================================================================
@@ -3294,3 +5678,582 @@ class TestSyncWithBackup:
         # Verify sync completed successfully
         assert result.stats.created_in_account1 == 1
         assert result.stats.created_in_account2 == 1
+
+
+# ==============================================================================
+# Sync Label Group Tests
+# ==============================================================================
+
+
+class TestSyncLabelFeature:
+    """Tests for the sync label group feature.
+
+    The sync label feature automatically adds all synced contacts to a designated
+    group (e.g., "Synced Contacts") to help users identify which contacts were
+    created by the sync system.
+    """
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    @pytest.fixture
+    def sync_label_group_api_data(self):
+        """API response dict for Synced Contacts group."""
+        return {
+            "resourceName": "contactGroups/syncedcontacts123",
+            "etag": "etag_synced",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+            "memberCount": 0,
+        }
+
+    def test_ensure_sync_label_groups_creates_groups(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _ensure_sync_label_groups creates groups in both accounts."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        # Set up config with sync label enabled
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Set up mock APIs - no existing "Synced Contacts" group
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        # Mock create_contact_group to return the created group as dict
+        mock_api1.create_contact_group.return_value = {
+            "resourceName": "contactGroups/sync1",
+            "etag": "etag_sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        mock_api2.create_contact_group.return_value = {
+            "resourceName": "contactGroups/sync2",
+            "etag": "etag_sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Call _ensure_sync_label_groups
+        engine._ensure_sync_label_groups()
+
+        # Verify groups were created
+        mock_api1.create_contact_group.assert_called_once_with("Synced Contacts")
+        mock_api2.create_contact_group.assert_called_once_with("Synced Contacts")
+
+        # Verify resource names were stored
+        assert engine._sync_label_group_resources[1] == "contactGroups/sync1"
+        assert engine._sync_label_group_resources[2] == "contactGroups/sync2"
+
+    def test_ensure_sync_label_groups_finds_existing(
+        self, mock_api1, mock_api2, real_database, sync_label_group_api_data
+    ):
+        """Test that _ensure_sync_label_groups finds existing groups."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Set up mock APIs with existing "Synced Contacts" group
+        mock_api1.list_contact_groups.return_value = (
+            [sync_label_group_api_data],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/syncedcontacts456",
+                    "name": "Synced Contacts",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify create was NOT called (groups already exist)
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Verify resource names were stored from existing groups
+        assert (
+            engine._sync_label_group_resources[1] == "contactGroups/syncedcontacts123"
+        )
+        assert (
+            engine._sync_label_group_resources[2] == "contactGroups/syncedcontacts456"
+        )
+
+    def test_ensure_sync_label_groups_disabled(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _ensure_sync_label_groups does nothing when disabled."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False),
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify no API calls were made
+        mock_api1.list_contact_groups.assert_not_called()
+        mock_api2.list_contact_groups.assert_not_called()
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Verify resources are None
+        assert engine._sync_label_group_resources[1] is None
+        assert engine._sync_label_group_resources[2] is None
+
+    def test_sync_label_added_to_created_contacts(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test sync label added to created contacts via _execute_creates."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Contact to create
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="etag1",
+            display_name="John Doe",
+            given_name="John",
+            family_name="Doe",
+            emails=["john@example.com"],
+            memberships=["contactGroups/work123"],
+            last_modified=datetime(2024, 6, 10, 8, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # Groups setup - only need sync label group for this test
+        sync_label_api1 = {
+            "resourceName": "contactGroups/sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api2 = {
+            "resourceName": "contactGroups/sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        mock_api1.list_contact_groups.return_value = ([sync_label_api1], None)
+        mock_api2.list_contact_groups.return_value = ([sync_label_api2], None)
+
+        # Track what contacts are created
+        created_contacts = []
+
+        def capture_batch_create(contacts):
+            created_contacts.extend(contacts)
+            return [
+                Contact(
+                    resource_name="people/new_c1",
+                    etag="new_etag1",
+                    display_name=c.display_name,
+                    memberships=c.memberships,
+                )
+                for c in contacts
+            ]
+
+        mock_api2.batch_create_contacts.side_effect = capture_batch_create
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Set up the sync label group resources directly
+        engine._ensure_sync_label_groups()
+
+        # Create a SyncResult to hold stats
+        result = SyncResult(stats=SyncStats())
+
+        # Call _execute_creates directly with the contact
+        engine._execute_creates([contact1], mock_api2, account=2, result=result)
+
+        # Verify a contact was created
+        assert result.stats.created_in_account2 == 1
+
+        # Verify the created contact has the sync label group
+        assert len(created_contacts) == 1
+        created_memberships = created_contacts[0].memberships
+        assert "contactGroups/sync2" in created_memberships
+
+    def test_sync_label_added_to_updated_contacts(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that sync label is added to updated contacts via _execute_updates."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Source contact (from account 2) with newer data
+        source_contact = Contact(
+            resource_name="people/c2",
+            etag="etag2",
+            display_name="John Doe",
+            given_name="John",
+            family_name="Doe",
+            emails=["john@example.com", "john.doe@work.com"],
+            memberships=["contactGroups/work456"],
+            last_modified=datetime(2024, 6, 15, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        # Groups setup
+        sync_label_api1 = {
+            "resourceName": "contactGroups/sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api2 = {
+            "resourceName": "contactGroups/sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        mock_api1.list_contact_groups.return_value = ([sync_label_api1], None)
+        mock_api2.list_contact_groups.return_value = ([sync_label_api2], None)
+
+        # Mock get_contact to return current etag
+        def get_contact_side_effect(resource_name):
+            return Contact(
+                resource_name=resource_name,
+                etag="current_etag",
+                display_name="John Doe",
+            )
+
+        mock_api1.get_contact.side_effect = get_contact_side_effect
+
+        # Track what contacts are updated
+        updated_contacts = []
+
+        def capture_batch_update(contacts):
+            updated_contacts.extend([c for _, c in contacts])
+            return [
+                Contact(
+                    resource_name=c.resource_name,
+                    etag="updated_etag",
+                    display_name=c.display_name,
+                    memberships=c.memberships,
+                )
+                for _, c in contacts
+            ]
+
+        mock_api1.batch_update_contacts.side_effect = capture_batch_update
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Set up the sync label group resources directly
+        engine._ensure_sync_label_groups()
+
+        # Create a SyncResult to hold stats
+        result = SyncResult(stats=SyncStats())
+
+        # Call _execute_updates directly
+        # Format is (target_resource_name, source_contact)
+        updates = [("people/c1", source_contact)]
+        engine._execute_updates(updates, mock_api1, account=1, result=result)
+
+        # Verify a contact was updated
+        assert result.stats.updated_in_account1 == 1
+
+        # Verify the updated contact has the sync label group
+        assert len(updated_contacts) == 1
+        updated_memberships = updated_contacts[0].memberships
+        assert "contactGroups/sync1" in updated_memberships
+
+    def test_sync_label_not_duplicated_if_already_present(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that sync label is not duplicated if contact already has it."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Contact already has sync label group
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="etag1",
+            display_name="John Doe",
+            given_name="John",
+            family_name="Doe",
+            emails=["john@example.com"],
+            memberships=[
+                "contactGroups/work123",
+                "contactGroups/sync1",
+            ],  # Already has sync label
+            last_modified=datetime(2024, 6, 10, 8, 0, 0, tzinfo=timezone.utc),
+        )
+
+        mock_api1.list_contacts.return_value = ([contact1], "token1")
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        # Groups setup
+        work_group_api1 = {
+            "resourceName": "contactGroups/work123",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        work_group_api2 = {
+            "resourceName": "contactGroups/work456",
+            "name": "Work",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api1 = {
+            "resourceName": "contactGroups/sync1",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        sync_label_api2 = {
+            "resourceName": "contactGroups/sync2",
+            "name": "Synced Contacts",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        mock_api1.list_contact_groups.return_value = (
+            [work_group_api1, sync_label_api1],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [work_group_api2, sync_label_api2],
+            None,
+        )
+
+        created_contacts = []
+
+        def capture_batch_create(contacts):
+            created_contacts.extend(contacts)
+            return [
+                Contact(
+                    resource_name="people/new_c1",
+                    etag="new_etag1",
+                    display_name=c.display_name,
+                    memberships=c.memberships,
+                )
+                for c in contacts
+            ]
+
+        mock_api2.batch_create_contacts.side_effect = capture_batch_create
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Run sync - analyze then execute
+        result = engine.analyze(full_sync=True)
+        engine.execute(result)
+
+        # Verify contact was created
+        assert result.stats.created_in_account2 == 1
+
+        # Verify sync label appears only once
+        assert len(created_contacts) == 1
+        created_memberships = created_contacts[0].memberships
+        assert created_memberships.count("contactGroups/sync2") == 1
+
+    def test_sync_label_custom_group_name(self, mock_api1, mock_api2, real_database):
+        """Test sync label with a custom group name."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="My Custom Sync Label"),
+        )
+
+        # No existing groups with that name
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        mock_api1.create_contact_group.return_value = {
+            "resourceName": "contactGroups/custom1",
+            "etag": "etag_custom1",
+            "name": "My Custom Sync Label",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+        mock_api2.create_contact_group.return_value = {
+            "resourceName": "contactGroups/custom2",
+            "etag": "etag_custom2",
+            "name": "My Custom Sync Label",
+            "groupType": "USER_CONTACT_GROUP",
+        }
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify groups were created with custom name
+        mock_api1.create_contact_group.assert_called_once_with("My Custom Sync Label")
+        mock_api2.create_contact_group.assert_called_once_with("My Custom Sync Label")
+
+    def test_sync_label_case_insensitive_group_match(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that sync label group matching is case-insensitive."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        # Existing group with different case
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/sync1",
+                    "name": "SYNCED CONTACTS",  # Different case
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/sync2",
+                    "name": "synced contacts",  # Different case
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Verify groups were NOT created (existing groups should be used)
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Verify existing group resource names were stored
+        assert engine._sync_label_group_resources[1] == "contactGroups/sync1"
+        assert engine._sync_label_group_resources[2] == "contactGroups/sync2"
+
+    def test_sync_label_no_config(self, mock_api1, mock_api2, real_database):
+        """Test that sync label works correctly when no config is provided."""
+        # Engine with no config (default behavior)
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=None,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # When config is None, sync label should be disabled
+        mock_api1.list_contact_groups.assert_not_called()
+        mock_api2.list_contact_groups.assert_not_called()
+
+        # Resources should be None
+        assert engine._sync_label_group_resources[1] is None
+        assert engine._sync_label_group_resources[2] is None
+
+    def test_get_sync_label_resource_returns_correct_value(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _get_sync_label_resource helper method."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=True, group_name="Synced Contacts"),
+        )
+
+        mock_api1.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/sync1", "name": "Synced Contacts"}],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/sync2", "name": "Synced Contacts"}],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Test helper method returns correct values
+        assert engine._get_sync_label_resource(1) == "contactGroups/sync1"
+        assert engine._get_sync_label_resource(2) == "contactGroups/sync2"
+
+    def test_get_sync_label_resource_returns_none_when_disabled(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _get_sync_label_resource returns None when disabled."""
+        from gcontact_sync.config.sync_config import SyncConfig, SyncLabelConfig
+
+        sync_config = SyncConfig(
+            sync_label=SyncLabelConfig(enabled=False),
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_sync_label_groups()
+
+        # Helper method should return None
+        assert engine._get_sync_label_resource(1) is None
+        assert engine._get_sync_label_resource(2) is None

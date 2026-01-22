@@ -35,6 +35,7 @@ PERSON_FIELDS = ",".join(
 )
 
 # Fields to update when modifying contacts
+# Note: "photos" cannot be updated via batchUpdateContacts - must use updateContactPhoto
 UPDATE_PERSON_FIELDS = ",".join(
     [
         "names",
@@ -42,7 +43,6 @@ UPDATE_PERSON_FIELDS = ",".join(
         "phoneNumbers",
         "organizations",
         "biographies",
-        "photos",
     ]
 )
 
