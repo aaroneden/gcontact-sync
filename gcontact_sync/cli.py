@@ -2205,6 +2205,210 @@ def daemon_status_command(ctx: click.Context) -> None:
         click.echo("  gcontact-sync daemon stop")
 
 
+@daemon_group.command("install")
+@click.option(
+    "--interval",
+    "-i",
+    default=None,
+    help=(
+        "Sync interval for the service (e.g., '30s', '5m', '1h', '1d'). "
+        "Defaults to config value or '1h'."
+    ),
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing service file if it exists.",
+)
+@click.pass_context
+def daemon_install_command(
+    ctx: click.Context,
+    interval: str | None,
+    force: bool,
+) -> None:
+    """
+    Install gcontact-sync as a system service.
+
+    Installs the daemon as a systemd user service (Linux) or launchd
+    agent (macOS) for automatic background synchronization.
+
+    The service will be configured to:
+    - Start automatically on user login
+    - Restart on failure
+    - Run with the configured sync interval
+
+    Examples:
+
+        # Install with default settings
+        gcontact-sync daemon install
+
+        # Install with custom sync interval
+        gcontact-sync daemon install --interval 30m
+
+        # Overwrite existing installation
+        gcontact-sync daemon install --force
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    config = ctx.obj.get("config", {})
+    verbose = ctx.obj.get("verbose", False)
+
+    from gcontact_sync.daemon import (
+        ServiceManager,
+        get_platform,
+        parse_interval,
+    )
+
+    # Resolve interval: CLI > config > default
+    effective_interval = interval or config.get("daemon_interval", "1h")
+
+    # Validate interval format
+    try:
+        interval_seconds = parse_interval(effective_interval)
+    except ValueError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    # Create service manager
+    service_manager = ServiceManager(config_dir=config_dir)
+
+    # Check platform support
+    platform = get_platform()
+    if not service_manager.is_platform_supported():
+        click.echo(
+            click.style(
+                f"Error: Platform '{platform}' is not supported "
+                "for service installation.",
+                fg="red",
+            ),
+            err=True,
+        )
+        click.echo(
+            "Supported platforms: Linux (systemd), macOS (launchd)",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(f"Installing gcontact-sync daemon as a {platform} service...")
+    click.echo(f"  Sync interval: {effective_interval} ({interval_seconds} seconds)")
+
+    if verbose:
+        click.echo(f"  Config directory: {config_dir}")
+        service_path = service_manager.get_service_file_path()
+        click.echo(f"  Service file: {service_path}")
+
+    # Install the service
+    success, error = service_manager.install(
+        interval=effective_interval,
+        overwrite=force,
+    )
+
+    if success:
+        service_path = service_manager.get_service_file_path()
+        click.echo(click.style("\nService installed successfully!", fg="green"))
+        click.echo(f"\nService file: {service_path}")
+        logger.info(f"Daemon service installed at {service_path}")
+
+        # Show platform-specific instructions
+        if platform == "linux":
+            click.echo("\nTo enable and start the service:")
+            click.echo("  systemctl --user enable gcontact-sync")
+            click.echo("  systemctl --user start gcontact-sync")
+            click.echo("\nTo check service status:")
+            click.echo("  systemctl --user status gcontact-sync")
+        elif platform == "macos":
+            click.echo("\nTo load and start the service:")
+            click.echo(f"  launchctl load {service_path}")
+            click.echo("\nTo check if the service is running:")
+            click.echo("  launchctl list | grep gcontact-sync")
+            click.echo("\nThe service is configured to start automatically on login.")
+    else:
+        click.echo(click.style(f"\nInstallation failed: {error}", fg="red"), err=True)
+        logger.error(f"Daemon service installation failed: {error}")
+        sys.exit(1)
+
+
+@daemon_group.command("uninstall")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation prompt.",
+)
+@click.pass_context
+def daemon_uninstall_command(ctx: click.Context, yes: bool) -> None:
+    """
+    Uninstall the gcontact-sync system service.
+
+    Stops the running service (if any) and removes the service file
+    from the system. This does not affect your configuration or
+    contact data.
+
+    Examples:
+
+        # Uninstall with confirmation
+        gcontact-sync daemon uninstall
+
+        # Uninstall without confirmation
+        gcontact-sync daemon uninstall --yes
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    verbose = ctx.obj.get("verbose", False)
+
+    from gcontact_sync.daemon import ServiceManager, get_platform
+
+    # Create service manager
+    service_manager = ServiceManager(config_dir=config_dir)
+
+    # Check platform support
+    platform = get_platform()
+    if not service_manager.is_platform_supported():
+        click.echo(
+            click.style(
+                f"Error: Platform '{platform}' is not supported "
+                "for service management.",
+                fg="red",
+            ),
+            err=True,
+        )
+        sys.exit(1)
+
+    # Check if service is installed
+    if not service_manager.is_installed():
+        click.echo("No daemon service is currently installed.")
+        return
+
+    service_path = service_manager.get_service_file_path()
+
+    if verbose:
+        click.echo(f"Service file: {service_path}")
+
+    # Confirmation prompt
+    if not yes:
+        click.confirm(
+            f"Uninstall gcontact-sync daemon service from {platform}?",
+            abort=True,
+        )
+
+    click.echo("Uninstalling gcontact-sync daemon service...")
+
+    # Uninstall the service
+    success, error = service_manager.uninstall()
+
+    if success:
+        click.echo(click.style("\nService uninstalled successfully!", fg="green"))
+        click.echo(f"Removed: {service_path}")
+        logger.info(f"Daemon service uninstalled from {service_path}")
+        click.echo("\nYour configuration and contact data are preserved.")
+        click.echo("You can reinstall the service anytime with 'daemon install'.")
+    else:
+        click.echo(click.style(f"\nUninstallation failed: {error}", fg="red"), err=True)
+        logger.error(f"Daemon service uninstallation failed: {error}")
+        sys.exit(1)
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
