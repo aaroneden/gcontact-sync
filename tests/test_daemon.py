@@ -7,6 +7,7 @@ PID file management, and service file generation.
 
 import os
 import signal
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -454,9 +455,7 @@ class TestDaemonSchedulerClassMethods:
         pid_file = tmp_path / "daemon.pid"
         pid_file.write_text("99999999")  # Non-existent process
 
-        with patch.object(
-            PIDFileManager, "_is_process_running", return_value=False
-        ):
+        with patch.object(PIDFileManager, "_is_process_running", return_value=False):
             result = DaemonScheduler.get_running_pid(pid_file)
 
         assert result is None
@@ -484,8 +483,9 @@ class TestDaemonSchedulerClassMethods:
         pid_file = tmp_path / "daemon.pid"
         pid_file.write_text("12345")
 
-        with patch("os.kill") as mock_kill, patch.object(
-            PIDFileManager, "_is_process_running", return_value=True
+        with (
+            patch("os.kill") as mock_kill,
+            patch.object(PIDFileManager, "_is_process_running", return_value=True),
         ):
             result = DaemonScheduler.stop_running_daemon(pid_file)
 
@@ -689,10 +689,10 @@ class TestServiceManager:
 
     @patch("gcontact_sync.daemon.service.get_platform", return_value=PLATFORM_WINDOWS)
     def test_service_manager_is_platform_supported_windows(self, mock_platform):
-        """Test is_platform_supported returns False for Windows."""
+        """Test is_platform_supported returns True for Windows."""
         manager = ServiceManager()
         manager.platform = PLATFORM_WINDOWS
-        assert manager.is_platform_supported() is False
+        assert manager.is_platform_supported() is True
 
     def test_service_manager_is_installed_no_file(self, tmp_path):
         """Test is_installed returns False when service file doesn't exist."""
@@ -710,9 +710,7 @@ class TestServiceManager:
         service_file.write_text("content")
 
         manager = ServiceManager()
-        with patch.object(
-            manager, "get_service_file_path", return_value=service_file
-        ):
+        with patch.object(manager, "get_service_file_path", return_value=service_file):
             assert manager.is_installed() is True
 
     def test_service_manager_install_unsupported_platform(self):
@@ -733,9 +731,7 @@ class TestServiceManager:
         manager = ServiceManager()
         manager.platform = PLATFORM_LINUX
 
-        with patch.object(
-            manager, "get_service_file_path", return_value=service_file
-        ):
+        with patch.object(manager, "get_service_file_path", return_value=service_file):
             success, error = manager.install(overwrite=False)
 
         assert success is False
@@ -754,3 +750,196 @@ class TestServiceManager:
         assert status["installed"] is False
         assert status["running"] is False
         assert status["enabled"] is False
+
+
+class TestGenerateWindowsTaskXml:
+    """Tests for Windows Task Scheduler XML generation."""
+
+    def test_generate_windows_task_xml_returns_string(self):
+        """Test generate_windows_task_xml returns a string."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml()
+        assert isinstance(xml, str)
+        assert len(xml) > 0
+
+    def test_generate_windows_task_xml_is_valid_xml(self):
+        """Test generate_windows_task_xml returns valid XML."""
+        import xml.etree.ElementTree as ET
+
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml()
+        # Remove UTF-16 declaration for parsing
+        xml_for_parse = xml.replace('encoding="UTF-16"', 'encoding="UTF-8"')
+        # Should not raise
+        ET.fromstring(xml_for_parse)
+
+    def test_generate_windows_task_xml_contains_description(self):
+        """Test generate_windows_task_xml contains description."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml()
+        assert "Google Contacts Sync" in xml
+        assert "<Description>" in xml
+
+    def test_generate_windows_task_xml_contains_exec_command(self):
+        """Test generate_windows_task_xml contains exec command."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml()
+        assert "<Command>" in xml
+        assert "<Arguments>" in xml
+        assert "gcontact_sync" in xml
+
+    def test_generate_windows_task_xml_custom_interval_hours(self):
+        """Test generate_windows_task_xml with custom interval in hours."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml(interval="6h")
+        assert "<Interval>PT6H</Interval>" in xml
+
+    def test_generate_windows_task_xml_custom_interval_minutes(self):
+        """Test generate_windows_task_xml with custom interval in minutes."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml(interval="30m")
+        assert "<Interval>PT30M</Interval>" in xml
+
+    def test_generate_windows_task_xml_custom_interval_days(self):
+        """Test generate_windows_task_xml with custom interval in days."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml(interval="1d")
+        assert "<Interval>P1D</Interval>" in xml
+
+    def test_generate_windows_task_xml_custom_config_dir(self, tmp_path):
+        """Test generate_windows_task_xml with custom config dir."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml(config_dir=tmp_path)
+        assert str(tmp_path) in xml
+
+    def test_generate_windows_task_xml_logon_trigger(self):
+        """Test generate_windows_task_xml has logon trigger."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml()
+        assert "<LogonTrigger>" in xml
+        assert "<Enabled>true</Enabled>" in xml
+
+    def test_generate_windows_task_xml_network_required(self):
+        """Test generate_windows_task_xml requires network."""
+        from gcontact_sync.daemon import generate_windows_task_xml
+
+        xml = generate_windows_task_xml()
+        assert "<RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>" in xml
+
+
+class TestWindowsServiceManager:
+    """Tests for Windows-specific ServiceManager functionality."""
+
+    def test_windows_is_installed_checks_task(self):
+        """Test is_installed on Windows checks Task Scheduler."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        with patch.object(
+            manager, "_is_windows_task_installed", return_value=True
+        ) as mock:
+            result = manager.is_installed()
+
+        mock.assert_called_once()
+        assert result is True
+
+    def test_windows_install_calls_helper(self):
+        """Test install on Windows calls _install_windows_task."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        with patch.object(
+            manager, "_install_windows_task", return_value=(True, None)
+        ) as mock:
+            success, error = manager.install(interval="1h")
+
+        mock.assert_called_once_with("1h", False)
+        assert success is True
+        assert error is None
+
+    def test_windows_uninstall_calls_helper(self):
+        """Test uninstall on Windows calls _uninstall_windows_task."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        with patch.object(
+            manager, "_uninstall_windows_task", return_value=(True, None)
+        ) as mock:
+            success, error = manager.uninstall()
+
+        mock.assert_called_once()
+        assert success is True
+        assert error is None
+
+    def test_windows_start_uses_schtasks_run(self):
+        """Test start on Windows uses schtasks /Run."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with (
+            patch.object(manager, "is_installed", return_value=True),
+            patch.object(manager, "_run_command", return_value=fake_result) as mock,
+        ):
+            success, error = manager.start()
+
+        mock.assert_called_once()
+        call_args = mock.call_args[0][0]
+        assert "schtasks" in call_args
+        assert "/Run" in call_args
+
+    def test_windows_stop_uses_schtasks_end(self):
+        """Test stop on Windows uses schtasks /End."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with (
+            patch.object(manager, "is_installed", return_value=True),
+            patch.object(manager, "_run_command", return_value=fake_result) as mock,
+        ):
+            success, error = manager.stop()
+
+        mock.assert_called_once()
+        call_args = mock.call_args[0][0]
+        assert "schtasks" in call_args
+        assert "/End" in call_args
+
+    def test_windows_status_uses_task_helpers(self):
+        """Test status on Windows uses Windows task helpers."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        with (
+            patch.object(manager, "_is_windows_task_installed", return_value=True),
+            patch.object(manager, "_is_windows_task_running", return_value=False),
+            patch.object(manager, "_is_windows_task_enabled", return_value=True),
+        ):
+            status = manager.status()
+
+        assert status["installed"] is True
+        assert status["running"] is False
+        assert status["enabled"] is True
+        assert "GContactSync" in status["service_path"]
+
+    def test_windows_get_service_file_path(self):
+        """Test get_service_file_path returns task.xml path on Windows."""
+        manager = ServiceManager()
+        manager.platform = PLATFORM_WINDOWS
+
+        path = manager.get_service_file_path()
+        assert path is not None
+        assert "task.xml" in str(path)

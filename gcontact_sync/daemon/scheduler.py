@@ -132,9 +132,7 @@ class PIDFileManager:
             content = self.pid_file.read_text().strip()
             return int(content)
         except ValueError as e:
-            raise PIDFileError(
-                f"Invalid PID in file {self.pid_file}: {content}"
-            ) from e
+            raise PIDFileError(f"Invalid PID in file {self.pid_file}: {content}") from e
         except OSError as e:
             raise PIDFileError(f"Failed to read PID file {self.pid_file}: {e}") from e
 
@@ -154,9 +152,7 @@ class PIDFileManager:
             self.pid_file.unlink()
             logger.debug(f"Removed PID file: {self.pid_file}")
         except OSError as e:
-            raise PIDFileError(
-                f"Failed to remove PID file {self.pid_file}: {e}"
-            ) from e
+            raise PIDFileError(f"Failed to remove PID file {self.pid_file}: {e}") from e
 
     def _is_process_running(self, pid: int) -> bool:
         """

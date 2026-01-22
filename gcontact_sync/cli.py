@@ -2093,12 +2093,10 @@ def daemon_start_command(
                 )
 
                 created = (
-                    result.stats.created_in_account1
-                    + result.stats.created_in_account2
+                    result.stats.created_in_account1 + result.stats.created_in_account2
                 )
                 updated = (
-                    result.stats.updated_in_account1
-                    + result.stats.updated_in_account2
+                    result.stats.updated_in_account1 + result.stats.updated_in_account2
                 )
                 logger.info(
                     f"Sync completed: {created} created, "

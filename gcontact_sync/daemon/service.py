@@ -2,7 +2,8 @@
 Platform service file management for daemon installation.
 
 Provides functionality to detect the current platform and install/uninstall
-the gcontact-sync daemon as a system service on Linux (systemd) and macOS (launchd).
+the gcontact-sync daemon as a system service on Linux (systemd), macOS (launchd),
+and Windows (Task Scheduler).
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ SYSTEMD_SERVICE_FILE = SYSTEMD_USER_DIR / f"{SERVICE_NAME}.service"
 # Launchd paths (macOS)
 LAUNCHD_USER_DIR = Path.home() / "Library" / "LaunchAgents"
 LAUNCHD_PLIST_FILE = LAUNCHD_USER_DIR / f"com.{SERVICE_NAME}.plist"
+
+# Windows Task Scheduler
+WINDOWS_TASK_NAME = "GContactSync"
 
 
 class ServiceError(Exception):
@@ -244,6 +248,104 @@ def generate_launchd_plist(
 """
 
 
+def generate_windows_task_xml(
+    interval: str = "1h",
+    config_dir: Path | None = None,
+) -> str:
+    """
+    Generate Windows Task Scheduler XML for gcontact-sync daemon.
+
+    Creates a Task Scheduler XML definition that runs gcontact-sync sync
+    at the specified interval.
+
+    Args:
+        interval: Sync interval (e.g., "1h", "30m", "6h", "1d")
+        config_dir: Optional custom config directory path
+
+    Returns:
+        String containing Windows Task Scheduler XML content
+
+    Example:
+        xml_content = generate_windows_task_xml(interval="1h")
+    """
+    from gcontact_sync.daemon import parse_interval
+
+    python_path = _get_executable_path()
+
+    # Build command arguments
+    args = "-m gcontact_sync sync"
+    if config_dir:
+        args += f" --config-dir {config_dir}"
+
+    # Parse interval to get repetition settings
+    interval_seconds = parse_interval(interval)
+
+    # Convert to ISO 8601 duration format for Task Scheduler
+    # PT = Period Time, H = hours, M = minutes, S = seconds
+    if interval_seconds >= 86400:  # Days
+        days = interval_seconds // 86400
+        duration = f"P{days}D"
+    elif interval_seconds >= 3600:  # Hours
+        hours = interval_seconds // 3600
+        duration = f"PT{hours}H"
+    elif interval_seconds >= 60:  # Minutes
+        minutes = interval_seconds // 60
+        duration = f"PT{minutes}M"
+    else:  # Seconds
+        duration = f"PT{interval_seconds}S"
+
+    # Task runs indefinitely with repetition
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Google Contacts Sync - Automatic synchronization daemon</Description>
+    <Author>gcontact-sync</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>{duration}</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{python_path}</Command>
+      <Arguments>{args}</Arguments>
+      <WorkingDirectory>{Path.home()}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
 class ServiceManager:
     """
     Cross-platform service manager for gcontact-sync daemon.
@@ -284,7 +386,7 @@ class ServiceManager:
         Returns:
             True if the platform supports service installation, False otherwise.
         """
-        return self.platform in (PLATFORM_LINUX, PLATFORM_MACOS)
+        return self.platform in (PLATFORM_LINUX, PLATFORM_MACOS, PLATFORM_WINDOWS)
 
     def get_service_file_path(self) -> Path | None:
         """
@@ -292,11 +394,16 @@ class ServiceManager:
 
         Returns:
             Path to the service file, or None if platform not supported.
+            For Windows, returns None as Task Scheduler doesn't use files directly.
         """
         if self.platform == PLATFORM_LINUX:
             return SYSTEMD_SERVICE_FILE
         elif self.platform == PLATFORM_MACOS:
             return LAUNCHD_PLIST_FILE
+        elif self.platform == PLATFORM_WINDOWS:
+            # Windows Task Scheduler doesn't use a file path in the same way
+            # Return a placeholder path for consistency
+            return Path.home() / ".gcontact-sync" / "task.xml"
         return None
 
     def is_installed(self) -> bool:
@@ -306,8 +413,19 @@ class ServiceManager:
         Returns:
             True if the service file exists, False otherwise.
         """
+        if self.platform == PLATFORM_WINDOWS:
+            return self._is_windows_task_installed()
+
         service_path = self.get_service_file_path()
         return service_path is not None and service_path.exists()
+
+    def _is_windows_task_installed(self) -> bool:
+        """Check if the Windows Task Scheduler task is installed."""
+        result = self._run_command(
+            ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME],
+            check=False,
+        )
+        return result.returncode == 0
 
     def install(
         self,
@@ -340,8 +458,13 @@ class ServiceManager:
             return (
                 False,
                 f"Platform '{self.platform}' is not supported for service "
-                "installation. Supported platforms: Linux (systemd), macOS (launchd).",
+                "installation. Supported platforms: Linux (systemd), macOS (launchd), "
+                "Windows (Task Scheduler).",
             )
+
+        # Handle Windows separately since it uses Task Scheduler
+        if self.platform == PLATFORM_WINDOWS:
+            return self._install_windows_task(interval, overwrite)
 
         service_path = self.get_service_file_path()
         if service_path is None:
@@ -421,6 +544,10 @@ class ServiceManager:
                 f"Platform '{self.platform}' is not supported for service management.",
             )
 
+        # Handle Windows separately
+        if self.platform == PLATFORM_WINDOWS:
+            return self._uninstall_windows_task()
+
         service_path = self.get_service_file_path()
         if service_path is None:
             return (False, "Could not determine service file path")
@@ -483,6 +610,10 @@ class ServiceManager:
             elif self.platform == PLATFORM_MACOS:
                 service_path = self.get_service_file_path()
                 result = self._run_command(["launchctl", "load", str(service_path)])
+            elif self.platform == PLATFORM_WINDOWS:
+                result = self._run_command(
+                    ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME]
+                )
             else:
                 return (False, f"Unsupported platform: {self.platform}")
 
@@ -519,6 +650,11 @@ class ServiceManager:
                     ["launchctl", "unload", str(service_path)],
                     check=False,
                 )
+            elif self.platform == PLATFORM_WINDOWS:
+                self._run_command(
+                    ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
+                    check=False,
+                )
             else:
                 return (False, f"Unsupported platform: {self.platform}")
 
@@ -553,6 +689,10 @@ class ServiceManager:
                 # launchd services with RunAtLoad are automatically enabled
                 logger.info("Service is already configured to run at load (macOS)")
                 return (True, None)
+            elif self.platform == PLATFORM_WINDOWS:
+                # Windows tasks with LogonTrigger are already enabled
+                logger.info("Service is already configured to run at logon (Windows)")
+                return (True, None)
             else:
                 return (False, f"Unsupported platform: {self.platform}")
 
@@ -583,6 +723,15 @@ class ServiceManager:
                 # Would need to modify plist to disable RunAtLoad
                 logger.info("To disable autostart on macOS, uninstall the service")
                 return (True, None)
+            elif self.platform == PLATFORM_WINDOWS:
+                result = self._run_command(
+                    ["schtasks", "/Change", "/TN", WINDOWS_TASK_NAME, "/DISABLE"],
+                    check=False,
+                )
+                if result.returncode == 0:
+                    logger.info("Service disabled from autostart")
+                    return (True, None)
+                return (False, f"Failed to disable service: {result.stderr}")
             else:
                 return (False, f"Unsupported platform: {self.platform}")
 
@@ -610,6 +759,15 @@ class ServiceManager:
             "enabled": False,
             "service_path": "",
         }
+
+        # Handle Windows separately
+        if self.platform == PLATFORM_WINDOWS:
+            status_info["installed"] = self._is_windows_task_installed()
+            status_info["service_path"] = f"Task: {WINDOWS_TASK_NAME}"
+            if status_info["installed"]:
+                status_info["running"] = self._is_windows_task_running()
+                status_info["enabled"] = self._is_windows_task_enabled()
+            return status_info
 
         service_path = self.get_service_file_path()
         if service_path:
@@ -689,6 +847,128 @@ class ServiceManager:
                 stderr=str(e),
             )
 
+    # Windows-specific helper methods
+
+    def _install_windows_task(
+        self, interval: str, overwrite: bool
+    ) -> tuple[bool, str | None]:
+        """Install the daemon as a Windows Task Scheduler task."""
+        if self._is_windows_task_installed() and not overwrite:
+            return (
+                False,
+                f"Task '{WINDOWS_TASK_NAME}' already installed.\n"
+                "Use --force to overwrite.",
+            )
+
+        try:
+            # Generate XML content
+            xml_content = generate_windows_task_xml(
+                interval=interval,
+                config_dir=self.config_dir,
+            )
+
+            # Write XML to temp file
+            task_xml_path = Path.home() / ".gcontact-sync" / "task.xml"
+            task_xml_path.parent.mkdir(parents=True, exist_ok=True)
+            task_xml_path.write_text(xml_content, encoding="utf-16")
+
+            # Delete existing task if overwriting
+            if overwrite and self._is_windows_task_installed():
+                self._run_command(
+                    ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
+                    check=False,
+                )
+
+            # Create the task from XML
+            result = self._run_command(
+                [
+                    "schtasks",
+                    "/Create",
+                    "/TN",
+                    WINDOWS_TASK_NAME,
+                    "/XML",
+                    str(task_xml_path),
+                ],
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Created Windows scheduled task: {WINDOWS_TASK_NAME}")
+
+                # Create log directory
+                log_dir = Path.home() / ".gcontact-sync" / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created log directory: {log_dir}")
+
+                return (True, None)
+            else:
+                return (False, f"Failed to create task: {result.stderr}")
+
+        except OSError as e:
+            error_msg = f"Failed to create Windows task: {e}"
+            logger.error(error_msg)
+            return (False, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error during Windows task installation: {e}"
+            logger.exception(error_msg)
+            return (False, error_msg)
+
+    def _uninstall_windows_task(self) -> tuple[bool, str | None]:
+        """Uninstall the Windows Task Scheduler task."""
+        if not self._is_windows_task_installed():
+            return (False, f"Task '{WINDOWS_TASK_NAME}' is not installed.")
+
+        try:
+            # Stop the task if running
+            self._run_command(
+                ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
+                check=False,
+            )
+
+            # Delete the task
+            result = self._run_command(
+                ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Deleted Windows scheduled task: {WINDOWS_TASK_NAME}")
+
+                # Clean up XML file if it exists
+                task_xml_path = Path.home() / ".gcontact-sync" / "task.xml"
+                if task_xml_path.exists():
+                    task_xml_path.unlink()
+                    logger.debug(f"Removed task XML file: {task_xml_path}")
+
+                return (True, None)
+            else:
+                return (False, f"Failed to delete task: {result.stderr}")
+
+        except Exception as e:
+            error_msg = f"Unexpected error during Windows task uninstallation: {e}"
+            logger.exception(error_msg)
+            return (False, error_msg)
+
+    def _is_windows_task_running(self) -> bool:
+        """Check if the Windows Task is currently running."""
+        result = self._run_command(
+            ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST", "/V"],
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        # Look for "Status: Running" in the output
+        return "Running" in result.stdout
+
+    def _is_windows_task_enabled(self) -> bool:
+        """Check if the Windows Task is enabled."""
+        result = self._run_command(
+            ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST", "/V"],
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        # Look for "Scheduled Task State: Enabled" in the output
+        return "Enabled" in result.stdout and "Disabled" not in result.stdout
+
 
 # Module-level exports
 __all__ = [
@@ -700,6 +980,7 @@ __all__ = [
     "UnsupportedPlatformError",
     "generate_systemd_service",
     "generate_launchd_plist",
+    "generate_windows_task_xml",
     "PLATFORM_LINUX",
     "PLATFORM_MACOS",
     "PLATFORM_WINDOWS",
@@ -707,4 +988,5 @@ __all__ = [
     "SERVICE_NAME",
     "SYSTEMD_SERVICE_FILE",
     "LAUNCHD_PLIST_FILE",
+    "WINDOWS_TASK_NAME",
 ]

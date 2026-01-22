@@ -58,8 +58,7 @@ def parse_interval(interval: str | int) -> int:
         return value * multipliers[unit]
 
     raise ValueError(
-        f"Invalid interval type: {type(interval).__name__}. "
-        "Expected str or int."
+        f"Invalid interval type: {type(interval).__name__}. Expected str or int."
     )
 
 
@@ -78,6 +77,7 @@ from gcontact_sync.daemon.service import (  # noqa: E402
     PLATFORM_LINUX,
     PLATFORM_MACOS,
     PLATFORM_WINDOWS,
+    WINDOWS_TASK_NAME,
     ServiceError,
     ServiceInstallError,
     ServiceManager,
@@ -85,6 +85,7 @@ from gcontact_sync.daemon.service import (  # noqa: E402
     UnsupportedPlatformError,
     generate_launchd_plist,
     generate_systemd_service,
+    generate_windows_task_xml,
     get_platform,
 )
 
@@ -107,7 +108,9 @@ __all__ = [
     "UnsupportedPlatformError",
     "generate_systemd_service",
     "generate_launchd_plist",
+    "generate_windows_task_xml",
     "PLATFORM_LINUX",
     "PLATFORM_MACOS",
     "PLATFORM_WINDOWS",
+    "WINDOWS_TASK_NAME",
 ]

@@ -1455,7 +1455,8 @@ class TestDaemonCommand:
     ):
         """Test daemon start with invalid interval format."""
         mock_parse_interval.side_effect = ValueError(
-            "Invalid interval format: 'invalid'. Use format like '30s', '5m', '1h', or '1d'."
+            "Invalid interval format: 'invalid'. "
+            "Use format like '30s', '5m', '1h', or '1d'."
         )
 
         runner = CliRunner()
