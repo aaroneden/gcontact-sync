@@ -51,6 +51,279 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
+### Using Docker (Alternative)
+
+GContact Sync provides Docker support for containerized deployments. This is ideal for running the application in isolated environments or on servers without Python installed.
+
+#### Prerequisites
+
+- Docker Engine 20.10+ ([Install Docker](https://docs.docker.com/engine/install/))
+- Docker Compose 2.0+ ([Install Docker Compose](https://docs.docker.com/compose/install/))
+
+#### Quick Start with Docker Compose
+
+```bash
+# Clone the repository
+git clone https://github.com/example/gcontact-sync.git
+cd gcontact-sync
+
+# Create required directories for volume mounts
+mkdir -p config data credentials
+
+# Copy environment template
+cp .env.example .env
+
+# Build the Docker image
+docker compose build
+
+# Run commands using docker compose
+docker compose run --rm gcontact-sync --help
+```
+
+#### Volume Mounts
+
+The Docker container uses three volume mounts for persistent data:
+
+| Host Path | Container Path | Purpose | Required |
+|-----------|----------------|---------|----------|
+| `./config` | `/app/config` | OAuth credentials and configuration files | Yes |
+| `./data` | `/app/data` | SQLite database (sync.db) | Yes |
+| `./credentials` | `/app/credentials` | Additional credential storage | Optional |
+
+**Important**: Ensure these directories exist and have proper permissions before running the container:
+
+```bash
+mkdir -p config data credentials
+chmod 755 config data credentials
+```
+
+#### Environment Variables for Docker
+
+Create a `.env` file based on `.env.example` to configure the application:
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit the file with your preferred settings
+nano .env  # or use your preferred editor
+```
+
+Available environment variables:
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `GCONTACT_SYNC_CONFIG_DIR` | Config directory path inside container | `/app/config` | `/app/config` |
+| `GCONTACT_SYNC_LOG_LEVEL` | Logging level | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `GCONTACT_SYNC_DEBUG` | Enable debug mode | `false` | `true`, `false` |
+| `ANTHROPIC_API_KEY` | API key for LLM-assisted matching | None | `sk-ant-...` |
+
+**Note**: OAuth credentials (`credentials.json`, `token_*.json`) should be placed in the `config/` directory, NOT in environment variables.
+
+#### Docker Usage Examples
+
+**Authenticate accounts:**
+```bash
+# Authenticate Account 1
+docker compose run --rm gcontact-sync auth --account account1
+
+# Authenticate Account 2
+docker compose run --rm gcontact-sync auth --account account2
+```
+
+**Check status:**
+```bash
+docker compose run --rm gcontact-sync status
+```
+
+**Sync contacts (dry run):**
+```bash
+docker compose run --rm gcontact-sync sync --dry-run
+```
+
+**Execute sync:**
+```bash
+docker compose run --rm gcontact-sync sync
+```
+
+**Verbose sync with full refresh:**
+```bash
+docker compose run --rm gcontact-sync sync --full --verbose
+```
+
+**Initialize config file:**
+```bash
+docker compose run --rm gcontact-sync init-config
+```
+
+#### Building the Docker Image Manually
+
+If you prefer to build without docker-compose:
+
+```bash
+# Build the image
+docker build -t gcontact-sync:latest .
+
+# Run with volume mounts
+docker run --rm \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/credentials:/app/credentials \
+  --env-file .env \
+  gcontact-sync:latest --help
+```
+
+#### Health Checks
+
+The Docker container includes a health check that runs every 30 seconds:
+
+```bash
+# Check container health status
+docker compose ps
+
+# View health check logs
+docker inspect --format='{{json .State.Health}}' gcontact-sync | jq
+```
+
+The health check uses the `gcontact-sync health` command to verify the application is functioning correctly.
+
+#### Docker Compose Configuration Customization
+
+The `docker-compose.yml` file can be customized for your deployment:
+
+**Enable resource limits** (uncomment in docker-compose.yml):
+```yaml
+deploy:
+  resources:
+    limits:
+      cpus: '1.0'
+      memory: 512M
+    reservations:
+      cpus: '0.25'
+      memory: 128M
+```
+
+**Use named volumes instead of bind mounts** (uncomment in docker-compose.yml):
+```yaml
+volumes:
+  config:
+  data:
+  credentials:
+```
+
+Then update the volume mounts in the service definition:
+```yaml
+volumes:
+  - config:/app/config:rw
+  - data:/app/data:rw
+  - credentials:/app/credentials:rw
+```
+
+#### Troubleshooting Docker Deployment
+
+**Problem**: Permission denied errors when accessing mounted volumes
+
+**Solution**: Ensure the host directories have the correct permissions. The container runs as user ID 1000:
+
+```bash
+# Set correct ownership (Linux/macOS)
+sudo chown -R 1000:1000 config data credentials
+
+# Or make directories world-writable (less secure)
+chmod 777 config data credentials
+```
+
+**Problem**: OAuth authentication fails in Docker
+
+**Solution**: Make sure `credentials.json` is in the `config/` directory and the container can access it:
+
+```bash
+# Check if file exists and is readable
+ls -la config/credentials.json
+
+# Copy credentials if missing
+cp ~/Downloads/client_secret_*.json config/credentials.json
+```
+
+**Problem**: Container exits immediately or shows "No such file or directory"
+
+**Solution**: Verify the volume mounts and environment variables:
+
+```bash
+# Check docker compose configuration
+docker compose config
+
+# View container logs
+docker compose logs gcontact-sync
+
+# Run with interactive shell for debugging
+docker compose run --rm --entrypoint /bin/bash gcontact-sync
+```
+
+**Problem**: Database locked errors
+
+**Solution**: Ensure only one container instance is accessing the database:
+
+```bash
+# Stop all running containers
+docker compose down
+
+# Remove any stale lock files
+rm -f data/.sync.db-*
+
+# Restart with clean state
+docker compose run --rm gcontact-sync status
+```
+
+**Problem**: Health check failures
+
+**Solution**: The health check command requires the application to be properly configured:
+
+```bash
+# Disable health check temporarily (docker-compose.yml)
+# Comment out the healthcheck section
+
+# Or check what's failing
+docker compose run --rm gcontact-sync health
+```
+
+**Problem**: Cannot access Google OAuth consent screen during authentication
+
+**Solution**: OAuth authentication requires a browser. For headless servers:
+
+1. Authenticate on a local machine first
+2. Copy the token files to your server:
+   ```bash
+   # On local machine after auth
+   scp config/token_*.json user@server:/path/to/gcontact-sync/config/
+   ```
+3. Or use SSH port forwarding to access the OAuth flow
+
+**Problem**: Building fails with dependency errors
+
+**Solution**: Clear Docker build cache and rebuild:
+
+```bash
+# Remove existing images and build cache
+docker compose down --rmi all
+docker builder prune -a
+
+# Rebuild from scratch
+docker compose build --no-cache
+```
+
+**Problem**: Sync is slow or times out in Docker
+
+**Solution**: Increase resource limits and timeout settings:
+
+```bash
+# Run with increased verbosity to identify bottlenecks
+docker compose run --rm gcontact-sync sync --verbose
+
+# Check container resource usage
+docker stats gcontact-sync
+```
+
 ## Google Cloud Setup
 
 Before using GContact Sync, you need to set up a Google Cloud Project.
