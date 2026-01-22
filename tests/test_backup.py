@@ -15,6 +15,26 @@ import pytest
 from gcontact_sync.backup.manager import BackupManager
 
 
+def create_backup_helper(
+    bm: BackupManager,
+    account1_contacts: list | None = None,
+    account1_groups: list | None = None,
+    account2_contacts: list | None = None,
+    account2_groups: list | None = None,
+    account1_email: str = "test1@example.com",
+    account2_email: str = "test2@example.com",
+) -> Path | None:
+    """Helper to create backup with sensible defaults."""
+    return bm.create_backup(
+        account1_contacts=account1_contacts or [],
+        account1_groups=account1_groups or [],
+        account2_contacts=account2_contacts or [],
+        account2_groups=account2_groups or [],
+        account1_email=account1_email,
+        account2_email=account2_email,
+    )
+
+
 class TestBackupManagerInitialization:
     """Tests for BackupManager initialization."""
 
@@ -42,7 +62,7 @@ class TestBackupManagerInitialization:
         backup_dir = tmp_path / "backups" / "nested"
         assert not backup_dir.exists()
 
-        bm = BackupManager(backup_dir)
+        BackupManager(backup_dir)
         assert backup_dir.exists()
         assert backup_dir.is_dir()
 
@@ -51,7 +71,7 @@ class TestBackupManagerInitialization:
         backup_dir = tmp_path / "backups"
         backup_dir.mkdir()
 
-        bm = BackupManager(backup_dir)
+        BackupManager(backup_dir)
         assert backup_dir.exists()
 
     def test_path_expansion_with_tilde(self, tmp_path):
@@ -72,7 +92,7 @@ class TestBackupCreation:
 
     def test_create_backup_with_empty_data(self, bm):
         """Test creating backup with empty contacts and groups."""
-        backup_path = bm.create_backup([], [])
+        backup_path = create_backup_helper(bm)
 
         assert backup_path is not None
         assert backup_path.exists()
@@ -87,14 +107,16 @@ class TestBackupCreation:
         ]
         groups = [{"name": "Friends", "id": "group1"}]
 
-        backup_path = bm.create_backup(contacts, groups)
+        backup_path = create_backup_helper(
+            bm, account1_contacts=contacts, account1_groups=groups
+        )
 
         assert backup_path is not None
         assert backup_path.exists()
 
     def test_create_backup_filename_format(self, bm):
         """Test that backup filename follows expected format."""
-        backup_path = bm.create_backup([], [])
+        backup_path = create_backup_helper(bm)
 
         # Format: backup_YYYYMMDD_HHMMSS.json
         name = backup_path.name
@@ -111,40 +133,46 @@ class TestBackupCreation:
         contacts = [{"name": "Test Contact"}]
         groups = [{"name": "Test Group"}]
 
-        backup_path = bm.create_backup(contacts, groups)
+        backup_path = create_backup_helper(
+            bm, account1_contacts=contacts, account1_groups=groups
+        )
 
-        with open(backup_path, "r", encoding="utf-8") as f:
+        with open(backup_path, encoding="utf-8") as f:
             data = json.load(f)
 
         assert "version" in data
         assert "timestamp" in data
-        assert "contacts" in data
-        assert "groups" in data
-        assert data["version"] == "1.0"
-        assert len(data["contacts"]) == 1
-        assert len(data["groups"]) == 1
+        assert "accounts" in data
+        assert "account1" in data["accounts"]
+        assert "account2" in data["accounts"]
+        assert data["version"] == "2.0"
+        assert "email" in data["accounts"]["account1"]
+        assert "contacts" in data["accounts"]["account1"]
+        assert "groups" in data["accounts"]["account1"]
+        assert len(data["accounts"]["account1"]["contacts"]) == 1
+        assert len(data["accounts"]["account1"]["groups"]) == 1
 
     def test_create_backup_preserves_contact_data(self, bm):
         """Test that contact data is preserved in backup."""
         contacts = [
             {"name": "John Doe", "email": "john@example.com", "phone": "555-1234"}
         ]
-        groups = []
 
-        backup_path = bm.create_backup(contacts, groups)
+        backup_path = create_backup_helper(bm, account1_contacts=contacts)
 
-        with open(backup_path, "r", encoding="utf-8") as f:
+        with open(backup_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        assert data["contacts"][0]["name"] == "John Doe"
-        assert data["contacts"][0]["email"] == "john@example.com"
-        assert data["contacts"][0]["phone"] == "555-1234"
+        acc1_contacts = data["accounts"]["account1"]["contacts"]
+        assert acc1_contacts[0]["name"] == "John Doe"
+        assert acc1_contacts[0]["email"] == "john@example.com"
+        assert acc1_contacts[0]["phone"] == "555-1234"
 
     def test_create_backup_timestamp_is_iso_format(self, bm):
         """Test that timestamp is in ISO format."""
-        backup_path = bm.create_backup([], [])
+        backup_path = create_backup_helper(bm)
 
-        with open(backup_path, "r", encoding="utf-8") as f:
+        with open(backup_path, encoding="utf-8") as f:
             data = json.load(f)
 
         # Should be able to parse as ISO format datetime
@@ -156,11 +184,11 @@ class TestBackupCreation:
         bm = BackupManager(tmp_path / "backups", retention_count=2)
 
         # Create 3 backups
-        bm.create_backup([], [])
+        create_backup_helper(bm)
         time.sleep(1.1)  # Ensure different timestamps (filename has second precision)
-        bm.create_backup([], [])
+        create_backup_helper(bm)
         time.sleep(1.1)
-        bm.create_backup([], [])
+        create_backup_helper(bm)
 
         # Should only have 2 backups due to retention
         backups = bm.list_backups()
@@ -168,6 +196,7 @@ class TestBackupCreation:
 
     def test_create_backup_with_object_contacts(self, bm):
         """Test creating backup with contact objects."""
+
         class MockContact:
             def __init__(self, name, email):
                 self.name = name
@@ -175,17 +204,19 @@ class TestBackupCreation:
 
         contacts = [MockContact("John", "john@example.com")]
 
-        backup_path = bm.create_backup(contacts, [])
+        backup_path = create_backup_helper(bm, account1_contacts=contacts)
 
-        with open(backup_path, "r", encoding="utf-8") as f:
+        with open(backup_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        assert len(data["contacts"]) == 1
-        assert data["contacts"][0]["name"] == "John"
-        assert data["contacts"][0]["email"] == "john@example.com"
+        acc1_contacts = data["accounts"]["account1"]["contacts"]
+        assert len(acc1_contacts) == 1
+        assert acc1_contacts[0]["name"] == "John"
+        assert acc1_contacts[0]["email"] == "john@example.com"
 
     def test_create_backup_with_mixed_types(self, bm):
         """Test creating backup with mixed contact types."""
+
         class MockContact:
             def __init__(self, name):
                 self.name = name
@@ -195,12 +226,50 @@ class TestBackupCreation:
             {"name": "Dict Contact"},
         ]
 
-        backup_path = bm.create_backup(contacts, [])
+        backup_path = create_backup_helper(bm, account1_contacts=contacts)
 
-        with open(backup_path, "r", encoding="utf-8") as f:
+        with open(backup_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        assert len(data["contacts"]) == 2
+        acc1_contacts = data["accounts"]["account1"]["contacts"]
+        assert len(acc1_contacts) == 2
+
+    def test_create_backup_stores_account_emails(self, bm):
+        """Test that account emails are stored in backup."""
+        backup_path = create_backup_helper(
+            bm,
+            account1_email="user1@gmail.com",
+            account2_email="user2@gmail.com",
+        )
+
+        with open(backup_path, encoding="utf-8") as f:
+            data = json.load(f)
+
+        assert data["accounts"]["account1"]["email"] == "user1@gmail.com"
+        assert data["accounts"]["account2"]["email"] == "user2@gmail.com"
+
+    def test_create_backup_separates_account_data(self, bm):
+        """Test that data from each account is kept separate."""
+        acc1_contacts = [{"name": "Account1 Contact"}]
+        acc1_groups = [{"name": "Account1 Group"}]
+        acc2_contacts = [{"name": "Account2 Contact"}]
+        acc2_groups = [{"name": "Account2 Group"}]
+
+        backup_path = create_backup_helper(
+            bm,
+            account1_contacts=acc1_contacts,
+            account1_groups=acc1_groups,
+            account2_contacts=acc2_contacts,
+            account2_groups=acc2_groups,
+        )
+
+        with open(backup_path, encoding="utf-8") as f:
+            data = json.load(f)
+
+        assert data["accounts"]["account1"]["contacts"][0]["name"] == "Account1 Contact"
+        assert data["accounts"]["account1"]["groups"][0]["name"] == "Account1 Group"
+        assert data["accounts"]["account2"]["contacts"][0]["name"] == "Account2 Contact"
+        assert data["accounts"]["account2"]["groups"][0]["name"] == "Account2 Group"
 
 
 class TestBackupListing:
@@ -218,7 +287,7 @@ class TestBackupListing:
 
     def test_list_backups_returns_created_backup(self, bm):
         """Test that list_backups returns created backup."""
-        backup_path = bm.create_backup([], [])
+        backup_path = create_backup_helper(bm)
 
         backups = bm.list_backups()
         assert len(backups) == 1
@@ -226,22 +295,22 @@ class TestBackupListing:
 
     def test_list_backups_multiple_backups(self, bm):
         """Test listing multiple backups."""
-        bm.create_backup([], [])
+        create_backup_helper(bm)
         time.sleep(1.1)
-        bm.create_backup([], [])
+        create_backup_helper(bm)
         time.sleep(1.1)
-        bm.create_backup([], [])
+        create_backup_helper(bm)
 
         backups = bm.list_backups()
         assert len(backups) == 3
 
     def test_list_backups_sorted_newest_first(self, bm):
         """Test that backups are sorted newest first."""
-        backup1 = bm.create_backup([], [])
+        backup1 = create_backup_helper(bm)
         time.sleep(1.1)
-        backup2 = bm.create_backup([], [])
+        backup2 = create_backup_helper(bm)
         time.sleep(1.1)
-        backup3 = bm.create_backup([], [])
+        backup3 = create_backup_helper(bm)
 
         backups = bm.list_backups()
 
@@ -253,7 +322,7 @@ class TestBackupListing:
     def test_list_backups_ignores_non_backup_files(self, bm, tmp_path):
         """Test that list_backups ignores non-backup files."""
         # Create a backup
-        bm.create_backup([], [])
+        create_backup_helper(bm)
 
         # Create some non-backup files
         backup_dir = tmp_path / "backups"
@@ -281,29 +350,33 @@ class TestBackupLoading:
         """Test loading a valid backup file."""
         contacts = [{"name": "John Doe"}]
         groups = [{"name": "Friends"}]
-        backup_path = bm.create_backup(contacts, groups)
+        backup_path = create_backup_helper(
+            bm, account1_contacts=contacts, account1_groups=groups
+        )
 
         data = bm.load_backup(backup_path)
 
         assert data is not None
         assert "version" in data
         assert "timestamp" in data
-        assert "contacts" in data
-        assert "groups" in data
+        assert "accounts" in data
 
     def test_load_backup_preserves_data(self, bm):
         """Test that loaded data matches original data."""
         contacts = [{"name": "John Doe", "email": "john@example.com"}]
         groups = [{"name": "Friends", "id": "group1"}]
-        backup_path = bm.create_backup(contacts, groups)
+        backup_path = create_backup_helper(
+            bm, account1_contacts=contacts, account1_groups=groups
+        )
 
         data = bm.load_backup(backup_path)
 
-        assert len(data["contacts"]) == 1
-        assert data["contacts"][0]["name"] == "John Doe"
-        assert data["contacts"][0]["email"] == "john@example.com"
-        assert len(data["groups"]) == 1
-        assert data["groups"][0]["name"] == "Friends"
+        acc1 = data["accounts"]["account1"]
+        assert len(acc1["contacts"]) == 1
+        assert acc1["contacts"][0]["name"] == "John Doe"
+        assert acc1["contacts"][0]["email"] == "john@example.com"
+        assert len(acc1["groups"]) == 1
+        assert acc1["groups"][0]["name"] == "Friends"
 
     def test_load_backup_nonexistent_file(self, bm, tmp_path):
         """Test loading non-existent backup file."""
@@ -352,7 +425,7 @@ class TestBackupLoading:
 
     def test_load_backup_with_path_object(self, bm):
         """Test load_backup accepts Path objects."""
-        backup_path = bm.create_backup([], [])
+        backup_path = create_backup_helper(bm)
         data = bm.load_backup(backup_path)
 
         assert data is not None
@@ -368,7 +441,7 @@ class TestRetentionPolicy:
 
         # Create 5 backups
         for _ in range(5):
-            bm.create_backup([], [])
+            create_backup_helper(bm)
             time.sleep(1.1)
 
         backups = bm.list_backups()
@@ -379,15 +452,15 @@ class TestRetentionPolicy:
         bm = BackupManager(tmp_path / "backups", retention_count=3)
 
         # Create backups
-        old1 = bm.create_backup([{"name": "old1"}], [])
+        old1 = create_backup_helper(bm, account1_contacts=[{"name": "old1"}])
         time.sleep(1.1)
-        old2 = bm.create_backup([{"name": "old2"}], [])
+        old2 = create_backup_helper(bm, account1_contacts=[{"name": "old2"}])
         time.sleep(1.1)
-        new1 = bm.create_backup([{"name": "new1"}], [])
+        new1 = create_backup_helper(bm, account1_contacts=[{"name": "new1"}])
         time.sleep(1.1)
-        new2 = bm.create_backup([{"name": "new2"}], [])
+        new2 = create_backup_helper(bm, account1_contacts=[{"name": "new2"}])
         time.sleep(1.1)
-        new3 = bm.create_backup([{"name": "new3"}], [])
+        new3 = create_backup_helper(bm, account1_contacts=[{"name": "new3"}])
 
         # Manually apply retention
         bm.apply_retention()
@@ -406,11 +479,11 @@ class TestRetentionPolicy:
         """Test that oldest backups are deleted first."""
         bm = BackupManager(tmp_path / "backups", retention_count=2)
 
-        oldest = bm.create_backup([], [])
+        oldest = create_backup_helper(bm)
         time.sleep(1.1)
-        middle = bm.create_backup([], [])
+        middle = create_backup_helper(bm)
         time.sleep(1.1)
-        newest = bm.create_backup([], [])
+        newest = create_backup_helper(bm)
 
         bm.apply_retention()
 
@@ -434,11 +507,11 @@ class TestRetentionPolicy:
         bm = BackupManager(tmp_path / "backups", retention_count=10)
 
         # Create only 3 backups
-        bm.create_backup([], [])
+        create_backup_helper(bm)
         time.sleep(1.1)
-        bm.create_backup([], [])
+        create_backup_helper(bm)
         time.sleep(1.1)
-        bm.create_backup([], [])
+        create_backup_helper(bm)
 
         bm.apply_retention()
 
@@ -470,6 +543,7 @@ class TestSerialization:
 
     def test_serialize_contacts_with_objects(self, bm):
         """Test serializing contact objects."""
+
         class MockContact:
             def __init__(self, name, email):
                 self.name = name
@@ -513,6 +587,7 @@ class TestSerialization:
 
     def test_serialize_object_with_datetime(self, bm):
         """Test serializing object with datetime field."""
+
         class MockObject:
             def __init__(self):
                 self.created_at = datetime(2024, 1, 20, 10, 30, 0)
@@ -542,6 +617,7 @@ class TestSerialization:
 
     def test_serialize_object_with_none_values(self, bm):
         """Test serializing object with None values."""
+
         class MockObject:
             def __init__(self):
                 self.name = "Test"
@@ -557,6 +633,7 @@ class TestSerialization:
 
     def test_serialize_object_with_primitive_types(self, bm):
         """Test serializing object with various primitive types."""
+
         class MockObject:
             def __init__(self):
                 self.name = "Test"
@@ -574,6 +651,7 @@ class TestSerialization:
 
     def test_serialize_object_with_list_and_dict(self, bm):
         """Test serializing object with list and dict fields."""
+
         class MockObject:
             def __init__(self):
                 self.tags = ["tag1", "tag2"]
@@ -587,6 +665,7 @@ class TestSerialization:
 
     def test_serialize_object_with_unknown_type(self, bm):
         """Test serializing object with unknown type converts to string."""
+
         class CustomType:
             def __str__(self):
                 return "custom_value"
@@ -617,7 +696,13 @@ class TestBackupIntegration:
             {"name": "Friends", "id": "group1"},
         ]
 
-        backup_path = bm.create_backup(original_contacts, original_groups)
+        backup_path = create_backup_helper(
+            bm,
+            account1_contacts=original_contacts,
+            account1_groups=original_groups,
+            account1_email="user1@gmail.com",
+            account2_email="user2@gmail.com",
+        )
 
         # List backups
         backups = bm.list_backups()
@@ -627,10 +712,13 @@ class TestBackupIntegration:
         # Load backup
         loaded_data = bm.load_backup(backup_path)
         assert loaded_data is not None
-        assert len(loaded_data["contacts"]) == 2
-        assert len(loaded_data["groups"]) == 1
-        assert loaded_data["contacts"][0]["name"] == "John Doe"
-        assert loaded_data["groups"][0]["name"] == "Friends"
+
+        acc1 = loaded_data["accounts"]["account1"]
+        assert len(acc1["contacts"]) == 2
+        assert len(acc1["groups"]) == 1
+        assert acc1["contacts"][0]["name"] == "John Doe"
+        assert acc1["groups"][0]["name"] == "Friends"
+        assert acc1["email"] == "user1@gmail.com"
 
     def test_multiple_backups_with_retention(self, tmp_path):
         """Test creating multiple backups with retention policy."""
@@ -639,7 +727,7 @@ class TestBackupIntegration:
         backup_paths = []
         for i in range(5):
             contacts = [{"name": f"Contact {i}"}]
-            backup_path = bm.create_backup(contacts, [])
+            backup_path = create_backup_helper(bm, account1_contacts=contacts)
             backup_paths.append(backup_path)
             time.sleep(1.1)
 

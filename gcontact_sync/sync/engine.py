@@ -421,8 +421,8 @@ class SyncEngine:
 
         logger.info(f"Starting sync (dry_run={dry_run}, full_sync={full_sync})")
 
-        # Create pre-sync backup if enabled and not dry run
-        if backup_enabled and not dry_run:
+        # Create pre-sync backup if enabled (runs in all modes including dry-run)
+        if backup_enabled:
             try:
                 # Set default backup directory if not provided
                 if backup_dir is None:
@@ -443,12 +443,15 @@ class SyncEngine:
                 groups1, _ = self.api1.list_contact_groups()
                 groups2, _ = self.api2.list_contact_groups()
 
-                # Combine contacts and groups from both accounts
-                all_contacts = contacts1 + contacts2
-                all_groups = groups1 + groups2
-
-                # Create backup
-                backup_file = backup_manager.create_backup(all_contacts, all_groups)
+                # Create backup with data organized by account
+                backup_file = backup_manager.create_backup(
+                    account1_contacts=contacts1,
+                    account1_groups=groups1,
+                    account2_contacts=contacts2,
+                    account2_groups=groups2,
+                    account1_email=self.account1_email,
+                    account2_email=self.account2_email,
+                )
 
                 if backup_file:
                     logger.info(f"Pre-sync backup created: {backup_file}")

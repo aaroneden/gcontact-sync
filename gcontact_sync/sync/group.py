@@ -76,7 +76,7 @@ class ContactGroup:
     deleted: bool = False  # True if group was deleted in source
 
     @classmethod
-    def from_api_response(cls, group_data: dict[str, Any]) -> "ContactGroup":
+    def from_api_response(cls, group_data: dict[str, Any]) -> ContactGroup:
         """
         Create a ContactGroup from a Google People API response.
 

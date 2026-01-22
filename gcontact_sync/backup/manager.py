@@ -47,7 +47,7 @@ class BackupManager:
         bm.apply_retention()
     """
 
-    BACKUP_VERSION = "1.0"
+    BACKUP_VERSION = "2.0"
     BACKUP_PREFIX = "backup_"
     BACKUP_SUFFIX = ".json"
 
@@ -67,41 +67,70 @@ class BackupManager:
 
     def create_backup(
         self,
-        contacts: list[Any],
-        groups: list[Any],
+        account1_contacts: list[Any],
+        account1_groups: list[Any],
+        account2_contacts: list[Any],
+        account2_groups: list[Any],
+        account1_email: str = "account1",
+        account2_email: str = "account2",
     ) -> Path | None:
         """
-        Create a timestamped backup of contacts and groups.
+        Create a timestamped backup of contacts and groups from both accounts.
 
         Creates a JSON file with format: backup_YYYYMMDD_HHMMSS.json
-        containing all contact and group data.
+        containing contact and group data organized by account.
 
         Args:
-            contacts: List of Contact objects or dictionaries to backup
-            groups: List of ContactGroup objects or dictionaries to backup
+            account1_contacts: List of Contact objects from account 1
+            account1_groups: List of ContactGroup objects from account 1
+            account2_contacts: List of Contact objects from account 2
+            account2_groups: List of ContactGroup objects from account 2
+            account1_email: Email address of account 1 (for identification)
+            account2_email: Email address of account 2 (for identification)
 
         Returns:
             Path to created backup file, or None if backup failed
 
         Backup format:
             {
-                "version": "1.0",
+                "version": "2.0",
                 "timestamp": "2024-01-20T10:30:00.000000",
-                "contacts": [...],
-                "groups": [...]
+                "accounts": {
+                    "account1": {
+                        "email": "user1@gmail.com",
+                        "contacts": [...],
+                        "groups": [...]
+                    },
+                    "account2": {
+                        "email": "user2@gmail.com",
+                        "contacts": [...],
+                        "groups": [...]
+                    }
+                }
             }
         """
         # Generate timestamp-based filename
         timestamp = datetime.now()
-        filename = f"{self.BACKUP_PREFIX}{timestamp.strftime('%Y%m%d_%H%M%S')}{self.BACKUP_SUFFIX}"
+        ts_str = timestamp.strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.BACKUP_PREFIX}{ts_str}{self.BACKUP_SUFFIX}"
         backup_path = self.backup_dir / filename
 
-        # Prepare backup data structure
+        # Prepare backup data structure organized by account
         backup_data = {
             "version": self.BACKUP_VERSION,
             "timestamp": timestamp.isoformat(),
-            "contacts": self._serialize_contacts(contacts),
-            "groups": self._serialize_groups(groups),
+            "accounts": {
+                "account1": {
+                    "email": account1_email,
+                    "contacts": self._serialize_contacts(account1_contacts),
+                    "groups": self._serialize_groups(account1_groups),
+                },
+                "account2": {
+                    "email": account2_email,
+                    "contacts": self._serialize_contacts(account2_contacts),
+                    "groups": self._serialize_groups(account2_groups),
+                },
+            },
         }
 
         try:
@@ -114,7 +143,7 @@ class BackupManager:
 
             return backup_path
 
-        except (OSError, IOError) as e:
+        except OSError:
             # Log error but don't raise - backup failure shouldn't block sync
             # TODO: Add proper logging when logger is available
             return None
@@ -159,23 +188,33 @@ class BackupManager:
         Example:
             data = bm.load_backup(Path("backup_20240120_103000.json"))
             if data:
-                contacts = data["contacts"]
-                groups = data["groups"]
+                acc1 = data["accounts"]["account1"]
+                contacts = acc1["contacts"]
+                groups = acc1["groups"]
         """
         try:
-            with open(backup_file, "r", encoding="utf-8") as f:
+            with open(backup_file, encoding="utf-8") as f:
                 backup_data = json.load(f)
 
             # Basic validation
             if not isinstance(backup_data, dict):
                 return None
 
-            if "version" not in backup_data or "contacts" not in backup_data:
+            if "version" not in backup_data:
                 return None
+
+            # Support both v1.0 (contacts at top level) and v2.0 (accounts structure)
+            version = backup_data.get("version", "1.0")
+            if version == "1.0":
+                if "contacts" not in backup_data:
+                    return None
+            else:
+                if "accounts" not in backup_data:
+                    return None
 
             return backup_data
 
-        except (OSError, IOError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
             return None
 
     def apply_retention(self) -> None:
@@ -199,12 +238,11 @@ class BackupManager:
         # Delete backups beyond retention limit
         backups_to_delete = backups[self.retention_count :]
 
+        import contextlib
+
         for backup in backups_to_delete:
-            try:
+            with contextlib.suppress(OSError):
                 backup.unlink()
-            except OSError:
-                # Continue deleting other files even if one fails
-                pass
 
     def _serialize_contacts(self, contacts: list[Any]) -> list[dict[str, Any]]:
         """
@@ -285,12 +323,128 @@ class BackupManager:
             elif isinstance(value, bytes):
                 # Encode binary data (like photos) as base64
                 result[key] = base64.b64encode(value).decode("ascii")
-            elif isinstance(value, (str, int, float, bool)):
-                result[key] = value
-            elif isinstance(value, (list, dict)):
+            elif isinstance(value, (str, int, float, bool, list, dict)):
                 result[key] = value
             else:
                 # For other types, convert to string
                 result[key] = str(value)
 
         return result
+
+    def deserialize_contact(self, contact_data: dict[str, Any]) -> Any:
+        """
+        Deserialize a contact dictionary back to a Contact object.
+
+        Args:
+            contact_data: Dictionary from backup containing contact fields
+
+        Returns:
+            Contact object reconstructed from backup data
+        """
+        import base64
+        import contextlib
+
+        from gcontact_sync.sync.contact import Contact
+
+        # Parse datetime fields
+        last_modified = None
+        if contact_data.get("last_modified"):
+            with contextlib.suppress(ValueError, TypeError):
+                last_modified = datetime.fromisoformat(contact_data["last_modified"])
+
+        # Decode base64 photo data
+        photo_data = None
+        if contact_data.get("photo_data"):
+            with contextlib.suppress(ValueError, TypeError):
+                photo_data = base64.b64decode(contact_data["photo_data"])
+
+        return Contact(
+            resource_name=contact_data.get("resource_name", ""),
+            etag=contact_data.get("etag", ""),
+            display_name=contact_data.get("display_name", ""),
+            given_name=contact_data.get("given_name"),
+            family_name=contact_data.get("family_name"),
+            emails=contact_data.get("emails", []),
+            phones=contact_data.get("phones", []),
+            organizations=contact_data.get("organizations", []),
+            notes=contact_data.get("notes"),
+            last_modified=last_modified,
+            memberships=contact_data.get("memberships", []),
+            photo_url=contact_data.get("photo_url"),
+            photo_data=photo_data,
+            photo_etag=contact_data.get("photo_etag"),
+            deleted=contact_data.get("deleted", False),
+        )
+
+    def deserialize_group(self, group_data: dict[str, Any]) -> Any:
+        """
+        Deserialize a group dictionary back to a ContactGroup object.
+
+        Args:
+            group_data: Dictionary from backup containing group fields
+
+        Returns:
+            ContactGroup object reconstructed from backup data
+        """
+        from gcontact_sync.sync.group import ContactGroup
+
+        return ContactGroup(
+            resource_name=group_data.get("resource_name", ""),
+            etag=group_data.get("etag", ""),
+            name=group_data.get("name", ""),
+            group_type=group_data.get("group_type", "USER_CONTACT_GROUP"),
+            member_count=group_data.get("member_count", 0),
+            member_resource_names=group_data.get("member_resource_names", []),
+            formatted_name=group_data.get("formatted_name"),
+            deleted=group_data.get("deleted", False),
+        )
+
+    def get_contacts_for_restore(
+        self, backup_data: dict[str, Any], account_key: str
+    ) -> list[Any]:
+        """
+        Extract and deserialize contacts from backup for a specific account.
+
+        Args:
+            backup_data: Loaded backup data dictionary
+            account_key: "account1" or "account2"
+
+        Returns:
+            List of Contact objects ready for restore
+        """
+        version = backup_data.get("version", "1.0")
+
+        if version == "1.0":
+            # Legacy format - contacts at top level
+            contact_dicts = backup_data.get("contacts", [])
+        else:
+            # v2.0 format - contacts under accounts
+            account_data = backup_data.get("accounts", {}).get(account_key, {})
+            contact_dicts = account_data.get("contacts", [])
+
+        return [self.deserialize_contact(c) for c in contact_dicts]
+
+    def get_groups_for_restore(
+        self, backup_data: dict[str, Any], account_key: str
+    ) -> list[Any]:
+        """
+        Extract and deserialize groups from backup for a specific account.
+
+        Args:
+            backup_data: Loaded backup data dictionary
+            account_key: "account1" or "account2"
+
+        Returns:
+            List of ContactGroup objects ready for restore
+        """
+        version = backup_data.get("version", "1.0")
+
+        if version == "1.0":
+            # Legacy format - groups at top level
+            group_dicts = backup_data.get("groups", [])
+        else:
+            # v2.0 format - groups under accounts
+            account_data = backup_data.get("accounts", {}).get(account_key, {})
+            group_dicts = account_data.get("groups", [])
+
+        return [self.deserialize_group(g) for g in group_dicts]

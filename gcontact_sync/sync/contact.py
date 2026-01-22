@@ -73,7 +73,7 @@ class Contact:
     deleted: bool = False  # True if contact was deleted in source
 
     @classmethod
-    def from_api_response(cls, person: dict[str, Any]) -> "Contact":
+    def from_api_response(cls, person: dict[str, Any]) -> Contact:
         """
         Create a Contact from a Google People API response.
 
@@ -236,10 +236,11 @@ class Contact:
                 for m in self.memberships
             ]
 
-        # Add photo information
-        # Note: Photos are updated separately via updateContactPhoto endpoint
-        if self.photo_url:
-            person["photos"] = [{"url": self.photo_url, "metadata": {"primary": True}}]
+        # Note: Photos are NOT included in API format because:
+        # 1. photos is a read-only field in People API
+        # 2. Photos must be uploaded separately via updateContactPhoto endpoint
+        # The photo_url, photo_data, photo_etag fields are stored for reference
+        # but are not sent to the API on create/update operations.
 
         return person
 
