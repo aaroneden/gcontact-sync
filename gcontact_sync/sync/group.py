@@ -7,6 +7,8 @@ Provides a normalized ContactGroup representation with methods for:
 - Computing content hashes for change detection
 """
 
+from __future__ import annotations
+
 import hashlib
 import re
 import unicodedata
@@ -74,7 +76,7 @@ class ContactGroup:
     deleted: bool = False  # True if group was deleted in source
 
     @classmethod
-    def from_api_response(cls, group_data: dict[str, Any]) -> "ContactGroup":
+    def from_api_response(cls, group_data: dict[str, Any]) -> ContactGroup:
         """
         Create a ContactGroup from a Google People API response.
 

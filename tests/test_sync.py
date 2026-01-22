@@ -3191,17 +3191,106 @@ class TestPhotoSync:
         assert contact.photo_etag == "photo_etag123"
         assert contact.photo_url is not None
 
-    def test_photo_url_in_api_format(self, contact_with_photo1):
-        """Test photo URL is included in API format output."""
+    def test_photo_url_not_in_api_format(self, contact_with_photo1):
+        """Test photo URL is NOT included in API format (photos are read-only).
+
+        Google People API returns 400 error if photos are included in
+        create/update requests because they must be uploaded separately
+        via the updateContactPhoto endpoint.
+        """
         api_format = contact_with_photo1.to_api_format()
 
-        assert "photos" in api_format
-        assert len(api_format["photos"]) == 1
-        assert api_format["photos"][0]["url"] == "https://example.com/photo1.jpg"
-        assert api_format["photos"][0]["metadata"]["primary"] is True
+        # Photos should NOT be in API format - they're read-only
+        assert "photos" not in api_format
 
     def test_no_photo_not_in_api_format(self, contact_without_photo1):
         """Test contacts without photos don't include photos field in API format."""
         api_format = contact_without_photo1.to_api_format()
 
         assert "photos" not in api_format
+
+
+# ==============================================================================
+# Backup Integration Tests
+# ==============================================================================
+
+
+class TestSyncWithBackup:
+    """Tests for sync operations with backup functionality."""
+
+    def test_sync_creates_backup(self, mock_api1, mock_api2, mock_database, tmp_path):
+        """Test that sync creates a backup file before syncing."""
+        # Setup contacts
+        contact1 = Contact(
+            "people/c1",
+            "etag1",
+            "John Doe",
+            emails=["john@example.com"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        contact2 = Contact(
+            "people/c2",
+            "etag2",
+            "Jane Smith",
+            emails=["jane@example.com"],
+            last_modified=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        # Mock API responses
+        mock_api1.list_contacts.return_value = ([contact1], None)
+        mock_api2.list_contacts.return_value = ([contact2], None)
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        # Mock batch creates to return the contacts
+        mock_api1.batch_create_contacts.return_value = [contact2]
+        mock_api2.batch_create_contacts.return_value = [contact1]
+
+        # Create backup directory
+        backup_dir = tmp_path / "backups"
+
+        # Create sync engine
+        engine = SyncEngine(api1=mock_api1, api2=mock_api2, database=mock_database)
+
+        # Perform sync with backup enabled
+        result = engine.sync(
+            dry_run=False,
+            backup_enabled=True,
+            backup_dir=backup_dir,
+            backup_retention_count=10,
+        )
+
+        # Verify backup directory was created
+        assert backup_dir.exists()
+        assert backup_dir.is_dir()
+
+        # Verify a backup file was created
+        backup_files = list(backup_dir.glob("backup_*.json"))
+        assert len(backup_files) == 1
+
+        # Verify backup file has valid content
+        import json
+
+        backup_file = backup_files[0]
+        with open(backup_file, encoding="utf-8") as f:
+            backup_data = json.load(f)
+
+        # Check backup structure (v2.0 format with accounts)
+        assert "version" in backup_data
+        assert backup_data["version"] == "2.0"
+        assert "timestamp" in backup_data
+        assert "accounts" in backup_data
+        assert "account1" in backup_data["accounts"]
+        assert "account2" in backup_data["accounts"]
+
+        # Verify contacts were backed up for each account
+        acc1_contacts = backup_data["accounts"]["account1"]["contacts"]
+        acc2_contacts = backup_data["accounts"]["account2"]["contacts"]
+        assert len(acc1_contacts) == 1
+        assert len(acc2_contacts) == 1
+        assert acc1_contacts[0]["display_name"] == "John Doe"
+        assert acc2_contacts[0]["display_name"] == "Jane Smith"
+
+        # Verify sync completed successfully
+        assert result.stats.created_in_account1 == 1
+        assert result.stats.created_in_account2 == 1
