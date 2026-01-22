@@ -1815,6 +1815,284 @@ def restore_command(
         sys.exit(1)
 
 
+# =============================================================================
+# Daemon Command Group
+# =============================================================================
+
+
+@cli.group("daemon")
+@click.pass_context
+def daemon_group(ctx: click.Context) -> None:
+    """
+    Manage background synchronization daemon.
+
+    The daemon runs in the background and automatically synchronizes
+    contacts at a configurable interval.
+
+    Examples:
+
+        # Start daemon in foreground (for testing)
+        gcontact-sync daemon start --foreground
+
+        # Start daemon with custom interval
+        gcontact-sync daemon start --interval 30m
+
+        # Check daemon status
+        gcontact-sync daemon status
+
+        # Stop running daemon
+        gcontact-sync daemon stop
+    """
+    # Daemon group passes context through to subcommands
+    pass
+
+
+@daemon_group.command("start")
+@click.option(
+    "--interval",
+    "-i",
+    default=None,
+    help=(
+        "Sync interval (e.g., '30s', '5m', '1h', '1d'). "
+        "Defaults to config value or '1h'."
+    ),
+)
+@click.option(
+    "--foreground",
+    "-f",
+    is_flag=True,
+    help="Run in foreground instead of daemonizing (useful for debugging).",
+)
+@click.option(
+    "--no-initial-sync",
+    is_flag=True,
+    help="Skip the initial sync on daemon startup.",
+)
+@click.pass_context
+def daemon_start_command(
+    ctx: click.Context,
+    interval: str | None,
+    foreground: bool,
+    no_initial_sync: bool,
+) -> None:
+    """
+    Start the synchronization daemon.
+
+    Runs the sync process continuously in the background (or foreground
+    with --foreground flag) at the specified interval.
+
+    The daemon will:
+    - Perform an initial sync on startup (unless --no-initial-sync)
+    - Continue syncing at the specified interval
+    - Handle SIGTERM/SIGINT for graceful shutdown
+    - Write a PID file for daemon management
+
+    Examples:
+
+        # Start daemon in foreground with verbose output
+        gcontact-sync -v daemon start --foreground
+
+        # Start with 30-minute sync interval
+        gcontact-sync daemon start --interval 30m
+
+        # Start without initial sync
+        gcontact-sync daemon start --no-initial-sync
+
+        # Start with 1 hour interval (default)
+        gcontact-sync daemon start
+    """
+    logger = get_logger(__name__)
+    config_dir = ctx.obj["config_dir"]
+    config = ctx.obj.get("config", {})
+    verbose = ctx.obj["verbose"]
+
+    # Import daemon components
+    from gcontact_sync.daemon import (
+        DaemonAlreadyRunningError,
+        DaemonError,
+        DaemonScheduler,
+        parse_interval,
+    )
+
+    # Resolve interval: CLI > config > default
+    effective_interval_str = interval or config.get("daemon_interval", "1h")
+    try:
+        interval_seconds = parse_interval(effective_interval_str)
+    except ValueError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    # Get PID file from config or use default
+    pid_file = None
+    if config.get("daemon_pid_file"):
+        pid_file = Path(config["daemon_pid_file"]).expanduser()
+
+    click.echo(f"Starting daemon with {effective_interval_str} sync interval...")
+
+    if foreground:
+        click.echo("Running in foreground mode (Ctrl+C to stop)")
+    else:
+        click.echo("Running in background mode")
+
+    if verbose:
+        click.echo(f"  Config directory: {config_dir}")
+        click.echo(f"  Interval: {interval_seconds} seconds")
+        click.echo(f"  Initial sync: {'No' if no_initial_sync else 'Yes'}")
+
+    try:
+        # Create the scheduler
+        scheduler = DaemonScheduler(
+            interval=interval_seconds,
+            pid_file=pid_file,
+            run_immediately=not no_initial_sync,
+        )
+
+        # Set up sync callback using existing sync infrastructure
+        def sync_callback() -> bool:
+            """Execute a sync operation and return success status."""
+            import os
+
+            from gcontact_sync.api.people_api import PeopleAPI
+            from gcontact_sync.storage.db import SyncDatabase
+            from gcontact_sync.sync.conflict import ConflictStrategy
+            from gcontact_sync.sync.engine import SyncEngine
+            from gcontact_sync.sync.matcher import MatchConfig
+
+            try:
+                # Initialize authentication
+                auth = GoogleAuth(config_dir=config_dir)
+
+                # Check authentication for both accounts
+                creds1 = auth.get_credentials(ACCOUNT_1)
+                creds2 = auth.get_credentials(ACCOUNT_2)
+
+                if not creds1 or not creds2:
+                    logger.error("One or both accounts not authenticated")
+                    return False
+
+                # Get account emails for logging
+                account1_email = auth.get_account_email(ACCOUNT_1) or ACCOUNT_1
+                account2_email = auth.get_account_email(ACCOUNT_2) or ACCOUNT_2
+
+                # Initialize components
+                db_path = config_dir / "sync.db"
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+
+                api1 = PeopleAPI(credentials=creds1)
+                api2 = PeopleAPI(credentials=creds2)
+                database = SyncDatabase(str(db_path))
+                database.initialize()
+
+                # Build MatchConfig from config
+                anthropic_api_key = config.get("anthropic_api_key")
+                if not anthropic_api_key:
+                    env_var_name = config.get("anthropic_api_key_env")
+                    if env_var_name:
+                        anthropic_api_key = os.environ.get(env_var_name)
+
+                match_config = MatchConfig(
+                    name_similarity_threshold=config.get(
+                        "name_similarity_threshold", 0.85
+                    ),
+                    name_only_threshold=config.get("name_only_threshold", 0.95),
+                    uncertain_threshold=config.get("uncertain_threshold", 0.7),
+                    use_llm_matching=True,
+                    llm_batch_size=config.get("llm_batch_size", 20),
+                    use_organization_matching=config.get(
+                        "use_organization_matching", True
+                    ),
+                    anthropic_api_key=anthropic_api_key,
+                    llm_model=config.get("llm_model", "claude-haiku-4-5-20250514"),
+                    llm_max_tokens=config.get("llm_max_tokens", 500),
+                    llm_batch_max_tokens=config.get("llm_batch_max_tokens", 2000),
+                )
+
+                # Get conflict strategy from config
+                strategy_str = config.get("strategy", "last_modified")
+                strategy_map = {
+                    "last_modified": ConflictStrategy.LAST_MODIFIED_WINS,
+                    "newest": ConflictStrategy.LAST_MODIFIED_WINS,
+                    "account1": ConflictStrategy.ACCOUNT1_WINS,
+                    "account2": ConflictStrategy.ACCOUNT2_WINS,
+                }
+                conflict_strategy = strategy_map.get(
+                    strategy_str, ConflictStrategy.LAST_MODIFIED_WINS
+                )
+
+                # Get backup settings from config
+                backup_enabled = config.get("backup_enabled", True)
+                backup_dir_config = config.get("backup_dir")
+                backup_dir = (
+                    Path(backup_dir_config).expanduser()
+                    if backup_dir_config
+                    else config_dir / "backups"
+                )
+                backup_retention_count = config.get("backup_retention_count", 10)
+
+                # Create sync engine
+                engine = SyncEngine(
+                    api1=api1,
+                    api2=api2,
+                    database=database,
+                    conflict_strategy=conflict_strategy,
+                    account1_email=account1_email,
+                    account2_email=account2_email,
+                    match_config=match_config,
+                    duplicate_handling=config.get("duplicate_handling", "skip"),
+                )
+
+                # Run sync
+                result = engine.sync(
+                    dry_run=False,
+                    full_sync=False,
+                    backup_enabled=backup_enabled,
+                    backup_dir=backup_dir,
+                    backup_retention_count=backup_retention_count,
+                )
+
+                created = (
+                    result.stats.created_in_account1
+                    + result.stats.created_in_account2
+                )
+                updated = (
+                    result.stats.updated_in_account1
+                    + result.stats.updated_in_account2
+                )
+                logger.info(
+                    f"Sync completed: {created} created, "
+                    f"{updated} updated, {result.stats.errors} errors"
+                )
+
+                return result.stats.errors == 0
+
+            except Exception as e:
+                logger.error(f"Sync failed: {e}")
+                return False
+
+        scheduler.set_sync_callback(sync_callback)
+
+        # Run the scheduler (blocks until shutdown signal)
+        logger.info(f"Daemon starting (interval={interval_seconds}s)")
+        scheduler.run()
+
+        click.echo(click.style("\nDaemon stopped gracefully.", fg="green"))
+
+    except DaemonAlreadyRunningError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        click.echo("Use 'gcontact-sync daemon stop' to stop the running daemon.")
+        sys.exit(1)
+
+    except DaemonError as e:
+        logger.error(f"Daemon error: {e}")
+        click.echo(click.style(f"Daemon error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    except Exception as e:
+        logger.exception(f"Unexpected error: {e}")
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+
 # Module entry point (for python -m gcontact_sync.cli)
 if __name__ == "__main__":
     cli()
