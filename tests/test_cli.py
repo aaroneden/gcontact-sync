@@ -1394,3 +1394,560 @@ class TestConfigIntegration:
             mock_loader.load_from_file.assert_called_once()
             call_args = mock_loader.load_from_file.call_args
             assert call_args[0][0] == Path("custom.yaml")
+
+
+class TestDaemonCommand:
+    """Tests for the daemon command group."""
+
+    def test_daemon_help(self):
+        """Test that daemon command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["daemon", "--help"])
+        assert result.exit_code == 0
+        assert "Manage background synchronization daemon" in result.output
+
+    def test_daemon_start_help(self):
+        """Test that daemon start command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["daemon", "start", "--help"])
+        assert result.exit_code == 0
+        assert "Start the synchronization daemon" in result.output
+        assert "--interval" in result.output
+        assert "--foreground" in result.output
+        assert "--no-initial-sync" in result.output
+
+    def test_daemon_stop_help(self):
+        """Test that daemon stop command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["daemon", "stop", "--help"])
+        assert result.exit_code == 0
+        assert "Stop the running synchronization daemon" in result.output
+
+    def test_daemon_status_help(self):
+        """Test that daemon status command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["daemon", "status", "--help"])
+        assert result.exit_code == 0
+        assert "Show the status of the synchronization daemon" in result.output
+
+    def test_daemon_install_help(self):
+        """Test that daemon install command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["daemon", "install", "--help"])
+        assert result.exit_code == 0
+        assert "Install gcontact-sync as a system service" in result.output
+        assert "--interval" in result.output
+        assert "--force" in result.output
+
+    def test_daemon_uninstall_help(self):
+        """Test that daemon uninstall command shows help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["daemon", "uninstall", "--help"])
+        assert result.exit_code == 0
+        assert "Uninstall the gcontact-sync system service" in result.output
+        assert "--yes" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_start_invalid_interval(
+        self, mock_parse_interval, mock_scheduler_class, mock_setup_logging
+    ):
+        """Test daemon start with invalid interval format."""
+        mock_parse_interval.side_effect = ValueError(
+            "Invalid interval format: 'invalid'. Use format like '30s', '5m', '1h', or '1d'."
+        )
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "start", "--interval", "invalid"])
+            assert result.exit_code == 1
+            assert "Error:" in result.output
+            assert "Invalid interval format" in result.output
+
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_start_foreground_mode(
+        self,
+        mock_parse_interval,
+        mock_scheduler_class,
+        mock_setup_logging,
+        mock_auth_class,
+    ):
+        """Test daemon start in foreground mode."""
+        mock_parse_interval.return_value = 3600
+
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        mock_scheduler = MagicMock()
+        mock_scheduler_class.return_value = mock_scheduler
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "start", "--foreground"])
+            assert result.exit_code == 0
+            assert "Starting daemon" in result.output
+            assert "foreground mode" in result.output
+            mock_scheduler.run.assert_called_once()
+
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_start_with_custom_interval(
+        self,
+        mock_parse_interval,
+        mock_scheduler_class,
+        mock_setup_logging,
+        mock_auth_class,
+    ):
+        """Test daemon start with custom interval."""
+        mock_parse_interval.return_value = 1800  # 30 minutes
+
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        mock_scheduler = MagicMock()
+        mock_scheduler_class.return_value = mock_scheduler
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli, ["daemon", "start", "--interval", "30m", "--foreground"]
+            )
+            assert result.exit_code == 0
+            assert "30m" in result.output
+            mock_parse_interval.assert_called_with("30m")
+            mock_scheduler_class.assert_called_once()
+            # Verify interval was passed
+            call_kwargs = mock_scheduler_class.call_args.kwargs
+            assert call_kwargs["interval"] == 1800
+
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_start_no_initial_sync(
+        self,
+        mock_parse_interval,
+        mock_scheduler_class,
+        mock_setup_logging,
+        mock_auth_class,
+    ):
+        """Test daemon start with --no-initial-sync flag."""
+        mock_parse_interval.return_value = 3600
+
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        mock_scheduler = MagicMock()
+        mock_scheduler_class.return_value = mock_scheduler
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli, ["daemon", "start", "--foreground", "--no-initial-sync"]
+            )
+            assert result.exit_code == 0
+            # Verify run_immediately was False when --no-initial-sync used
+            mock_scheduler_class.assert_called_once()
+            call_kwargs = mock_scheduler_class.call_args.kwargs
+            assert call_kwargs["run_immediately"] is False
+
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_start_already_running(
+        self,
+        mock_parse_interval,
+        mock_scheduler_class,
+        mock_setup_logging,
+        mock_auth_class,
+    ):
+        """Test daemon start when daemon is already running."""
+        from gcontact_sync.daemon import DaemonAlreadyRunningError
+
+        mock_parse_interval.return_value = 3600
+
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.run.side_effect = DaemonAlreadyRunningError(
+            "Daemon already running with PID 12345"
+        )
+        mock_scheduler_class.return_value = mock_scheduler
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "start", "--foreground"])
+            assert result.exit_code == 1
+            assert "Error:" in result.output
+            assert "already running" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    def test_daemon_stop_no_daemon_running(
+        self, mock_scheduler_class, mock_setup_logging
+    ):
+        """Test daemon stop when no daemon is running."""
+        mock_scheduler_class.get_running_pid.return_value = None
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "stop"])
+            assert result.exit_code == 0
+            assert "No daemon is currently running" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    def test_daemon_stop_running_daemon(self, mock_scheduler_class, mock_setup_logging):
+        """Test daemon stop with running daemon."""
+        mock_scheduler_class.get_running_pid.return_value = 12345
+        mock_scheduler_class.stop_running_daemon.return_value = True
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "stop"])
+            assert result.exit_code == 0
+            assert "Stopping daemon" in result.output
+            assert "PID: 12345" in result.output
+            assert "Stop signal sent successfully" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    def test_daemon_stop_failed(self, mock_scheduler_class, mock_setup_logging):
+        """Test daemon stop when stop signal fails."""
+        mock_scheduler_class.get_running_pid.return_value = 12345
+        mock_scheduler_class.stop_running_daemon.return_value = False
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "stop"])
+            assert result.exit_code == 1
+            assert "Failed to send stop signal" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.PIDFileManager")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    def test_daemon_status_running(
+        self, mock_scheduler_class, mock_pid_manager_class, mock_setup_logging
+    ):
+        """Test daemon status when daemon is running."""
+        mock_scheduler_class.get_running_pid.return_value = 12345
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "status"])
+            assert result.exit_code == 0
+            assert "Daemon Status" in result.output
+            assert "Running" in result.output
+            assert "Process ID: 12345" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.PIDFileManager")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    def test_daemon_status_stopped(
+        self, mock_scheduler_class, mock_pid_manager_class, mock_setup_logging
+    ):
+        """Test daemon status when daemon is not running."""
+        mock_scheduler_class.get_running_pid.return_value = None
+
+        mock_pid_manager = MagicMock()
+        mock_pid_manager.read.return_value = None
+        mock_pid_manager_class.return_value = mock_pid_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "status"])
+            assert result.exit_code == 0
+            assert "Daemon Status" in result.output
+            assert "Stopped" in result.output
+            assert "No daemon is currently running" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.PIDFileManager")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    def test_daemon_status_stale_pid(
+        self, mock_scheduler_class, mock_pid_manager_class, mock_setup_logging
+    ):
+        """Test daemon status with stale PID file."""
+        mock_scheduler_class.get_running_pid.return_value = None
+
+        mock_pid_manager = MagicMock()
+        mock_pid_manager.read.return_value = 99999  # Stale PID
+        mock_pid_manager_class.return_value = mock_pid_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "status"])
+            assert result.exit_code == 0
+            assert "Stopped" in result.output
+            assert "Stale PID file exists" in result.output
+            assert "99999" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_install_success(
+        self,
+        mock_parse_interval,
+        mock_service_manager_class,
+        mock_get_platform,
+        mock_setup_logging,
+    ):
+        """Test daemon install on supported platform."""
+        mock_parse_interval.return_value = 3600
+        mock_get_platform.return_value = "macos"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.install.return_value = (True, None)
+        mock_manager.get_service_file_path.return_value = Path(
+            "/Users/test/Library/LaunchAgents/com.gcontact-sync.plist"
+        )
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "install"])
+            assert result.exit_code == 0
+            assert "Installing gcontact-sync daemon" in result.output
+            assert "installed successfully" in result.output
+            mock_manager.install.assert_called_once()
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    def test_daemon_install_unsupported_platform(
+        self, mock_service_manager_class, mock_get_platform, mock_setup_logging
+    ):
+        """Test daemon install on unsupported platform."""
+        mock_get_platform.return_value = "windows"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = False
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "install"])
+            assert result.exit_code == 1
+            assert "not supported" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_install_with_force(
+        self,
+        mock_parse_interval,
+        mock_service_manager_class,
+        mock_get_platform,
+        mock_setup_logging,
+    ):
+        """Test daemon install with --force flag."""
+        mock_parse_interval.return_value = 3600
+        mock_get_platform.return_value = "linux"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.install.return_value = (True, None)
+        mock_manager.get_service_file_path.return_value = Path(
+            "/home/test/.config/systemd/user/gcontact-sync.service"
+        )
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "install", "--force"])
+            assert result.exit_code == 0
+            # Verify install was called with overwrite=True
+            mock_manager.install.assert_called_once()
+            call_kwargs = mock_manager.install.call_args.kwargs
+            assert call_kwargs["overwrite"] is True
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_install_failed(
+        self,
+        mock_parse_interval,
+        mock_service_manager_class,
+        mock_get_platform,
+        mock_setup_logging,
+    ):
+        """Test daemon install failure."""
+        mock_parse_interval.return_value = 3600
+        mock_get_platform.return_value = "linux"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.install.return_value = (False, "Permission denied")
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "install"])
+            assert result.exit_code == 1
+            assert "Installation failed" in result.output
+            assert "Permission denied" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    def test_daemon_uninstall_not_installed(
+        self, mock_service_manager_class, mock_get_platform, mock_setup_logging
+    ):
+        """Test daemon uninstall when service is not installed."""
+        mock_get_platform.return_value = "linux"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.is_installed.return_value = False
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "uninstall", "--yes"])
+            assert result.exit_code == 0
+            assert "No daemon service is currently installed" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    def test_daemon_uninstall_success(
+        self, mock_service_manager_class, mock_get_platform, mock_setup_logging
+    ):
+        """Test daemon uninstall success."""
+        mock_get_platform.return_value = "macos"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.is_installed.return_value = True
+        mock_manager.uninstall.return_value = (True, None)
+        mock_manager.get_service_file_path.return_value = Path(
+            "/Users/test/Library/LaunchAgents/com.gcontact-sync.plist"
+        )
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "uninstall", "--yes"])
+            assert result.exit_code == 0
+            assert "uninstalled successfully" in result.output
+            mock_manager.uninstall.assert_called_once()
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    def test_daemon_uninstall_with_confirmation(
+        self, mock_service_manager_class, mock_get_platform, mock_setup_logging
+    ):
+        """Test daemon uninstall with confirmation prompt."""
+        mock_get_platform.return_value = "macos"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.is_installed.return_value = True
+        mock_manager.uninstall.return_value = (True, None)
+        mock_manager.get_service_file_path.return_value = Path(
+            "/Users/test/Library/LaunchAgents/com.gcontact-sync.plist"
+        )
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "uninstall"], input="y\n")
+            assert result.exit_code == 0
+            assert "uninstalled successfully" in result.output
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    def test_daemon_uninstall_cancelled(
+        self, mock_service_manager_class, mock_get_platform, mock_setup_logging
+    ):
+        """Test daemon uninstall when user cancels."""
+        mock_get_platform.return_value = "linux"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.is_installed.return_value = True
+        mock_manager.get_service_file_path.return_value = Path(
+            "/home/test/.config/systemd/user/gcontact-sync.service"
+        )
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "uninstall"], input="n\n")
+            assert result.exit_code == 1  # Aborted
+
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.get_platform")
+    @patch("gcontact_sync.daemon.ServiceManager")
+    def test_daemon_uninstall_failed(
+        self, mock_service_manager_class, mock_get_platform, mock_setup_logging
+    ):
+        """Test daemon uninstall failure."""
+        mock_get_platform.return_value = "linux"
+
+        mock_manager = MagicMock()
+        mock_manager.is_platform_supported.return_value = True
+        mock_manager.is_installed.return_value = True
+        mock_manager.uninstall.return_value = (False, "Service is still running")
+        mock_manager.get_service_file_path.return_value = Path(
+            "/home/test/.config/systemd/user/gcontact-sync.service"
+        )
+        mock_service_manager_class.return_value = mock_manager
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "uninstall", "--yes"])
+            assert result.exit_code == 1
+            assert "Uninstallation failed" in result.output
+            assert "Service is still running" in result.output
+
+    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.daemon.DaemonScheduler")
+    @patch("gcontact_sync.daemon.parse_interval")
+    def test_daemon_start_unexpected_error(
+        self,
+        mock_parse_interval,
+        mock_scheduler_class,
+        mock_setup_logging,
+        mock_auth_class,
+    ):
+        """Test daemon start handles unexpected errors."""
+        mock_parse_interval.return_value = 3600
+
+        mock_auth = MagicMock()
+        mock_auth.get_credentials.return_value = MagicMock()
+        mock_auth.get_account_email.return_value = "test@test.com"
+        mock_auth_class.return_value = mock_auth
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.run.side_effect = RuntimeError("Unexpected error occurred")
+        mock_scheduler_class.return_value = mock_scheduler
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["daemon", "start", "--foreground"])
+            assert result.exit_code == 1
+            assert "Error" in result.output
