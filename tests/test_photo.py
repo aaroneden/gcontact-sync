@@ -5,7 +5,7 @@ Tests the photo download and processing functions with mocked HTTP and image ope
 """
 
 import io
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 from PIL import Image
@@ -142,7 +142,11 @@ class TestDownloadPhotoRetries:
         mock_success_response.raise_for_status = Mock()
 
         mock_get.side_effect = [
-            Mock(raise_for_status=Mock(side_effect=HTTPError(response=mock_error_response))),
+            Mock(
+                raise_for_status=Mock(
+                    side_effect=HTTPError(response=mock_error_response)
+                )
+            ),
             mock_success_response,
         ]
 
@@ -167,7 +171,11 @@ class TestDownloadPhotoRetries:
         mock_success_response.raise_for_status = Mock()
 
         mock_get.side_effect = [
-            Mock(raise_for_status=Mock(side_effect=HTTPError(response=mock_error_response))),
+            Mock(
+                raise_for_status=Mock(
+                    side_effect=HTTPError(response=mock_error_response)
+                )
+            ),
             mock_success_response,
         ]
 
@@ -240,7 +248,9 @@ class TestDownloadPhotoRetries:
         """Test that exhausted retries on timeout raise error."""
         mock_get.side_effect = Timeout("Connection timeout")
 
-        with pytest.raises(PhotoDownloadError, match="Download timeout after .* retries"):
+        with pytest.raises(
+            PhotoDownloadError, match="Download timeout after .* retries"
+        ):
             download_photo("https://example.com/photo.jpg", max_retries=3)
 
         assert mock_get.call_count == 3

@@ -8,9 +8,16 @@ handling contact creation, updates, deletions, and conflict resolution.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from gcontact_sync.config import SyncConfig
+    from gcontact_sync.sync.matcher import MatchConfig
 
 from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
 from gcontact_sync.auth.google_auth import ACCOUNT_1, ACCOUNT_2
+from gcontact_sync.backup.manager import BackupManager
 from gcontact_sync.storage.db import SyncDatabase
 from gcontact_sync.sync.conflict import (
     ConflictResolver,
@@ -24,6 +31,43 @@ from gcontact_sync.sync.photo import PhotoError, download_photo, process_photo
 from gcontact_sync.utils.logging import setup_matching_logger
 
 logger = logging.getLogger(__name__)
+
+
+class DuplicateHandling:
+    """Strategy for handling potential duplicate contacts."""
+
+    SKIP = "skip"  # Don't create, log as potential duplicate
+    AUTO_MERGE = "auto_merge"  # Merge identifiers into existing matched contact
+    REPORT_ONLY = "report_only"  # Create but track in report for user review
+
+
+@dataclass
+class PotentialDuplicate:
+    """
+    A contact that appears to be a duplicate of an already-matched contact.
+
+    This occurs when one account has merged contacts and the other has them split.
+    For example, Account 1 might have two "Jim Harris" contacts with different emails,
+    while Account 2 has one "Jim Harris" with both emails.
+    """
+
+    # The unmatched contact that appears to be a duplicate
+    unmatched_contact: Contact
+
+    # The already-matched contact it shares identifiers with
+    matched_contact: Contact
+
+    # The matched contact's partner in the other account
+    matched_partner: Contact
+
+    # The shared identifiers (emails or phones)
+    shared_identifiers: list[str]
+
+    # Which account the unmatched contact is in (1 or 2)
+    source_account: int
+
+    # How the duplicate was handled
+    action_taken: str = ""  # "skipped", "merged", "created", "reported"
 
 
 @dataclass
@@ -46,6 +90,10 @@ class SyncStats:
     conflicts_resolved: int = 0
     skipped_invalid: int = 0
     errors: int = 0
+    potential_duplicates_found: int = 0
+    duplicates_skipped: int = 0
+    duplicates_merged: int = 0
+    duplicates_reported: int = 0
     photos_synced: int = 0
     photos_deleted: int = 0
     photos_failed: int = 0
@@ -59,6 +107,14 @@ class SyncStats:
     groups_updated_in_account2: int = 0
     groups_deleted_in_account1: int = 0
     groups_deleted_in_account2: int = 0
+
+    # Filter statistics (for verbose logging)
+    contacts_before_filter_account1: int = 0
+    contacts_before_filter_account2: int = 0
+    contacts_filtered_out_account1: int = 0
+    contacts_filtered_out_account2: int = 0
+    filter_groups_account1: int = 0
+    filter_groups_account2: int = 0
 
 
 @dataclass
@@ -102,6 +158,9 @@ class SyncResult:
 
     # Matched contacts (for debug output): list of (contact1, contact2) pairs
     matched_contacts: list[tuple[Contact, Contact]] = field(default_factory=list)
+
+    # Potential duplicates detected (contacts sharing identifiers with matched)
+    potential_duplicates: list[PotentialDuplicate] = field(default_factory=list)
 
     # Matched groups (for debug output): list of (group1, group2) pairs
     matched_groups: list[tuple[ContactGroup, ContactGroup]] = field(
@@ -229,6 +288,28 @@ class SyncResult:
             if self.stats.photos_failed:
                 lines.append(f"  Photos failed: {self.stats.photos_failed}")
 
+        # Add filter statistics if any filtering was applied
+        if (
+            self.stats.contacts_filtered_out_account1 > 0
+            or self.stats.contacts_filtered_out_account2 > 0
+        ):
+            lines.append("")
+            lines.append("Group filtering applied:")
+            if self.stats.contacts_before_filter_account1 > 0:
+                lines.append(
+                    f"  {account1_label}: "
+                    f"{self.stats.contacts_before_filter_account1} fetched -> "
+                    f"{self.stats.contacts_in_account1} after filter "
+                    f"({self.stats.contacts_filtered_out_account1} excluded)"
+                )
+            if self.stats.contacts_before_filter_account2 > 0:
+                lines.append(
+                    f"  {account2_label}: "
+                    f"{self.stats.contacts_before_filter_account2} fetched -> "
+                    f"{self.stats.contacts_in_account2} after filter "
+                    f"({self.stats.contacts_filtered_out_account2} excluded)"
+                )
+
         return "\n".join(lines)
 
 
@@ -277,6 +358,9 @@ class SyncEngine:
         account1_email: str | None = None,
         account2_email: str | None = None,
         use_llm_matching: bool = True,
+        match_config: Optional["MatchConfig"] = None,
+        duplicate_handling: str = DuplicateHandling.SKIP,
+        config: Optional["SyncConfig"] = None,
     ):
         """
         Initialize the sync engine.
@@ -290,6 +374,14 @@ class SyncEngine:
             account1_email: Email address of account 1 (for logging)
             account2_email: Email address of account 2 (for logging)
             use_llm_matching: Whether to use LLM for uncertain matches
+                (ignored if match_config is provided)
+            match_config: Optional MatchConfig for advanced matching configuration.
+                If provided, use_llm_matching is ignored.
+            duplicate_handling: Strategy for handling potential duplicates
+                (skip, auto_merge, or report_only)
+            config: Optional SyncConfig for tag-based contact filtering.
+                If provided, contacts will be filtered by group membership
+                according to the configuration. If None, all contacts are synced.
         """
         # Import here to avoid circular imports
         from gcontact_sync.sync.matcher import ContactMatcher, MatchConfig
@@ -303,8 +395,16 @@ class SyncEngine:
         self.account2_email = account2_email or ACCOUNT_2
 
         # Initialize multi-tier contact matcher with database for LLM caching
-        match_config = MatchConfig(use_llm_matching=use_llm_matching)
+        # Use provided match_config or create a default one
+        if match_config is None:
+            match_config = MatchConfig(use_llm_matching=use_llm_matching)
         self.matcher = ContactMatcher(config=match_config, database=database)
+
+        # Duplicate handling strategy
+        self.duplicate_handling = duplicate_handling
+
+        # Sync configuration for tag-based filtering
+        self.config = config
 
     def _get_account_label(self, account: int) -> str:
         """
@@ -320,7 +420,151 @@ class SyncEngine:
             return self.account1_email
         return self.account2_email
 
-    def sync(self, dry_run: bool = False, full_sync: bool = False) -> SyncResult:
+    def _ensure_sync_label_groups(self) -> None:
+        """
+        Ensure the sync label group exists in both accounts.
+
+        If sync labeling is enabled in the config, this method checks if the
+        configured sync label group exists in each account. If not, it creates
+        the group. The resource names are stored in _sync_label_group_resources
+        for use when creating/updating contacts.
+
+        This method should be called at the start of execute() before any
+        contact operations.
+        """
+        # Initialize the resource name storage
+        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+
+        # Check if sync labeling is enabled
+        if not self.config or not self.config.sync_label.enabled:
+            logger.debug("Sync label disabled or no config provided")
+            return
+
+        group_name = self.config.sync_label.group_name
+        logger.info(f"Ensuring sync label group '{group_name}' exists in both accounts")
+
+        # Process each account
+        for account, api in [(1, self.api1), (2, self.api2)]:
+            account_label = self._get_account_label(account)
+            try:
+                # Fetch existing groups (returns list of dicts)
+                groups_data, _ = api.list_contact_groups()
+
+                # Convert to ContactGroup objects
+                groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+                # Search for existing group with matching name (case-insensitive)
+                existing_group = None
+                for group in groups:
+                    if group.name.lower() == group_name.lower():
+                        existing_group = group
+                        break
+
+                if existing_group:
+                    # Group already exists
+                    self._sync_label_group_resources[account] = (
+                        existing_group.resource_name
+                    )
+                    logger.debug(
+                        f"Sync label group '{group_name}' already exists in "
+                        f"{account_label}: {existing_group.resource_name}"
+                    )
+                else:
+                    # Create the group
+                    created = api.create_contact_group(group_name)
+                    resource_name = created.get("resourceName", "")
+                    self._sync_label_group_resources[account] = resource_name
+                    logger.info(
+                        f"Created sync label group '{group_name}' in "
+                        f"{account_label}: {resource_name}"
+                    )
+
+            except PeopleAPIError as e:
+                logger.warning(
+                    f"Failed to ensure sync label group in {account_label}: {e}"
+                )
+                # Don't fail the entire sync if we can't create the label group
+                self._sync_label_group_resources[account] = None
+
+    def _get_sync_label_resource(self, account: int) -> str | None:
+        """
+        Get the sync label group resource name for an account.
+
+        Args:
+            account: Account number (1 or 2)
+
+        Returns:
+            The resource name of the sync label group, or None if not available
+        """
+        if not hasattr(self, "_sync_label_group_resources"):
+            return None
+        return self._sync_label_group_resources.get(account)
+
+    def _resolve_sync_label_groups(
+        self, groups1: list[ContactGroup], groups2: list[ContactGroup]
+    ) -> None:
+        """
+        Resolve sync label group resource names from already-fetched groups.
+
+        This method finds existing sync label groups by name matching. It does
+        NOT create groups - that happens during execute(). This is used during
+        analyze() to detect contacts that need the sync label added.
+
+        Args:
+            groups1: Groups already fetched from account 1
+            groups2: Groups already fetched from account 2
+        """
+        # Initialize the resource name storage
+        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+
+        # Check if sync labeling is enabled
+        if not self.config or not self.config.sync_label.enabled:
+            return
+
+        group_name = self.config.sync_label.group_name.lower()
+
+        # Find in account 1
+        for group in groups1:
+            if group.name.lower() == group_name:
+                self._sync_label_group_resources[1] = group.resource_name
+                break
+
+        # Find in account 2
+        for group in groups2:
+            if group.name.lower() == group_name:
+                self._sync_label_group_resources[2] = group.resource_name
+                break
+
+    def _contact_needs_sync_label(self, contact: Contact, account: int) -> bool:
+        """
+        Check if a contact needs the sync label added.
+
+        Args:
+            contact: Contact to check
+            account: Account number (1 or 2)
+
+        Returns:
+            True if sync label is enabled and contact is missing it
+        """
+        if not self.config or not self.config.sync_label.enabled:
+            return False
+
+        sync_label_resource = self._get_sync_label_resource(account)
+        if not sync_label_resource:
+            # Group doesn't exist yet - will be created during execute
+            # We should still flag for update so the label gets added
+            return True
+
+        return sync_label_resource not in contact.memberships
+
+    def sync(
+        self,
+        dry_run: bool = False,
+        full_sync: bool = False,
+        backup_enabled: bool = True,
+        backup_dir: Path | str | None = None,
+        backup_retention_count: int = 10,
+    ) -> SyncResult:
         """
         Perform a complete sync operation.
 
@@ -331,6 +575,9 @@ class SyncEngine:
         Args:
             dry_run: If True, analyze and return changes without applying them
             full_sync: If True, ignore sync tokens and do a full comparison
+            backup_enabled: If True, create backup before sync (default True)
+            backup_dir: Directory for backups (default ~/.gcontact-sync/backups)
+            backup_retention_count: Number of backups to keep (default 10)
 
         Returns:
             SyncResult with changes made (or to be made if dry_run)
@@ -348,6 +595,47 @@ class SyncEngine:
         self._pending_key_updates: list[tuple[str, str]] = []
 
         logger.info(f"Starting sync (dry_run={dry_run}, full_sync={full_sync})")
+
+        # Create pre-sync backup if enabled (runs in all modes including dry-run)
+        if backup_enabled:
+            try:
+                # Set default backup directory if not provided
+                if backup_dir is None:
+                    backup_dir = Path.home() / ".gcontact-sync" / "backups"
+                else:
+                    backup_dir = Path(backup_dir)
+
+                # Initialize backup manager
+                backup_manager = BackupManager(
+                    backup_dir=backup_dir,
+                    retention_count=backup_retention_count,
+                )
+
+                # Fetch all contacts and groups from both accounts
+                logger.info("Fetching contacts and groups for backup...")
+                contacts1, _ = self.api1.list_contacts()
+                contacts2, _ = self.api2.list_contacts()
+                groups1, _ = self.api1.list_contact_groups()
+                groups2, _ = self.api2.list_contact_groups()
+
+                # Create backup with data organized by account
+                backup_file = backup_manager.create_backup(
+                    account1_contacts=contacts1,
+                    account1_groups=groups1,
+                    account2_contacts=contacts2,
+                    account2_groups=groups2,
+                    account1_email=self.account1_email,
+                    account2_email=self.account2_email,
+                )
+
+                if backup_file:
+                    logger.info(f"Pre-sync backup created: {backup_file}")
+                else:
+                    logger.warning("Failed to create pre-sync backup")
+
+            except Exception as e:
+                # Log error but don't fail sync - backup is optional
+                logger.warning(f"Pre-sync backup failed: {e}")
 
         # Analyze what needs to be synced
         result = self.analyze(full_sync=full_sync)
@@ -379,21 +667,101 @@ class SyncEngine:
 
         result = SyncResult()
 
+        # === LOG FILTER CONFIGURATION ===
+        # Log filter configuration at sync start for visibility
+        if self.config and self.config.has_any_filter():
+            logger.info("Group filtering is enabled:")
+            if self.config.account1.has_filter():
+                logger.info(
+                    f"  {self.account1_email}: filtering by groups "
+                    f"{self.config.account1.sync_groups}"
+                )
+            else:
+                logger.info(f"  {self.account1_email}: no filter (sync all contacts)")
+            if self.config.account2.has_filter():
+                logger.info(
+                    f"  {self.account2_email}: filtering by groups "
+                    f"{self.config.account2.sync_groups}"
+                )
+            else:
+                logger.info(f"  {self.account2_email}: no filter (sync all contacts)")
+        else:
+            logger.debug("No group filtering configured (syncing all contacts)")
+
         # === ANALYZE GROUPS FIRST (before contacts) ===
         # Groups must be synced first so memberships can be mapped correctly
-        self._analyze_groups(result)
+        # Returns groups for filter resolution
+        groups1, groups2 = self._analyze_groups(result)
 
-        # Fetch contacts from both accounts
-        contacts1, sync_token1 = self._fetch_contacts(self.api1, ACCOUNT_1, full_sync)
-        contacts2, sync_token2 = self._fetch_contacts(self.api2, ACCOUNT_2, full_sync)
+        # === RESOLVE SYNC LABEL GROUPS ===
+        # Find existing sync label groups (if configured) for use in detecting
+        # contacts that need the sync label added during analysis
+        self._resolve_sync_label_groups(groups1, groups2)
 
+        # === RESOLVE GROUP FILTERS ===
+        # Convert configured group names to resource names for filtering
+        # Store as instance variables for use in sync operation decisions
+        self._allowed_groups_1: frozenset[str] = frozenset()
+        self._allowed_groups_2: frozenset[str] = frozenset()
+
+        if self.config:
+            if self.config.account1.has_filter():
+                self._allowed_groups_1 = self._resolve_group_filters(
+                    self.config.account1.sync_groups,
+                    groups1,
+                    self.account1_email,
+                )
+                result.stats.filter_groups_account1 = len(self._allowed_groups_1)
+                if self._allowed_groups_1:
+                    logger.info(
+                        f"Resolved {len(self._allowed_groups_1)} filter groups for "
+                        f"{self.account1_email}"
+                    )
+
+            if self.config.account2.has_filter():
+                self._allowed_groups_2 = self._resolve_group_filters(
+                    self.config.account2.sync_groups,
+                    groups2,
+                    self.account2_email,
+                )
+                result.stats.filter_groups_account2 = len(self._allowed_groups_2)
+                if self._allowed_groups_2:
+                    logger.info(
+                        f"Resolved {len(self._allowed_groups_2)} filter groups for "
+                        f"{self.account2_email}"
+                    )
+
+        # === FETCH CONTACTS (all contacts for matching) ===
+        # Fetch ALL contacts from both accounts - filtering happens during
+        # sync operation decisions to ensure matching against all contacts
+        contacts1, sync_token1 = self._fetch_contacts(
+            self.api1,
+            ACCOUNT_1,
+            full_sync,
+            account_label=self.account1_email,
+        )
+        contacts2, sync_token2 = self._fetch_contacts(
+            self.api2,
+            ACCOUNT_2,
+            full_sync,
+            account_label=self.account2_email,
+        )
+
+        # Populate membership_names for proper content_hash comparison
+        # (uses group names instead of resource IDs which differ between accounts)
+        self._populate_membership_names(contacts1, groups1)
+        self._populate_membership_names(contacts2, groups2)
+
+        # Track total contact counts (all contacts, for matching)
         result.stats.contacts_in_account1 = len(contacts1)
         result.stats.contacts_in_account2 = len(contacts2)
 
-        logger.info(
-            f"Fetched {len(contacts1)} contacts from {self.account1_email}, "
-            f"{len(contacts2)} contacts from {self.account2_email}"
-        )
+        # Track filter statistics - will be updated during sync decisions
+        result.stats.contacts_before_filter_account1 = len(contacts1)
+        result.stats.contacts_before_filter_account2 = len(contacts2)
+        # These will be incremented as contacts are filtered during analysis
+        result.stats.contacts_filtered_out_account1 = 0
+        result.stats.contacts_filtered_out_account2 = 0
 
         # Build indexes by matching key (for fast first-pass matching)
         index1 = self._build_contact_index(contacts1, self.account1_email)
@@ -485,6 +853,7 @@ class SyncEngine:
             mlog.info("PHASE 1: KEY-BASED MATCHING (new contacts)")
             mlog.info("=" * 60)
 
+        # Step 1a: Single-key matching (fast path for primary key matches)
         all_keys = set(index1.keys()) | set(index2.keys())
 
         for key in all_keys:
@@ -502,6 +871,60 @@ class SyncEngine:
                 matched_from_1.add(contact1.resource_name)
                 matched_from_2.add(contact2.resource_name)
                 self._analyze_contact_pair(key, contact1, contact2, result)
+
+        # Step 1b: Multi-key matching (for contacts sharing ANY identifier)
+        # This catches cases where contacts share a non-primary identifier
+        # e.g., two contacts share an email that isn't alphabetically first
+        if mlog:
+            mlog.info("")
+            mlog.info("PHASE 1b: MULTI-KEY MATCHING")
+
+        # Build multi-key indexes for remaining unmatched contacts
+        unmatched_contacts1 = [
+            c
+            for c in contacts1
+            if c.resource_name not in matched_from_1 and not c.deleted and c.is_valid()
+        ]
+        unmatched_contacts2 = [
+            c
+            for c in contacts2
+            if c.resource_name not in matched_from_2 and not c.deleted and c.is_valid()
+        ]
+
+        if unmatched_contacts1 and unmatched_contacts2:
+            multi_index1 = self._build_multi_key_index(
+                unmatched_contacts1, self.account1_email
+            )
+            multi_index2 = self._build_multi_key_index(
+                unmatched_contacts2, self.account2_email
+            )
+
+            # Find matches on shared keys
+            shared_keys = set(multi_index1.keys()) & set(multi_index2.keys())
+
+            for key in shared_keys:
+                contacts_with_key_1 = multi_index1[key]
+                contacts_with_key_2 = multi_index2[key]
+
+                # Match first unmatched pair for each shared key
+                for c1 in contacts_with_key_1:
+                    if c1.resource_name in matched_from_1:
+                        continue
+                    for c2 in contacts_with_key_2:
+                        if c2.resource_name in matched_from_2:
+                            continue
+                        # Found a match via shared identifier
+                        matched_from_1.add(c1.resource_name)
+                        matched_from_2.add(c2.resource_name)
+                        # Use primary key for database storage (backward compat)
+                        primary_key = c1.matching_key()
+                        if mlog:
+                            mlog.info(
+                                f"MULTI-KEY MATCH: {c1.display_name} <-> "
+                                f"{c2.display_name} via {key}"
+                            )
+                        self._analyze_contact_pair(primary_key, c1, c2, result)
+                        break  # Only match one pair per contact
 
         # === PHASE 2: Multi-tier matching for unmatched contacts ===
         unmatched1 = [
@@ -527,22 +950,40 @@ class SyncEngine:
             if mlog:
                 mlog.info(f"  Multi-tier matches found: {newly_matched}")
 
-        # Remaining unmatched contacts need to be created
+        # === PHASE 3: Handle remaining unmatched contacts ===
+        # Check for potential duplicates before creating
+        if mlog:
+            mlog.info("")
+            mlog.info("=" * 60)
+            mlog.info("PHASE 3: DUPLICATE DETECTION & UNMATCHED HANDLING")
+            mlog.info("=" * 60)
+
+        # Build identifier lookup from matched contacts for duplicate detection
+        identifier_to_matched = self._build_matched_identifier_index(
+            result.matched_contacts
+        )
+
+        # Process unmatched contacts from account 1
         for contact in index1.values():
             if contact.resource_name not in matched_from_1:
-                result.to_create_in_account2.append(contact)
-                if mlog:
-                    mlog.info(
-                        f"UNMATCHED: {contact.display_name} -> create in account2"
-                    )
+                self._handle_unmatched_contact(
+                    contact,
+                    source_account=1,
+                    identifier_to_matched=identifier_to_matched,
+                    result=result,
+                    mlog=mlog,
+                )
 
+        # Process unmatched contacts from account 2
         for contact in index2.values():
             if contact.resource_name not in matched_from_2:
-                result.to_create_in_account1.append(contact)
-                if mlog:
-                    mlog.info(
-                        f"UNMATCHED: {contact.display_name} -> create in account1"
-                    )
+                self._handle_unmatched_contact(
+                    contact,
+                    source_account=2,
+                    identifier_to_matched=identifier_to_matched,
+                    result=result,
+                    mlog=mlog,
+                )
 
         # Log matching summary
         if mlog:
@@ -555,6 +996,11 @@ class SyncEngine:
             mlog.info(f"  To update in account1: {len(result.to_update_in_account1)}")
             mlog.info(f"  To update in account2: {len(result.to_update_in_account2)}")
             mlog.info(f"  Conflicts resolved: {len(result.conflicts)}")
+            if result.potential_duplicates:
+                mlog.info(f"  Potential duplicates: {len(result.potential_duplicates)}")
+                mlog.info(f"    Skipped: {result.stats.duplicates_skipped}")
+                mlog.info(f"    Merged: {result.stats.duplicates_merged}")
+                mlog.info(f"    Reported: {result.stats.duplicates_reported}")
             mlog.info("=" * 60)
 
         # Handle deleted contacts
@@ -628,11 +1074,235 @@ class SyncEngine:
 
         return matches_found
 
+    def _build_matched_identifier_index(
+        self,
+        matched_contacts: list[tuple[Contact, Contact]],
+    ) -> dict[str, tuple[Contact, Contact]]:
+        """
+        Build an index mapping identifiers to matched contact pairs.
+
+        This is used for duplicate detection - when an unmatched contact
+        shares an identifier with an already-matched contact.
+
+        Args:
+            matched_contacts: List of (contact1, contact2) matched pairs
+
+        Returns:
+            Dictionary mapping normalized identifiers to matched pairs
+        """
+        index: dict[str, tuple[Contact, Contact]] = {}
+
+        for contact1, contact2 in matched_contacts:
+            # Index all emails from both contacts in the pair
+            for email in contact1.emails + contact2.emails:
+                if email:
+                    normalized = self.matcher._normalize_email(email)
+                    if normalized:
+                        index[f"email:{normalized}"] = (contact1, contact2)
+
+            # Index all valid phones from both contacts
+            for phone in contact1.phones + contact2.phones:
+                if phone:
+                    normalized = self.matcher._normalize_phone(phone)
+                    if self.matcher._is_valid_phone(normalized):
+                        index[f"phone:{normalized}"] = (contact1, contact2)
+
+        return index
+
+    def _handle_unmatched_contact(
+        self,
+        contact: Contact,
+        source_account: int,
+        identifier_to_matched: dict[str, tuple[Contact, Contact]],
+        result: SyncResult,
+        mlog: logging.Logger | None,
+    ) -> None:
+        """
+        Handle an unmatched contact, checking for potential duplicates.
+
+        Args:
+            contact: The unmatched contact
+            source_account: Which account the contact is from (1 or 2)
+            identifier_to_matched: Index of identifiers to matched pairs
+            result: SyncResult to update
+            mlog: Optional matching logger
+        """
+        # Check if this contact shares any identifiers with matched contacts
+        shared_identifiers: list[str] = []
+        matched_pair: tuple[Contact, Contact] | None = None
+
+        # Check emails
+        for email in contact.emails:
+            if email:
+                normalized = self.matcher._normalize_email(email)
+                key = f"email:{normalized}"
+                if key in identifier_to_matched:
+                    shared_identifiers.append(email)
+                    matched_pair = identifier_to_matched[key]
+
+        # Check phones
+        for phone in contact.phones:
+            if phone:
+                normalized = self.matcher._normalize_phone(phone)
+                if self.matcher._is_valid_phone(normalized):
+                    key = f"phone:{normalized}"
+                    if key in identifier_to_matched:
+                        shared_identifiers.append(phone)
+                        matched_pair = identifier_to_matched[key]
+
+        if matched_pair and shared_identifiers:
+            # This is a potential duplicate!
+            matched_contact = (
+                matched_pair[0] if source_account == 1 else matched_pair[1]
+            )
+            matched_partner = (
+                matched_pair[1] if source_account == 1 else matched_pair[0]
+            )
+
+            duplicate = PotentialDuplicate(
+                unmatched_contact=contact,
+                matched_contact=matched_contact,
+                matched_partner=matched_partner,
+                shared_identifiers=shared_identifiers,
+                source_account=source_account,
+            )
+
+            result.potential_duplicates.append(duplicate)
+            result.stats.potential_duplicates_found += 1
+
+            # Handle based on strategy
+            if self.duplicate_handling == DuplicateHandling.SKIP:
+                duplicate.action_taken = "skipped"
+                result.stats.duplicates_skipped += 1
+                if mlog:
+                    mlog.info(f"POTENTIAL DUPLICATE (skipped): {contact.display_name}")
+                    mlog.info(f"  Shares: {', '.join(shared_identifiers)}")
+                    mlog.info(f"  With matched: {matched_contact.display_name}")
+
+            elif self.duplicate_handling == DuplicateHandling.AUTO_MERGE:
+                duplicate.action_taken = "merged"
+                result.stats.duplicates_merged += 1
+                # Add identifiers from unmatched to the matched partner
+                self._merge_identifiers_into_update(
+                    contact, matched_partner, source_account, result
+                )
+                if mlog:
+                    mlog.info(f"POTENTIAL DUPLICATE (merged): {contact.display_name}")
+                    mlog.info(f"  Merging into: {matched_partner.display_name}")
+
+            elif self.duplicate_handling == DuplicateHandling.REPORT_ONLY:
+                duplicate.action_taken = "reported"
+                result.stats.duplicates_reported += 1
+                # Still create the contact, but track it (if in filter)
+                if source_account == 1:
+                    if self._is_contact_in_filter(contact, self._allowed_groups_1):
+                        result.to_create_in_account2.append(contact)
+                    else:
+                        result.stats.contacts_filtered_out_account1 += 1
+                else:
+                    if self._is_contact_in_filter(contact, self._allowed_groups_2):
+                        result.to_create_in_account1.append(contact)
+                    else:
+                        result.stats.contacts_filtered_out_account2 += 1
+                if mlog:
+                    mlog.info(f"POTENTIAL DUPLICATE (reported): {contact.display_name}")
+                    mlog.info("  Creating anyway, flagged for review")
+        else:
+            # No duplicate detected - check filter before creating
+            if source_account == 1:
+                if self._is_contact_in_filter(contact, self._allowed_groups_1):
+                    result.to_create_in_account2.append(contact)
+                    if mlog:
+                        mlog.info(
+                            f"UNMATCHED: {contact.display_name} -> create in account2"
+                        )
+                else:
+                    result.stats.contacts_filtered_out_account1 += 1
+                    if mlog:
+                        mlog.info(
+                            f"FILTERED OUT: {contact.display_name} "
+                            "(not in allowed groups)"
+                        )
+            else:
+                if self._is_contact_in_filter(contact, self._allowed_groups_2):
+                    result.to_create_in_account1.append(contact)
+                    if mlog:
+                        mlog.info(
+                            f"UNMATCHED: {contact.display_name} -> create in account1"
+                        )
+                else:
+                    result.stats.contacts_filtered_out_account2 += 1
+                    if mlog:
+                        mlog.info(
+                            f"FILTERED OUT: {contact.display_name} "
+                            "(not in allowed groups)"
+                        )
+
+    def _merge_identifiers_into_update(
+        self,
+        source_contact: Contact,
+        target_contact: Contact,
+        source_account: int,
+        result: SyncResult,
+    ) -> None:
+        """
+        Merge identifiers from source into target contact as an update.
+
+        Args:
+            source_contact: Contact with additional identifiers
+            target_contact: Matched contact to merge into
+            source_account: Which account source_contact is from
+            result: SyncResult to add update to
+        """
+        # Create a merged contact with combined identifiers
+        merged_emails = list(target_contact.emails)
+        merged_phones = list(target_contact.phones)
+
+        for email in source_contact.emails:
+            if email and email not in merged_emails:
+                merged_emails.append(email)
+
+        for phone in source_contact.phones:
+            if phone and phone not in merged_phones:
+                merged_phones.append(phone)
+
+        # Only update if there's something new to add
+        if len(merged_emails) > len(target_contact.emails) or len(merged_phones) > len(
+            target_contact.phones
+        ):
+            # Create updated contact
+            merged_contact = Contact(
+                resource_name=target_contact.resource_name,
+                etag=target_contact.etag,
+                display_name=target_contact.display_name,
+                given_name=target_contact.given_name,
+                family_name=target_contact.family_name,
+                emails=merged_emails,
+                phones=merged_phones,
+                organizations=target_contact.organizations,
+                notes=target_contact.notes,
+                last_modified=target_contact.last_modified,
+            )
+
+            # Add to appropriate update list (update in opposite account)
+            if source_account == 1:
+                # Source is in acct1, target is in acct2, update acct2
+                result.to_update_in_account2.append(
+                    (target_contact.resource_name, merged_contact)
+                )
+            else:
+                # Source is in acct2, target is in acct1, update acct1
+                result.to_update_in_account1.append(
+                    (target_contact.resource_name, merged_contact)
+                )
+
     # =========================================================================
     # Group Sync Analysis Methods
     # =========================================================================
 
-    def _analyze_groups(self, result: SyncResult) -> None:
+    def _analyze_groups(
+        self, result: SyncResult
+    ) -> tuple[list[ContactGroup], list[ContactGroup]]:
         """
         Analyze contact groups in both accounts and determine sync operations.
 
@@ -641,6 +1311,10 @@ class SyncEngine:
 
         Args:
             result: SyncResult to populate with group sync operations
+
+        Returns:
+            Tuple of (groups from account1, groups from account2) for use in
+            filter resolution.
         """
         logger.info("Analyzing contact groups for sync")
         mlog = getattr(self, "_matching_logger", None)
@@ -830,6 +1504,9 @@ class SyncEngine:
             f"to_create_in_2={len(result.groups_to_create_in_account2)}"
         )
 
+        # Return fetched groups for use in filter resolution
+        return groups1, groups2
+
     def _fetch_groups(self, api: PeopleAPI, account_id: str) -> list[ContactGroup]:
         """
         Fetch contact groups from an account.
@@ -851,6 +1528,251 @@ class SyncEngine:
         except PeopleAPIError as e:
             logger.error(f"Failed to fetch groups from {account_id}: {e}")
             return []
+
+    def _resolve_group_filters(
+        self,
+        configured_groups: list[str],
+        fetched_groups: list[ContactGroup],
+        account_label: str = "unknown",
+    ) -> frozenset[str]:
+        """
+        Resolve configured group names to resource names for filtering.
+
+        Converts display names (like "Work", "Family") to resource names
+        (like "contactGroups/abc123") using the fetched groups list.
+        Supports both display name matching (case-insensitive) and
+        direct resource name matching.
+
+        Args:
+            configured_groups: List of group identifiers from config.
+                Can be display names ("Work") or resource names
+                ("contactGroups/123abc").
+            fetched_groups: List of ContactGroup objects fetched from
+                the account to resolve against.
+            account_label: Label for the account (for logging).
+
+        Returns:
+            Frozenset of resolved resource names for efficient membership
+            checking. Empty frozenset if no groups could be resolved or
+            configured_groups was empty.
+
+        Note:
+            - Display names are matched case-insensitively using normalized
+              matching keys (same normalization as group.py).
+            - Resource names (starting with "contactGroups/") are matched
+              exactly.
+            - Warnings are logged for configured groups that cannot be found.
+            - If a display name matches multiple groups (ambiguous), the first
+              match is used and a warning is logged.
+        """
+        if not configured_groups:
+            return frozenset()
+
+        resolved_resource_names: set[str] = set()
+        unresolved_groups: list[str] = []
+
+        # Build lookup indexes for efficient matching
+        # 1. By resource name (exact match for contactGroups/... format)
+        by_resource_name: dict[str, ContactGroup] = {
+            g.resource_name: g for g in fetched_groups if g.resource_name
+        }
+
+        # 2. By normalized display name (case-insensitive matching)
+        # Note: We include all groups here, even non-syncable ones like system groups,
+        # in case the user wants to filter by system groups (e.g., "starred")
+        by_normalized_name: dict[str, list[ContactGroup]] = {}
+        for group in fetched_groups:
+            if group.name:
+                normalized_key = group.matching_key()
+                if normalized_key not in by_normalized_name:
+                    by_normalized_name[normalized_key] = []
+                by_normalized_name[normalized_key].append(group)
+
+        # Resolve each configured group
+        for configured_group in configured_groups:
+            resolved = False
+
+            # Try exact resource name match first (for contactGroups/... format)
+            if configured_group.startswith("contactGroups/"):
+                if configured_group in by_resource_name:
+                    resolved_resource_names.add(configured_group)
+                    resolved = True
+                    logger.debug(
+                        f"Resolved filter group by resource name: {configured_group}"
+                    )
+            else:
+                # Try case-insensitive display name match
+                # Normalize the configured name the same way group.matching_key() does
+                normalized_configured = self._normalize_group_name(configured_group)
+
+                if normalized_configured in by_normalized_name:
+                    matching_groups = by_normalized_name[normalized_configured]
+
+                    if len(matching_groups) > 1:
+                        # Ambiguous match - log warning but use first match
+                        logger.warning(
+                            f"Ambiguous group filter '{configured_group}' in "
+                            f"{account_label}: matches {len(matching_groups)} groups. "
+                            f"Using first match: {matching_groups[0].resource_name}"
+                        )
+
+                    resolved_resource_names.add(matching_groups[0].resource_name)
+                    resolved = True
+                    logger.debug(
+                        f"Resolved filter group '{configured_group}' -> "
+                        f"{matching_groups[0].resource_name} in {account_label}"
+                    )
+
+            if not resolved:
+                unresolved_groups.append(configured_group)
+
+        # Log warnings for unresolved groups
+        if unresolved_groups:
+            logger.warning(
+                f"Could not resolve {len(unresolved_groups)} filter group(s) "
+                f"in {account_label}: {', '.join(unresolved_groups)}. "
+                f"These groups will be ignored."
+            )
+
+        if resolved_resource_names:
+            logger.info(
+                f"Resolved {len(resolved_resource_names)} filter group(s) "
+                f"in {account_label}"
+            )
+
+        return frozenset(resolved_resource_names)
+
+    def _normalize_group_name(self, name: str) -> str:
+        """
+        Normalize a group name for case-insensitive matching.
+
+        Uses the same normalization logic as ContactGroup.matching_key()
+        to ensure consistent matching between config values and group names.
+
+        Args:
+            name: Group display name to normalize.
+
+        Returns:
+            Normalized lowercase string with special characters handled.
+        """
+        import re
+        import unicodedata
+
+        if not name:
+            return ""
+
+        # Normalize unicode (decompose accents, etc.)
+        normalized = unicodedata.normalize("NFKD", name)
+
+        # Remove combining characters (accents)
+        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+
+        # Convert to lowercase
+        normalized = normalized.lower()
+
+        # Replace multiple spaces with single space and strip
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        return normalized
+
+    def _filter_contacts_by_groups(
+        self,
+        contacts: list[Contact],
+        allowed_groups: frozenset[str],
+        account_label: str = "unknown",
+    ) -> list[Contact]:
+        """
+        Filter contacts to include only those belonging to specified groups.
+
+        Implements OR logic: a contact is included if ANY of its group
+        memberships match ANY of the allowed groups. If allowed_groups
+        is empty, all contacts are returned (backwards compatibility).
+
+        Args:
+            contacts: List of contacts to filter.
+            allowed_groups: Frozenset of group resource names
+                (e.g., "contactGroups/abc123") to filter by.
+                Empty frozenset means no filtering (include all).
+            account_label: Label for the account (for logging).
+
+        Returns:
+            List of contacts that belong to at least one allowed group.
+            If allowed_groups is empty, returns all contacts unchanged.
+
+        Example:
+            # Only include contacts in "Work" or "Family" groups
+            allowed = frozenset(["contactGroups/work123", "contactGroups/family456"])
+            filtered = engine._filter_contacts_by_groups(contacts, allowed, "Account 1")
+        """
+        # Empty filter = no filtering (backwards compatibility)
+        if not allowed_groups:
+            logger.debug(
+                f"No group filter configured for {account_label}, "
+                f"including all {len(contacts)} contacts"
+            )
+            return contacts
+
+        filtered_contacts: list[Contact] = []
+        excluded_count = 0
+        included_count = 0
+
+        for contact in contacts:
+            # Check if contact belongs to any of the allowed groups (OR logic)
+            contact_groups = frozenset(contact.memberships)
+            matching_groups = contact_groups & allowed_groups
+
+            if matching_groups:
+                # Contact is in at least one allowed group - include it
+                filtered_contacts.append(contact)
+                included_count += 1
+                logger.debug(
+                    f"INCLUDED: {contact.display_name} ({contact.resource_name}) - "
+                    f"matches groups: {list(matching_groups)}"
+                )
+            else:
+                # Contact is not in any allowed group - exclude it
+                excluded_count += 1
+                logger.debug(
+                    f"EXCLUDED: {contact.display_name} ({contact.resource_name}) - "
+                    f"no matching groups (has: {list(contact_groups)})"
+                )
+
+        logger.info(
+            f"Group filter applied for {account_label}: "
+            f"{included_count} included, {excluded_count} excluded "
+            f"(filter has {len(allowed_groups)} groups)"
+        )
+
+        return filtered_contacts
+
+    def _is_contact_in_filter(
+        self,
+        contact: Contact,
+        allowed_groups: frozenset[str] | None,
+    ) -> bool:
+        """
+        Check if a contact passes the group filter.
+
+        Used during sync operation decisions to determine if a contact
+        should be synced. This allows matching to happen against all
+        contacts while only syncing contacts in the configured groups.
+
+        Args:
+            contact: The contact to check
+            allowed_groups: The set of allowed group resource names.
+                If None or empty, all contacts pass (backwards compatibility).
+
+        Returns:
+            True if the contact should be synced (passes filter or no filter),
+            False if the contact should not be synced (doesn't pass filter).
+        """
+        # No filter = all contacts pass (backwards compatible)
+        if not allowed_groups:
+            return True
+
+        # Check if contact belongs to any allowed group
+        contact_groups = frozenset(contact.memberships)
+        return bool(contact_groups & allowed_groups)
 
     def _build_group_index(
         self, groups: list[ContactGroup], account_label: str = "unknown"
@@ -1000,6 +1922,10 @@ class SyncEngine:
         logger.info("Executing sync operations")
 
         try:
+            # === ENSURE SYNC LABEL GROUP EXISTS ===
+            # Create the sync label group in both accounts if configured
+            self._ensure_sync_label_groups()
+
             # === EXECUTE GROUP OPERATIONS FIRST ===
             # Groups must be synced before contacts so membership mappings exist
 
@@ -1144,19 +2070,31 @@ class SyncEngine:
             raise
 
     def _fetch_contacts(
-        self, api: PeopleAPI, account_id: str, full_sync: bool
+        self,
+        api: PeopleAPI,
+        account_id: str,
+        full_sync: bool,
+        account_label: str | None = None,
     ) -> tuple[list[Contact], str | None]:
         """
         Fetch contacts from an account, optionally using sync token.
+
+        Returns ALL contacts without filtering. Filtering is applied later
+        during sync operation decisions to ensure matching happens against
+        all contacts (preventing duplicates).
 
         Args:
             api: PeopleAPI instance for the account
             account_id: Account identifier
             full_sync: If True, ignore stored sync token
+            account_label: Optional human-readable label for the account
+                (used in logging). Defaults to account_id if not provided.
 
         Returns:
-            Tuple of (list of contacts, new sync token)
+            Tuple of (list of contacts, new sync token).
         """
+        # Use account_label for logging, fall back to account_id
+        label = account_label or account_id
         sync_token = None
 
         if not full_sync:
@@ -1170,11 +2108,9 @@ class SyncEngine:
             if sync_token:
                 # Try incremental sync
                 contacts, new_token = api.list_contacts(sync_token=sync_token)
-                return contacts, new_token
             else:
                 # Full sync
                 contacts, new_token = api.list_contacts()
-                return contacts, new_token
 
         except PeopleAPIError as e:
             if "expired" in str(e).lower():
@@ -1184,8 +2120,36 @@ class SyncEngine:
                 )
                 self.database.clear_sync_token(account_id)
                 contacts, new_token = api.list_contacts()
-                return contacts, new_token
-            raise
+            else:
+                raise
+
+        logger.info(f"Fetched {len(contacts)} contacts from {label}")
+        return contacts, new_token
+
+    def _populate_membership_names(
+        self,
+        contacts: list[Contact],
+        groups: list[ContactGroup],
+    ) -> None:
+        """
+        Populate membership_names field for contacts using group resource→name mapping.
+
+        This allows content_hash to use human-readable group names instead of
+        resource IDs, enabling proper cross-account comparison (since the same
+        group has different resource IDs in each account).
+
+        Args:
+            contacts: List of contacts to update (modified in place)
+            groups: List of contact groups to build mapping from
+        """
+        # Build resource_name → group_name mapping
+        resource_to_name: dict[str, str] = {g.resource_name: g.name for g in groups}
+
+        for contact in contacts:
+            contact.membership_names = [
+                resource_to_name.get(res, res)  # Fall back to resource if unknown
+                for res in contact.memberships
+            ]
 
     def _build_contact_index(
         self, contacts: list[Contact], account_label: str = "unknown"
@@ -1299,6 +2263,53 @@ class SyncEngine:
 
         return index
 
+    def _build_multi_key_index(
+        self, contacts: list[Contact], account_label: str = "unknown"
+    ) -> dict[str, list[Contact]]:
+        """
+        Build a multi-key index mapping each identifier to contacts that have it.
+
+        Unlike _build_contact_index which maps each contact to ONE key,
+        this maps EACH email/phone to ALL contacts that have it.
+        This enables matching contacts that share ANY identifier, not just
+        the alphabetically-first one.
+
+        Args:
+            contacts: List of contacts to index
+            account_label: Label for the account (for logging)
+
+        Returns:
+            Dictionary mapping identifier keys to lists of contacts
+        """
+        from gcontact_sync.sync.matcher import create_matching_keys
+
+        index: dict[str, list[Contact]] = {}
+        mlog = getattr(self, "_matching_logger", None)
+
+        if mlog:
+            mlog.debug(f"Building multi-key index for {account_label}")
+
+        for contact in contacts:
+            # Skip deleted or invalid contacts
+            if contact.deleted or not contact.is_valid():
+                continue
+
+            # Generate all matching keys for this contact
+            keys = create_matching_keys(contact, self.matcher)
+
+            for key in keys:
+                if key not in index:
+                    index[key] = []
+                index[key].append(contact)
+
+        if mlog:
+            mlog.debug(
+                f"Multi-key index complete: {len(index)} unique keys "
+                f"for {account_label}"
+            )
+
+        return index
+
     def _analyze_contact_pair(
         self,
         matching_key: str,
@@ -1322,40 +2333,58 @@ class SyncEngine:
         last_synced_hash = mapping.get("last_synced_hash") if mapping else None
 
         if contact1 and not contact2:
-            # Contact only in account 1 - create in account 2
-            result.to_create_in_account2.append(contact1)
-            logger.debug(
-                f"Will create in {self.account2_email}: {contact1.display_name}"
-            )
-            if mlog:
-                mlog.info(f"UNMATCHED (account1 only): {contact1.display_name}")
-                mlog.info(f"  matching_key: {matching_key}")
-                mlog.info(f"  resource_name: {contact1.resource_name}")
-                mlog.info(f"  emails: {contact1.emails}")
-                mlog.info(f"  phones: {contact1.phones}")
-                mlog.info(f"  ACTION: Will create in {self.account2_email}")
-                mlog.info("")
-            # Analyze photo for new contact creation
-            if contact1.photo_url:
-                result.stats.photos_synced += 1
+            # Contact only in account 1 - check filter before creating in account 2
+            if self._is_contact_in_filter(contact1, self._allowed_groups_1):
+                result.to_create_in_account2.append(contact1)
+                logger.debug(
+                    f"Will create in {self.account2_email}: {contact1.display_name}"
+                )
+                if mlog:
+                    mlog.info(f"UNMATCHED (account1 only): {contact1.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info(f"  resource_name: {contact1.resource_name}")
+                    mlog.info(f"  emails: {contact1.emails}")
+                    mlog.info(f"  phones: {contact1.phones}")
+                    mlog.info(f"  ACTION: Will create in {self.account2_email}")
+                    mlog.info("")
+                # Analyze photo for new contact creation
+                if contact1.photo_url:
+                    result.stats.photos_synced += 1
+            else:
+                # Contact not in filter - skip sync
+                result.stats.contacts_filtered_out_account1 += 1
+                if mlog:
+                    mlog.info(f"FILTERED OUT (account1): {contact1.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info("  ACTION: Not in allowed groups, skipping sync")
+                    mlog.info("")
 
         elif contact2 and not contact1:
-            # Contact only in account 2 - create in account 1
-            result.to_create_in_account1.append(contact2)
-            logger.debug(
-                f"Will create in {self.account1_email}: {contact2.display_name}"
-            )
-            if mlog:
-                mlog.info(f"UNMATCHED (account2 only): {contact2.display_name}")
-                mlog.info(f"  matching_key: {matching_key}")
-                mlog.info(f"  resource_name: {contact2.resource_name}")
-                mlog.info(f"  emails: {contact2.emails}")
-                mlog.info(f"  phones: {contact2.phones}")
-                mlog.info(f"  ACTION: Will create in {self.account1_email}")
-                mlog.info("")
-            # Analyze photo for new contact creation
-            if contact2.photo_url:
-                result.stats.photos_synced += 1
+            # Contact only in account 2 - check filter before creating in account 1
+            if self._is_contact_in_filter(contact2, self._allowed_groups_2):
+                result.to_create_in_account1.append(contact2)
+                logger.debug(
+                    f"Will create in {self.account1_email}: {contact2.display_name}"
+                )
+                if mlog:
+                    mlog.info(f"UNMATCHED (account2 only): {contact2.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info(f"  resource_name: {contact2.resource_name}")
+                    mlog.info(f"  emails: {contact2.emails}")
+                    mlog.info(f"  phones: {contact2.phones}")
+                    mlog.info(f"  ACTION: Will create in {self.account1_email}")
+                    mlog.info("")
+                # Analyze photo for new contact creation
+                if contact2.photo_url:
+                    result.stats.photos_synced += 1
+            else:
+                # Contact not in filter - skip sync
+                result.stats.contacts_filtered_out_account2 += 1
+                if mlog:
+                    mlog.info(f"FILTERED OUT (account2): {contact2.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info("  ACTION: Not in allowed groups, skipping sync")
+                    mlog.info("")
 
         elif contact1 and contact2:
             # Contact exists in both - track as matched pair and check if sync needed
@@ -1384,7 +2413,9 @@ class SyncEngine:
         """
         Analyze a contact that exists in both accounts.
 
-        Determines if update is needed and which direction.
+        Determines if update is needed and which direction. When filters are
+        active, a contact is synced bidirectionally if it passes the filter
+        on EITHER side. If neither side passes the filter, sync is skipped.
 
         This method detects all field changes including photos, since
         content_hash() includes all syncable fields (names, emails,
@@ -1398,11 +2429,62 @@ class SyncEngine:
             result: SyncResult to populate with actions
         """
         mlog = getattr(self, "_matching_logger", None)
+
+        # Check filter status for each contact
+        c1_in_filter = self._is_contact_in_filter(contact1, self._allowed_groups_1)
+        c2_in_filter = self._is_contact_in_filter(contact2, self._allowed_groups_2)
+
+        # If NEITHER contact passes filter, skip sync for this pair
+        # If EITHER passes, do normal bidirectional sync
+        if not c1_in_filter and not c2_in_filter:
+            if mlog:
+                mlog.info("  STATUS: Both contacts outside filter scope - skipping")
+                mlog.info("")
+            return
+
         hash1 = contact1.content_hash()
         hash2 = contact2.content_hash()
 
-        # Same content - no sync needed
+        # Check if either contact needs sync label added
+        c1_needs_label = self._contact_needs_sync_label(contact1, 1)
+        c2_needs_label = self._contact_needs_sync_label(contact2, 2)
+
+        # Same content - check if sync label needs to be added
+        # Note: Photos are NOT compared here because photo URLs differ between
+        # accounts even for the same photo. Photo sync happens when contact
+        # content changes and the winner's photo is propagated.
         if hash1 == hash2:
+            # Even if content matches, we may need to add sync labels
+            if c1_needs_label or c2_needs_label:
+                logger.debug(
+                    f"Contact in sync but needs sync label: {contact1.display_name}"
+                )
+                if mlog:
+                    mlog.info("  STATUS: In sync but needs sync label added")
+                    if c1_needs_label:
+                        mlog.info(
+                            f"    -> Will add sync label in {self.account1_email}"
+                        )
+                    if c2_needs_label:
+                        mlog.info(
+                            f"    -> Will add sync label in {self.account2_email}"
+                        )
+                    mlog.info("")
+
+                # Schedule updates to add sync label
+                # IMPORTANT: Use contact from OTHER account as source because
+                # _execute_updates maps memberships from source_account to target
+                # (e.g., for account1 updates, source_account=2)
+                if c1_needs_label:
+                    result.to_update_in_account1.append(
+                        (contact1.resource_name, contact2)
+                    )
+                if c2_needs_label:
+                    result.to_update_in_account2.append(
+                        (contact2.resource_name, contact1)
+                    )
+                return
+
             logger.debug(f"Contact in sync: {contact1.display_name}")
             if mlog:
                 mlog.info("  STATUS: In sync (content hashes match)")
@@ -1418,7 +2500,7 @@ class SyncEngine:
             else:
                 mlog.info("  last_synced_hash: None (first sync)")
 
-        # Check if this is a conflict or one-way change
+        # Normal bidirectional sync - check if this is a conflict or one-way change
         if last_synced_hash:
             contact1_changed = hash1 != last_synced_hash
             contact2_changed = hash2 != last_synced_hash
@@ -1741,11 +2823,25 @@ class SyncEngine:
             # Map memberships from source account to target account
             # If creating in account 1, source is account 2 (and vice versa)
             source_account = 2 if account == 1 else 1
+
+            # Get sync label group resource name for target account (if enabled)
+            sync_label_resource = self._get_sync_label_resource(account)
+
             contacts_with_mapped_memberships = []
             for contact in contacts:
                 mapped_memberships = self._map_memberships(
                     contact.memberships, source_account, account
                 )
+
+                # Add sync label group membership if enabled
+                if (
+                    sync_label_resource
+                    and sync_label_resource not in mapped_memberships
+                ):
+                    mapped_memberships = list(mapped_memberships) + [
+                        sync_label_resource
+                    ]
+
                 # Create new contact with mapped memberships
                 mapped_contact = Contact(
                     resource_name=contact.resource_name,
@@ -1763,6 +2859,9 @@ class SyncEngine:
 
             # Use batch create for efficiency
             created = api.batch_create_contacts(contacts_with_mapped_memberships)
+
+            # Collect created contact resource names for sync label
+            created_resource_names: list[str] = []
 
             # Update mappings with new resource names
             for original, created_contact in zip(contacts, created, strict=True):
@@ -1795,6 +2894,26 @@ class SyncEngine:
                     result=result,
                 )
 
+                # Track for sync label group membership
+                created_resource_names.append(created_contact.resource_name)
+
+            # Add created contacts to sync label group
+            # (must use modify_group_members, not batch_create_contacts)
+            if sync_label_resource and created_resource_names:
+                try:
+                    api.modify_group_members(
+                        resource_name=sync_label_resource,
+                        add_resource_names=created_resource_names,
+                    )
+                    logger.debug(
+                        f"Added {len(created_resource_names)} created contacts to "
+                        f"sync label group in {account_label}"
+                    )
+                except PeopleAPIError as e:
+                    logger.warning(
+                        f"Failed to add created contacts to sync label group: {e}"
+                    )
+
         except PeopleAPIError as e:
             logger.error(f"Failed to create contacts in {account_label}: {e}")
             result.stats.errors += len(contacts)
@@ -1825,6 +2944,9 @@ class SyncEngine:
         # Determine source account for membership mapping
         source_account = 2 if account == 1 else 1
 
+        # Get sync label group resource name for target account (if enabled)
+        sync_label_resource = self._get_sync_label_resource(account)
+
         try:
             # Get current etags for the contacts being updated
             updates_with_etags = []
@@ -1835,6 +2957,16 @@ class SyncEngine:
                     mapped_memberships = self._map_memberships(
                         source_contact.memberships, source_account, account
                     )
+
+                    # Add sync label group membership if enabled
+                    if (
+                        sync_label_resource
+                        and sync_label_resource not in mapped_memberships
+                    ):
+                        mapped_memberships = list(mapped_memberships) + [
+                            sync_label_resource
+                        ]
+
                     # Create a contact with source data but target's resource name
                     update_contact = Contact(
                         resource_name=resource_name,
@@ -1859,6 +2991,9 @@ class SyncEngine:
             # Use batch update for efficiency
             if updates_with_etags:
                 updated = api.batch_update_contacts(updates_with_etags)
+
+                # Collect contacts that need sync label added
+                contacts_for_sync_label: list[str] = []
 
                 # Update mappings with new etags and sync photos
                 for (resource_name, source_contact), updated_contact in zip(
@@ -1895,6 +3030,27 @@ class SyncEngine:
                         account_label=account_label,
                         result=result,
                     )
+
+                    # Track contacts that need sync label added
+                    # (must use modify_group_members, not batch_update_contacts)
+                    if sync_label_resource:
+                        contacts_for_sync_label.append(resource_name)
+
+                # Add contacts to sync label group (must be done via group API)
+                if sync_label_resource and contacts_for_sync_label:
+                    try:
+                        api.modify_group_members(
+                            resource_name=sync_label_resource,
+                            add_resource_names=contacts_for_sync_label,
+                        )
+                        logger.debug(
+                            f"Added {len(contacts_for_sync_label)} contacts to "
+                            f"sync label group in {account_label}"
+                        )
+                    except PeopleAPIError as e:
+                        logger.warning(
+                            f"Failed to add contacts to sync label group: {e}"
+                        )
 
         except PeopleAPIError as e:
             logger.error(f"Failed to update contacts in {account_label}: {e}")

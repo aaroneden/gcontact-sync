@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Built-in Scheduler/Daemon Mode**: Run gcontact-sync as a background service with automatic periodic synchronization
+  - Start daemon with configurable intervals: `gcontact-sync daemon start --interval 24h`
+  - Support for interval formats: seconds (30s), minutes (5m), hours (1h), days (1d)
+  - Graceful shutdown with SIGTERM/SIGINT signal handling
+  - PID file management to prevent multiple daemon instances
+  - Check daemon status: `gcontact-sync daemon status`
+  - Stop running daemon: `gcontact-sync daemon stop`
+
+- **Cross-Platform Service Installation**: Install gcontact-sync as a system service for automatic startup
+  - **macOS**: launchd user agent (`~/Library/LaunchAgents/com.gcontact-sync.plist`)
+  - **Linux**: systemd user service (`~/.config/systemd/user/gcontact-sync.service`)
+  - **Windows**: Task Scheduler task with repetition trigger
+  - Install with: `gcontact-sync daemon install --interval 24h`
+  - Uninstall with: `gcontact-sync daemon uninstall`
+  - Services auto-restart on failure and start automatically on login/boot
+
 - **Contact Photo Synchronization**: Photos are now synchronized between Google accounts
   - Photos are automatically downloaded from source contacts and uploaded to destination contacts
   - Photo changes are detected during sync analysis and included in dry-run reports

@@ -32,6 +32,9 @@ DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 ACCOUNT_1 = "account1"
 ACCOUNT_2 = "account2"
 
+# Default auth timeout for network requests (in seconds)
+DEFAULT_AUTH_TIMEOUT = 10
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,13 +68,18 @@ class GoogleAuth:
         creds = auth.get_credentials('account1')
     """
 
-    def __init__(self, config_dir: Path | None = None):
+    def __init__(
+        self,
+        config_dir: Path | None = None,
+        auth_timeout: int = DEFAULT_AUTH_TIMEOUT,
+    ):
         """
         Initialize the authentication manager.
 
         Args:
             config_dir: Directory for storing credentials and tokens.
                        Defaults to ~/.gcontact-sync/ or $GCONTACT_SYNC_CONFIG_DIR
+            auth_timeout: Timeout in seconds for network requests (default: 10)
         """
         # Use environment variable if set, otherwise default
         if config_dir is not None:
@@ -84,6 +92,7 @@ class GoogleAuth:
                 self.config_dir = DEFAULT_CONFIG_DIR
 
         self.credentials_path = self.config_dir / "credentials.json"
+        self.auth_timeout = auth_timeout
 
     def _get_token_path(self, account_id: str) -> Path:
         """
@@ -215,7 +224,7 @@ class GoogleAuth:
             req = urllib.request.Request(url)
             req.add_header("Authorization", f"Bearer {creds.token}")
 
-            with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
+            with urllib.request.urlopen(req, timeout=self.auth_timeout) as response:  # nosec B310
                 data: dict[str, str] = json.loads(response.read().decode("utf-8"))
                 return data.get("email")
         except HTTPError as e:

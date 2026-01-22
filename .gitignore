@@ -50,6 +50,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.coverage.json
 
 # Translations
 *.mo
@@ -149,6 +150,7 @@ token*.json
 # Local configuration
 .env.local
 .env.*.local
+uv.lock
 
 # Log files
 *.log

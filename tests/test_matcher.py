@@ -675,6 +675,219 @@ class TestRealWorldScenarios:
         assert result.confidence == MatchConfidence.HIGH
 
 
+class TestPhoneValidationBugs:
+    """Tests for phone number validation bugs discovered in production.
+
+    These tests document real bugs found during debug analysis:
+    1. Empty phone strings matching each other (Bug #1)
+    2. Invalid phone values (no digits) being treated as valid (Bug #3)
+    """
+
+    def test_empty_phone_strings_should_not_match(self, matcher):
+        """
+        Bug #1: Invalid phones that normalize to empty strings should NOT match.
+
+        Real case from production:
+        - Will S Murphy has phones: ['9012639400', '9017522753', 'Wp',
+          'william.murphy@fedex.com']
+        - Siddhant Jain has phones: ['LLMs']
+        - 'Wp' and 'LLMs' both normalize to empty strings and matched!
+
+        This caused a FALSE POSITIVE match between completely unrelated people.
+        """
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Will S Murphy",
+            emails=["will.s.murphy@gmail.com"],
+            phones=["9012639400", "9017522753", "Wp", "william.murphy@fedex.com"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Siddhant Jain",
+            emails=["sjain35@buffalo.edu"],
+            phones=["LLMs"],  # This normalizes to empty string
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # These should NOT match - they are completely different people
+        assert result.is_match is False, (
+            "Contacts with invalid phones that normalize to empty strings "
+            "should NOT match on those empty strings"
+        )
+
+    def test_text_only_phone_should_not_create_valid_key(self, matcher):
+        """
+        Bug #1 variant: Phone values with no digits should not create matching keys.
+
+        Values like 'Wp', 'LLMs', 'Home', etc. have no digits and should be ignored.
+        """
+        contact = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Test Person",
+            emails=[],
+            phones=["Wp", "LLMs", "Home"],  # All invalid - no digits
+        )
+
+        keys = create_matching_keys(contact, matcher)
+
+        # Should fall back to name-only key since no valid phones
+        assert len(keys) == 1
+        assert keys[0].startswith("name:")
+        # Should NOT have any phone keys
+        assert not any("phone:" in k for k in keys)
+
+    def test_email_in_phone_field_should_not_match(self, matcher):
+        """
+        Bug #1 variant: Email addresses stored in phone fields should not match.
+
+        Real case: 'william.murphy@fedex.com' was in a phone field,
+        normalized to empty string (no digits), and matched other empty phones.
+        """
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Person One",
+            emails=[],
+            phones=["william.murphy@fedex.com"],  # Email in phone field
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Person Two",
+            emails=[],
+            phones=["info@example.com"],  # Another email in phone field
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should NOT match on invalid phone values
+        assert result.is_match is False
+
+    def test_minimum_phone_length_validation(self, matcher):
+        """
+        Bug #3: Phone numbers should have a minimum length to be valid.
+
+        Very short digit sequences (1-6 digits) are likely not real phone numbers
+        and could cause false matches. Real phone numbers typically have 7+ digits.
+        """
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Person One",
+            emails=[],
+            phones=["123"],  # Too short to be a real phone
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Person Two",
+            emails=[],
+            phones=["123"],  # Same short "phone"
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should NOT match on phone numbers that are too short
+        assert result.is_match is False, (
+            "Phone numbers with fewer than 7 digits should not be used for matching"
+        )
+
+    def test_short_phone_should_not_create_key(self, matcher):
+        """
+        Bug #3 variant: Short digit sequences should not create phone keys.
+
+        Phone numbers should have at least 7 digits to be valid for matching.
+        """
+        contact = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Test Person",
+            emails=[],
+            phones=["123", "1234", "12345", "123456"],  # All too short
+        )
+
+        keys = create_matching_keys(contact, matcher)
+
+        # Should fall back to name-only key since no valid phones
+        assert len(keys) == 1
+        assert keys[0].startswith("name:")
+        # Should NOT have any phone keys for short numbers
+        assert not any("phone:" in k for k in keys)
+
+    def test_valid_phone_length_seven_digits(self, matcher):
+        """Test that 7-digit phone numbers ARE valid (local numbers)."""
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Person One",
+            emails=[],
+            phones=["5551234"],  # 7 digits - valid local number
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Person Two",
+            emails=[],
+            phones=["5551234"],  # Same phone
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should match on valid 7-digit phone
+        assert result.is_match is True
+        assert result.tier == MatchTier.EXACT_PHONE
+
+    def test_valid_phone_length_ten_digits(self, matcher):
+        """Test that 10-digit phone numbers ARE valid (US standard)."""
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Person One",
+            emails=[],
+            phones=["5551234567"],  # 10 digits - standard US
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Person Two",
+            emails=[],
+            phones=["5551234567"],
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.EXACT_PHONE
+
+    def test_mixed_valid_and_invalid_phones(self, matcher):
+        """Test that valid phones still match even when invalid ones are present."""
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Person One",
+            emails=[],
+            phones=["5551234567", "Wp", "123"],  # One valid, two invalid
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Person Two",
+            emails=[],
+            phones=["LLMs", "5551234567", "456"],  # One valid (shared), two invalid
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should match on the valid shared phone
+        assert result.is_match is True
+        assert result.tier == MatchTier.EXACT_PHONE
+        assert "5551234567" in result.reason
+
+
 class TestCreateMatchingKeys:
     """Tests for the create_matching_keys function."""
 
@@ -819,3 +1032,312 @@ class TestCreateMatchingKeys:
         assert len(keys) == 2
         assert "email:john@example.com" in keys
         assert "phone:5551234567" in keys
+
+
+class TestOrganizationMatching:
+    """Tests for organization-based matching (Tier 2 enhancement)."""
+
+    def test_fuzzy_name_with_shared_organization(self):
+        """Test that similar names with shared organization match."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Acme Corporation"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",  # Similar name
+            emails=["jon@company2.com"],  # Different email
+            phones=[],
+            organizations=["Acme Corporation"],  # Same org
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.FUZZY_NAME_ORG
+        assert result.confidence == MatchConfidence.MEDIUM
+        assert (
+            "Acme" in result.reason.lower() or "organization" in result.reason.lower()
+        )
+
+    def test_organization_matching_disabled(self):
+        """Test that organization matching can be disabled via config."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=False)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Acme Corporation"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["Acme Corporation"],
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should NOT match when org matching is disabled
+        assert result.is_match is False
+        assert result.tier != MatchTier.FUZZY_NAME_ORG
+
+    def test_organization_normalization_inc(self):
+        """Test that 'Inc' suffix is normalized away."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Acme Inc"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["Acme"],  # Without Inc
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.FUZZY_NAME_ORG
+
+    def test_organization_normalization_corporation(self):
+        """Test that 'Corporation' suffix is normalized away."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Acme Corporation"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["Acme Corp"],  # Different suffix
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.FUZZY_NAME_ORG
+
+    def test_organization_normalization_llc(self):
+        """Test that 'LLC' suffix is normalized away."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Smith Consulting LLC"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["Smith Consulting"],  # Without LLC
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.FUZZY_NAME_ORG
+
+    def test_organization_case_insensitive(self):
+        """Test that organization matching is case-insensitive."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["ACME CORPORATION"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["acme corporation"],
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.FUZZY_NAME_ORG
+
+    def test_no_match_different_organizations(self):
+        """Test that different organizations don't trigger org match."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Acme Corp"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["Widget Inc"],  # Different org
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should NOT match on different organizations
+        assert result.tier != MatchTier.FUZZY_NAME_ORG
+
+    def test_no_match_dissimilar_names_same_org(self):
+        """Test that dissimilar names with same org don't match."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Acme Corp"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Mary Johnson",  # Completely different name
+            emails=["mary@company2.com"],
+            phones=[],
+            organizations=["Acme Corp"],  # Same org
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should NOT match - names are too different
+        assert result.is_match is False
+        assert result.tier != MatchTier.FUZZY_NAME_ORG
+
+    def test_email_match_takes_precedence_over_org(self):
+        """Test that email match (Tier 1) takes precedence over org match."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@example.com"],
+            phones=[],
+            organizations=["Acme Corp"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["john@example.com"],  # Same email
+            phones=[],
+            organizations=["Acme Corp"],  # Same org
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Email match should take precedence (Tier 1)
+        assert result.is_match is True
+        assert result.tier == MatchTier.EXACT_EMAIL
+
+    def test_multiple_organizations_one_shared(self):
+        """Test matching when contacts have multiple orgs with one in common."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=["Previous Corp", "Current Inc"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=["Current Inc", "Side Project LLC"],  # One shared
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        assert result.is_match is True
+        assert result.tier == MatchTier.FUZZY_NAME_ORG
+        assert "current" in result.reason.lower()
+
+    def test_empty_organization_no_match(self):
+        """Test that empty organizations don't cause false matches."""
+        config = MatchConfig(use_llm_matching=False, use_organization_matching=True)
+        matcher = ContactMatcher(config=config)
+
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Smith",
+            emails=["john@company1.com"],
+            phones=[],
+            organizations=[""],  # Empty org
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Jon Smith",
+            emails=["jon@company2.com"],
+            phones=[],
+            organizations=[""],  # Empty org
+        )
+
+        result = matcher.match(contact1, contact2)
+
+        # Should NOT match on empty organizations
+        assert result.tier != MatchTier.FUZZY_NAME_ORG

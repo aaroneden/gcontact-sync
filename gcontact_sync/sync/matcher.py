@@ -36,6 +36,7 @@ class MatchTier(Enum):
     EXACT_PHONE = "exact_phone"  # Same phone number
     FUZZY_NAME_EMAIL = "fuzzy_name_email"  # Similar name + shared email
     FUZZY_NAME_PHONE = "fuzzy_name_phone"  # Similar name + shared phone
+    FUZZY_NAME_ORG = "fuzzy_name_org"  # Similar name + shared organization
     EXACT_NAME = "exact_name"  # Exact name match (no identifier overlap)
     LLM_MATCHED = "llm_matched"  # LLM determined as match
     LLM_NOT_MATCHED = "llm_not_matched"  # LLM determined as not match
@@ -63,22 +64,46 @@ class MatchResult:
     matched_on: list[str] = field(default_factory=list)  # Fields that matched
 
 
+# Default threshold values
+DEFAULT_NAME_SIMILARITY_THRESHOLD = 0.85
+DEFAULT_NAME_ONLY_THRESHOLD = 0.95
+DEFAULT_UNCERTAIN_THRESHOLD = 0.7
+DEFAULT_LLM_BATCH_SIZE = 20
+
+# Minimum phone number length for valid matching
+# Phone numbers with fewer digits are likely invalid or could cause false matches
+# 7 digits = minimum for local numbers (e.g., 555-1234)
+MIN_PHONE_LENGTH = 7
+
+
 @dataclass
 class MatchConfig:
     """Configuration for the contact matcher."""
 
     # Fuzzy name matching threshold (0.0 to 1.0)
     # 0.85 = 85% similarity required for fuzzy name match
-    name_similarity_threshold: float = 0.85
+    name_similarity_threshold: float = DEFAULT_NAME_SIMILARITY_THRESHOLD
 
     # Stricter threshold for name-only matches (no email/phone)
-    name_only_threshold: float = 0.95
+    name_only_threshold: float = DEFAULT_NAME_ONLY_THRESHOLD
+
+    # Threshold for uncertain matches that trigger LLM review
+    uncertain_threshold: float = DEFAULT_UNCERTAIN_THRESHOLD
 
     # Whether to use LLM for uncertain matches
     use_llm_matching: bool = True
 
     # Maximum contacts to send to LLM for batch matching
-    llm_batch_size: int = 20
+    llm_batch_size: int = DEFAULT_LLM_BATCH_SIZE
+
+    # Whether to use organization as a secondary matching signal
+    use_organization_matching: bool = True
+
+    # LLM API configuration
+    anthropic_api_key: str | None = None
+    llm_model: str = "claude-haiku-4-5-20250514"
+    llm_max_tokens: int = 500
+    llm_batch_max_tokens: int = 2000
 
 
 class ContactMatcher:
@@ -220,11 +245,19 @@ class ContactMatcher:
                 matched_on=list(shared_emails),
             )
 
-        # Normalize phones for comparison
-        phones1 = {self._normalize_phone(p) for p in contact1.phones if p}
-        phones2 = {self._normalize_phone(p) for p in contact2.phones if p}
+        # Normalize phones for comparison, filtering out invalid ones
+        phones1 = {
+            self._normalize_phone(p)
+            for p in contact1.phones
+            if p and self._is_valid_phone(self._normalize_phone(p))
+        }
+        phones2 = {
+            self._normalize_phone(p)
+            for p in contact2.phones
+            if p and self._is_valid_phone(self._normalize_phone(p))
+        }
 
-        # Check for shared phone
+        # Check for shared phone (only valid phones remain in the sets)
         shared_phones = phones1 & phones2
         if shared_phones:
             return MatchResult(
@@ -293,8 +326,17 @@ class ContactMatcher:
         emails2 = {self._normalize_email(e) for e in contact2.emails if e}
         shared_emails = emails1 & emails2
 
-        phones1 = {self._normalize_phone(p) for p in contact1.phones if p}
-        phones2 = {self._normalize_phone(p) for p in contact2.phones if p}
+        # Filter out invalid phones (empty or too short)
+        phones1 = {
+            self._normalize_phone(p)
+            for p in contact1.phones
+            if p and self._is_valid_phone(self._normalize_phone(p))
+        }
+        phones2 = {
+            self._normalize_phone(p)
+            for p in contact2.phones
+            if p and self._is_valid_phone(self._normalize_phone(p))
+        }
         shared_phones = phones1 & phones2
 
         # Fuzzy name + shared email
@@ -324,6 +366,35 @@ class ContactMatcher:
                 ),
                 matched_on=["name", *list(shared_phones)],
             )
+
+        # Fuzzy name + shared organization
+        if (
+            self.config.use_organization_matching
+            and similarity >= self.config.name_similarity_threshold
+        ):
+            orgs1 = {
+                self._normalize_organization(o) for o in contact1.organizations if o
+            }
+            orgs2 = {
+                self._normalize_organization(o) for o in contact2.organizations if o
+            }
+            # Remove empty strings from normalization
+            orgs1.discard("")
+            orgs2.discard("")
+            shared_orgs = orgs1 & orgs2
+
+            if shared_orgs:
+                return MatchResult(
+                    is_match=True,
+                    tier=MatchTier.FUZZY_NAME_ORG,
+                    confidence=MatchConfidence.MEDIUM,
+                    score=similarity,
+                    reason=(
+                        f"Similar name ({similarity:.0%}) + "
+                        f"shared organization: {list(shared_orgs)[0]}"
+                    ),
+                    matched_on=["name", *list(shared_orgs)],
+                )
 
         # Exact name match (very high similarity) with no identifiers
         if similarity >= self.config.name_only_threshold:
@@ -356,7 +427,7 @@ class ContactMatcher:
             )
 
         # Similar but not matching
-        if similarity >= 0.7:
+        if similarity >= self.config.uncertain_threshold:
             return MatchResult(
                 is_match=False,
                 tier=MatchTier.NO_MATCH,
@@ -384,7 +455,13 @@ class ContactMatcher:
 
         if self._llm_client is None:
             try:
-                self._llm_client = LLMMatcher(database=self._database)
+                self._llm_client = LLMMatcher(
+                    api_key=self.config.anthropic_api_key,
+                    database=self._database,
+                    model=self.config.llm_model,
+                    max_tokens=self.config.llm_max_tokens,
+                    batch_max_tokens=self.config.llm_batch_max_tokens,
+                )
             except Exception as e:
                 logger.warning(f"Could not initialize LLM matcher: {e}")
                 return MatchResult(
@@ -448,7 +525,13 @@ class ContactMatcher:
 
         if self._llm_client is None:
             try:
-                self._llm_client = LLMMatcher(database=self._database)
+                self._llm_client = LLMMatcher(
+                    api_key=self.config.anthropic_api_key,
+                    database=self._database,
+                    model=self.config.llm_model,
+                    max_tokens=self.config.llm_max_tokens,
+                    batch_max_tokens=self.config.llm_batch_max_tokens,
+                )
             except Exception as e:
                 logger.warning(f"Could not initialize LLM matcher: {e}")
                 return []
@@ -493,6 +576,27 @@ class ContactMatcher:
             digits = digits[1:]
         return digits
 
+    def _is_valid_phone(self, normalized_phone: str) -> bool:
+        """
+        Check if a normalized phone number is valid for matching.
+
+        A valid phone must:
+        1. Not be empty (values like 'Wp', 'LLMs' normalize to empty)
+        2. Have at least MIN_PHONE_LENGTH digits (7 for local numbers)
+
+        This prevents false matches on:
+        - Text stored in phone fields (normalizes to empty)
+        - Email addresses in phone fields (normalizes to empty)
+        - Very short digit sequences that aren't real phone numbers
+
+        Args:
+            normalized_phone: Phone number after _normalize_phone() processing
+
+        Returns:
+            True if the phone is valid for matching
+        """
+        return bool(normalized_phone) and len(normalized_phone) >= MIN_PHONE_LENGTH
+
     def _normalize_name(self, name: str) -> str:
         """Normalize a name for comparison."""
         if not name:
@@ -514,6 +618,50 @@ class ContactMatcher:
         normalized = " ".join(normalized.split())
 
         return normalized
+
+    def _normalize_organization(self, org: str) -> str:
+        """
+        Normalize an organization name for comparison.
+
+        Removes common corporate suffixes (Inc, LLC, Ltd, etc.) and applies
+        the same normalization as names.
+
+        Args:
+            org: Organization name to normalize
+
+        Returns:
+            Normalized organization name
+        """
+        if not org:
+            return ""
+
+        # First apply name normalization (lowercase, remove accents, etc.)
+        normalized = self._normalize_name(org)
+
+        # Common corporate suffixes to remove
+        suffixes = [
+            "inc",
+            "incorporated",
+            "llc",
+            "ltd",
+            "limited",
+            "corp",
+            "corporation",
+            "company",
+            "co",
+            "plc",
+            "gmbh",
+            "ag",
+            "sa",
+            "pty",
+        ]
+
+        # Remove trailing suffix
+        words = normalized.split()
+        if words and words[-1] in suffixes:
+            words = words[:-1]
+
+        return " ".join(words)
 
 
 def create_matching_keys(contact: "Contact", matcher: ContactMatcher) -> list[str]:
@@ -539,11 +687,11 @@ def create_matching_keys(contact: "Contact", matcher: ContactMatcher) -> list[st
             normalized = matcher._normalize_email(email)
             keys.append(f"email:{normalized}")
 
-    # Create a key for each phone
+    # Create a key for each valid phone (non-empty and minimum length)
     for phone in contact.phones:
         if phone:
             normalized = matcher._normalize_phone(phone)
-            if normalized:  # Phone normalization can return empty string
+            if matcher._is_valid_phone(normalized):
                 keys.append(f"phone:{normalized}")
 
     # If no identifiers, use name-only key

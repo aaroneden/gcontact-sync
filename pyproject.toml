@@ -30,6 +30,7 @@ dependencies = [
     "click>=8.1.0",
     "requests>=2.31.0",
     "rapidfuzz>=3.13.0",
+    "pyyaml>=6.0.0",
     "Pillow>=10.0.0",
 ]
 
@@ -105,6 +106,9 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 filterwarnings = [
     "ignore::DeprecationWarning",
+]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
 ]
 
 [tool.coverage.run]

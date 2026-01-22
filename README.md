@@ -5,17 +5,23 @@ A Python-based bidirectional synchronization system that keeps Google Contacts s
 ## Features
 
 - **Bidirectional Sync**: Automatically synchronize contacts between two Google accounts
+- **Contact Group/Label Sync**: Synchronize contact groups and labels between accounts
+- **Photo Sync**: Synchronize contact photos between accounts
+- **Tag Filtering**: Selectively sync only contacts belonging to specific contact groups/tags
+- **Sync Labeling**: Automatically tag synced contacts with a configurable label for easy identification
 - **Multi-Tier Matching**: Deterministic, fuzzy, and optional LLM-assisted matching to identify contacts across accounts
 - **Change Detection**: Content hashing detects modifications and propagates updates automatically
 - **Deletion Sync**: Deleted contacts are automatically removed from the other account
 - **Conflict Resolution**: Last-modified-wins strategy (or configurable account preference) for conflicting changes
+- **Backup & Restore**: Create backups before sync and restore contacts from backup files
+- **Background Daemon**: Built-in scheduler for automatic periodic syncing (Linux, macOS, Windows)
 - **Dry Run Mode**: Preview changes before applying them
 - **State Tracking**: SQLite-based state management for efficient incremental syncs
 - **CLI Interface**: Simple command-line interface for all operations
 
 ## Requirements
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - [UV](https://docs.astral.sh/uv/) package manager (recommended) or pip
 - Google Cloud Project with People API enabled
 - OAuth 2.0 credentials (Desktop application type)
@@ -425,6 +431,284 @@ GContact Sync stores all configuration in `~/.gcontact-sync/` by default:
 | `token_account1.json` | OAuth tokens for Account 1 (generated after auth) |
 | `token_account2.json` | OAuth tokens for Account 2 (generated after auth) |
 | `sync.db` | SQLite database for state tracking |
+| `config.yaml` | Optional configuration file for sync preferences (see below) |
+| `sync_config.json` | Optional tag filtering configuration (see [Tag Filtering](#tag-filtering-contact-groups)) |
+
+### Configuration File (Optional)
+
+You can create a `config.yaml` file to store sync preferences and avoid passing CLI arguments repeatedly.
+
+#### Creating a Config File
+
+Generate a default configuration file with all available options:
+
+```bash
+uv run gcontact-sync init-config
+```
+
+This creates `~/.gcontact-sync/config.yaml` with documented defaults. You can also view the example at [`config/config.example.yaml`](config/config.example.yaml).
+
+#### Available Options
+
+The config file supports these options:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `verbose` | boolean | `false` | Enable verbose output with detailed logging |
+| `debug` | boolean | `false` | Show debug information including sample matches |
+| `dry_run` | boolean | `false` | Preview changes without applying them |
+| `full` | boolean | `false` | Force full sync by ignoring sync tokens |
+| `strategy` | string | `last_modified` | Conflict resolution strategy (see below) |
+| `similarity_threshold` | float | `0.8` | Threshold for fuzzy matching (0.0 to 1.0) |
+| `batch_size` | integer | `100` | Number of contacts to process per batch |
+
+**Conflict Resolution Strategies:**
+- `last_modified` (recommended): Use the most recently modified version
+- `newest`: Alias for `last_modified`
+- `account1`: Always prefer changes from Account 1
+- `account2`: Always prefer changes from Account 2
+- `manual`: Prompt for each conflict (not yet implemented)
+
+#### Example Configuration
+
+```yaml
+# Conservative mode - preview all changes
+verbose: true
+dry_run: true
+strategy: last_modified
+
+# Production mode - automatic sync
+# verbose: false
+# dry_run: false
+# strategy: last_modified
+```
+
+#### Using the Config File
+
+Once created, the config file is automatically loaded. CLI arguments always override config values:
+
+```bash
+# Use config file defaults
+uv run gcontact-sync sync
+
+# Override specific options from CLI
+uv run gcontact-sync sync --verbose --dry-run
+
+# Use custom config file location
+uv run gcontact-sync --config-file /path/to/config.yaml sync
+```
+
+### Tag Filtering (Contact Groups)
+
+You can selectively sync only contacts that belong to specific contact groups/tags. This is useful when you only want to sync certain categories of contacts (e.g., "Work" or "Family") rather than your entire contact list.
+
+#### Configuration File
+
+Create a `sync_config.json` file in your config directory (`~/.gcontact-sync/sync_config.json`):
+
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": ["Work", "Family"]
+  },
+  "account2": {
+    "sync_groups": ["Important", "contactGroups/abc123def"]
+  }
+}
+```
+
+An example configuration file is available at [`config/sync_config.example.json`](config/sync_config.example.json).
+
+#### Tag Filter Options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | string | Configuration schema version (currently "1.0") |
+| `account1.sync_groups` | array | List of group names/IDs to sync for Account 1 |
+| `account2.sync_groups` | array | List of group names/IDs to sync for Account 2 |
+
+#### How Tag Filtering Works
+
+- **Per-account filtering**: Each account can have independent group filters
+- **OR logic**: A contact is included if it belongs to ANY of the specified groups
+- **Group identification**: Groups can be specified by:
+  - Display name (e.g., `"Work"`, `"Family"`) - case-insensitive matching
+  - Resource name (e.g., `"contactGroups/abc123def"`) - exact matching
+- **Backwards compatible**: Empty `sync_groups` array or missing config file syncs all contacts
+- **Contacts without groups**: Excluded when filtering is enabled (they don't match any group)
+
+#### Examples
+
+**Sync only Work contacts from Account 1, all contacts from Account 2:**
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": ["Work"]
+  },
+  "account2": {
+    "sync_groups": []
+  }
+}
+```
+
+**Sync Family and Friends from both accounts:**
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": ["Family", "Friends"]
+  },
+  "account2": {
+    "sync_groups": ["Family", "Friends"]
+  }
+}
+```
+
+**Sync all contacts (no filtering - default behavior):**
+```json
+{
+  "version": "1.0",
+  "account1": {
+    "sync_groups": []
+  },
+  "account2": {
+    "sync_groups": []
+  }
+}
+```
+
+Or simply don't create a `sync_config.json` file at all.
+
+#### Verifying Tag Filters
+
+Use dry-run with verbose mode to see which contacts would be filtered:
+
+```bash
+uv run gcontact-sync sync --dry-run --verbose
+```
+
+The output will show:
+- Which groups are configured for filtering
+- How many contacts pass the filter for each account
+- Details about filtered contacts in verbose mode
+
+### Sync Labeling
+
+Automatically tag synced contacts with a label to easily identify which contacts were synchronized by gcontact-sync.
+
+#### Enabling Sync Labels
+
+Add to your `sync_config.json`:
+
+```json
+{
+  "version": "1.0",
+  "sync_label": {
+    "enabled": true,
+    "group_name": "Synced by GContact"
+  }
+}
+```
+
+#### How It Works
+
+- When enabled, a contact group with the configured name is created in both accounts
+- All synced contacts are automatically added to this group
+- You can view synced contacts by filtering by this label in Google Contacts
+- The label is preserved across syncs and helps track which contacts are managed by the sync tool
+
+### Backup and Restore
+
+GContact Sync automatically creates backups before each sync operation and provides manual restore capabilities.
+
+#### Automatic Backups
+
+Before every sync, a backup of all contacts and groups is saved to:
+```
+~/.gcontact-sync/backups/backup_YYYYMMDD_HHMMSS.json
+```
+
+#### Manual Restore
+
+```bash
+# List available backups
+uv run gcontact-sync restore --list
+
+# Preview restore (dry run)
+uv run gcontact-sync restore --backup-file backup_20240120_103000.json --dry-run
+
+# Restore to both accounts
+uv run gcontact-sync restore --backup-file backup_20240120_103000.json
+
+# Restore to specific account only
+uv run gcontact-sync restore --backup-file backup_20240120_103000.json --account account1
+```
+
+### Background Daemon (Scheduled Sync)
+
+Run gcontact-sync as a background daemon for automatic periodic synchronization.
+
+#### Quick Start
+
+```bash
+# Start daemon with daily sync (24 hours)
+gcontact-sync daemon start --interval 24h
+
+# Check daemon status
+gcontact-sync daemon status
+
+# Stop the daemon
+gcontact-sync daemon stop
+```
+
+#### Interval Formats
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| Seconds | `30s` | Every 30 seconds |
+| Minutes | `5m`, `30m` | Every 5 or 30 minutes |
+| Hours | `1h`, `6h`, `24h` | Every 1, 6, or 24 hours |
+| Days | `1d`, `7d` | Every 1 or 7 days |
+
+#### Install as System Service
+
+Install the daemon to start automatically on boot:
+
+```bash
+# Install with default 1-hour interval
+gcontact-sync daemon install
+
+# Install with custom interval (e.g., daily)
+gcontact-sync daemon install --interval 24h
+
+# Uninstall the service
+gcontact-sync daemon uninstall
+```
+
+**Supported Platforms:**
+- **macOS**: Installs as a launchd user agent (`~/Library/LaunchAgents/`)
+- **Linux**: Installs as a systemd user service (`~/.config/systemd/user/`)
+- **Windows**: Installs as a Windows Task Scheduler task
+
+#### Daemon Commands
+
+| Command | Description |
+|---------|-------------|
+| `daemon start` | Start the daemon (foreground by default) |
+| `daemon start --foreground` | Run in foreground for debugging |
+| `daemon start --no-initial-sync` | Skip immediate sync on startup |
+| `daemon stop` | Stop the running daemon |
+| `daemon status` | Show daemon and service status |
+| `daemon install` | Install as system service |
+| `daemon uninstall` | Remove system service |
+
+#### Service Logs
+
+- **macOS**: `~/.gcontact-sync/logs/daemon.log` and `daemon.err`
+- **Linux**: `journalctl --user -u gcontact-sync`
+- **Windows**: Windows Event Viewer or `~/.gcontact-sync/logs/`
 
 ### Environment Variables (Optional)
 
@@ -654,9 +938,8 @@ gcontact-sync/
 
 ## Limitations
 
-- **No photo sync**: Contact photos are not synchronized
-- **No group sync**: Contact groups/labels are not synchronized
-- **No automated scheduling**: Use external tools like cron for scheduled syncs
+- **Two accounts only**: Currently supports syncing between exactly two Google accounts
+- **No real-time sync**: Sync runs on-demand or at scheduled intervals, not in real-time
 
 ## License
 

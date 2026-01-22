@@ -11,7 +11,6 @@ Provides utilities for:
 import io
 import logging
 import time
-from typing import Optional
 
 import requests
 from PIL import Image
@@ -78,7 +77,9 @@ def download_photo(
 
     for attempt in range(max_retries):
         try:
-            logger.debug(f"Downloading photo from {url} (attempt {attempt + 1}/{max_retries})")
+            logger.debug(
+                f"Downloading photo from {url} (attempt {attempt + 1}/{max_retries})"
+            )
 
             response = requests.get(
                 url,
@@ -126,9 +127,7 @@ def download_photo(
 
         except requests.Timeout as e:
             if attempt < max_retries - 1:
-                logger.warning(
-                    f"Timeout downloading photo, retrying in {delay:.1f}s"
-                )
+                logger.warning(f"Timeout downloading photo, retrying in {delay:.1f}s")
                 time.sleep(delay)
                 delay = min(delay * 2, MAX_RETRY_DELAY)
                 continue
@@ -256,9 +255,12 @@ def process_photo(
                 f"(current: {len(output_data)} bytes)"
             )
 
+        resize_msg = ""
+        if original_size != image.size:
+            resize_msg = f" (resized from {original_size})"
         logger.debug(
-            f"Successfully processed photo: {len(photo_data)} -> {len(output_data)} bytes"
-            f"{' (resized from ' + str(original_size) + ')' if original_size != image.size else ''}"
+            f"Successfully processed photo: "
+            f"{len(photo_data)} -> {len(output_data)} bytes{resize_msg}"
         )
 
         return output_data
