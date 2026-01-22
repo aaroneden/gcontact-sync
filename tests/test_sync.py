@@ -4558,15 +4558,17 @@ class TestSyncWithTagFiltersIntegration(TestTagFilterIntegration):
         result = engine.analyze(full_sync=True)
 
         # Verify filter statistics
-        # Account 1: 3 contacts fetched, 2 filtered out (only Work contact kept)
+        # New behavior: contacts_in_account* = total contacts (all, for matching)
+        # contacts_filtered_out_* = contacts not synced due to filter
+        # Account 1: 3 contacts total, 2 filtered out (only Work contact synced)
         assert result.stats.contacts_before_filter_account1 == 3
         assert result.stats.contacts_filtered_out_account1 == 2
-        assert result.stats.contacts_in_account1 == 1
+        assert result.stats.contacts_in_account1 == 3  # All contacts for matching
 
-        # Account 2: 3 contacts fetched, 1 filtered out (Family and Friends kept)
+        # Account 2: 3 contacts total, 1 filtered out (Family and Friends synced)
         assert result.stats.contacts_before_filter_account2 == 3
         assert result.stats.contacts_filtered_out_account2 == 1
-        assert result.stats.contacts_in_account2 == 2
+        assert result.stats.contacts_in_account2 == 3  # All contacts for matching
 
         # Verify filter groups were resolved
         assert result.stats.filter_groups_account1 == 1  # Work
@@ -4654,9 +4656,11 @@ class TestSyncWithTagFiltersIntegration(TestTagFilterIntegration):
         summary = result.summary()
 
         # Verify filter stats are shown in summary
+        # New behavior: contacts_in_account* = total contacts for matching
+        # So "2 after filter" because we now match against all contacts
         assert "Group filtering applied" in summary
         assert "2 fetched" in summary  # contacts_before_filter_account1
-        assert "1 after filter" in summary  # contacts_in_account1
+        assert "2 after filter" in summary  # contacts_in_account1 (all for matching)
         assert "1 excluded" in summary  # contacts_filtered_out_account1
 
     def test_sync_with_tag_filters_execute_creates_only_filtered(
@@ -4908,16 +4912,17 @@ class TestIncrementalSyncWithFilters(TestTagFilterIntegration):
         result = engine.analyze(full_sync=False)
 
         # Verify filter statistics for account 1
-        # 2 contacts fetched, 1 filtered out (only Work contact kept)
+        # New behavior: contacts_in_account* = total contacts for matching
+        # 2 contacts fetched, 1 filtered out (only Work contact synced)
         assert result.stats.contacts_before_filter_account1 == 2
         assert result.stats.contacts_filtered_out_account1 == 1
-        assert result.stats.contacts_in_account1 == 1
+        assert result.stats.contacts_in_account1 == 2  # All contacts for matching
 
         # Verify filter statistics for account 2
-        # 2 contacts fetched, 1 filtered out (only Family contact kept)
+        # 2 contacts fetched, 1 filtered out (only Family contact synced)
         assert result.stats.contacts_before_filter_account2 == 2
         assert result.stats.contacts_filtered_out_account2 == 1
-        assert result.stats.contacts_in_account2 == 1
+        assert result.stats.contacts_in_account2 == 2  # All contacts for matching
 
         # Verify only filtered contacts are in sync operations
         # New Worker (Work) from account 1 -> should create in account 2
@@ -5069,9 +5074,10 @@ class TestIncrementalSyncWithFilters(TestTagFilterIntegration):
         result = engine.analyze(full_sync=False)
 
         # Verify filter applied correctly
+        # New behavior: contacts_in_account* = total contacts for matching
         assert result.stats.contacts_before_filter_account1 == 2
         assert result.stats.contacts_filtered_out_account1 == 1  # unchanged_contact
-        assert result.stats.contacts_in_account1 == 1  # updated_contact
+        assert result.stats.contacts_in_account1 == 2  # All contacts for matching
 
         # Only the contact now in Work group should be synced
         create_names = [c.display_name for c in result.to_create_in_account2]
@@ -5528,9 +5534,10 @@ class TestBackwardsCompatibility(TestTagFilterIntegration):
         result = engine.analyze(full_sync=True)
 
         # Account 1: 1 contact synced (Work), 1 filtered (Family)
+        # New behavior: contacts_in_account* = total contacts for matching
         assert result.stats.contacts_before_filter_account1 == 2
         assert result.stats.contacts_filtered_out_account1 == 1
-        assert result.stats.contacts_in_account1 == 1
+        assert result.stats.contacts_in_account1 == 2  # All contacts for matching
 
         # Account 2: all 3 contacts synced (empty filter)
         assert result.stats.contacts_before_filter_account2 == 3

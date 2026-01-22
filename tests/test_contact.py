@@ -1295,8 +1295,12 @@ class TestContactPhoto:
 
         assert contact.photo_url is None
 
-    def test_to_api_format_with_photo_url(self):
-        """Test conversion to API format with photo URL."""
+    def test_to_api_format_does_not_include_photo(self):
+        """Test that photos are NOT included in API format.
+
+        Photos are read-only in the Google People API and must be
+        uploaded separately via the updateContactPhoto endpoint.
+        """
         contact = Contact(
             resource_name="people/c123",
             etag="etag",
@@ -1306,10 +1310,8 @@ class TestContactPhoto:
 
         result = contact.to_api_format()
 
-        assert "photos" in result
-        assert len(result["photos"]) == 1
-        assert result["photos"][0]["url"] == "https://example.com/photo.jpg"
-        assert result["photos"][0]["metadata"]["primary"] is True
+        # Photos should NOT be in API format - they're handled separately
+        assert "photos" not in result
 
     def test_to_api_format_without_photo_url(self):
         """Test conversion to API format without photo URL."""
@@ -1435,8 +1437,14 @@ class TestContactPhoto:
 
         assert contact1 != contact2
 
-    def test_roundtrip_conversion_with_photo(self):
-        """Test that photo survives API format roundtrip."""
+    def test_roundtrip_conversion_photo_not_preserved(self):
+        """Test that photo does NOT survive API format roundtrip.
+
+        Photos are intentionally excluded from to_api_format() because
+        the Google People API requires photos to be uploaded separately
+        via the updateContactPhoto endpoint. Therefore, photos are NOT
+        expected to roundtrip through to_api_format/from_api_response.
+        """
         original = Contact(
             resource_name="people/c123",
             etag="etag",
@@ -1444,18 +1452,20 @@ class TestContactPhoto:
             photo_url="https://example.com/photo.jpg",
         )
 
-        # Convert to API format
+        # Convert to API format (photos excluded by design)
         api_format = original.to_api_format()
 
         # Add back metadata that would come from API
         api_format["resourceName"] = "people/new123"
         api_format["etag"] = "new_etag"
 
-        # Convert back
+        # Convert back - photo URL will NOT be present
         restored = Contact.from_api_response(api_format)
 
-        # Photo URL should be preserved
-        assert restored.photo_url == original.photo_url
+        # Photo URL is NOT preserved because photos must be handled separately
+        assert restored.photo_url is None
+        # The original still has the photo though
+        assert original.photo_url == "https://example.com/photo.jpg"
 
 
 class TestContactMemberships:

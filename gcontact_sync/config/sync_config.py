@@ -118,7 +118,7 @@ class AccountSyncConfig:
         return False
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "AccountSyncConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> AccountSyncConfig:
         """
         Create AccountSyncConfig from a dictionary.
 
@@ -211,7 +211,7 @@ class SyncConfig:
         return self.account1.has_filter() or self.account2.has_filter()
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SyncConfig":
+    def from_dict(cls, data: dict[str, Any]) -> SyncConfig:
         """
         Create SyncConfig from a dictionary.
 
@@ -264,7 +264,7 @@ class SyncConfig:
         }
 
     @classmethod
-    def load_from_file(cls, path: Path | str) -> "SyncConfig":
+    def load_from_file(cls, path: Path | str) -> SyncConfig:
         """
         Load sync configuration from a JSON file.
 

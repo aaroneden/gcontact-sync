@@ -558,67 +558,63 @@ class SyncEngine:
 
         # === RESOLVE GROUP FILTERS ===
         # Convert configured group names to resource names for filtering
-        allowed_groups_1: frozenset[str] = frozenset()
-        allowed_groups_2: frozenset[str] = frozenset()
+        # Store as instance variables for use in sync operation decisions
+        self._allowed_groups_1: frozenset[str] = frozenset()
+        self._allowed_groups_2: frozenset[str] = frozenset()
 
         if self.config:
             if self.config.account1.has_filter():
-                allowed_groups_1 = self._resolve_group_filters(
+                self._allowed_groups_1 = self._resolve_group_filters(
                     self.config.account1.sync_groups,
                     groups1,
                     self.account1_email,
                 )
-                result.stats.filter_groups_account1 = len(allowed_groups_1)
-                if allowed_groups_1:
+                result.stats.filter_groups_account1 = len(self._allowed_groups_1)
+                if self._allowed_groups_1:
                     logger.info(
-                        f"Resolved {len(allowed_groups_1)} filter groups for "
+                        f"Resolved {len(self._allowed_groups_1)} filter groups for "
                         f"{self.account1_email}"
                     )
 
             if self.config.account2.has_filter():
-                allowed_groups_2 = self._resolve_group_filters(
+                self._allowed_groups_2 = self._resolve_group_filters(
                     self.config.account2.sync_groups,
                     groups2,
                     self.account2_email,
                 )
-                result.stats.filter_groups_account2 = len(allowed_groups_2)
-                if allowed_groups_2:
+                result.stats.filter_groups_account2 = len(self._allowed_groups_2)
+                if self._allowed_groups_2:
                     logger.info(
-                        f"Resolved {len(allowed_groups_2)} filter groups for "
+                        f"Resolved {len(self._allowed_groups_2)} filter groups for "
                         f"{self.account2_email}"
                     )
 
-        # === FETCH CONTACTS (with filtering) ===
-        # Fetch contacts from both accounts, applying group filters if configured
-        contacts1, sync_token1, original_count1 = self._fetch_contacts(
+        # === FETCH CONTACTS (all contacts for matching) ===
+        # Fetch ALL contacts from both accounts - filtering happens during
+        # sync operation decisions to ensure matching against all contacts
+        contacts1, sync_token1 = self._fetch_contacts(
             self.api1,
             ACCOUNT_1,
             full_sync,
-            allowed_groups=allowed_groups_1 if allowed_groups_1 else None,
             account_label=self.account1_email,
         )
-        contacts2, sync_token2, original_count2 = self._fetch_contacts(
+        contacts2, sync_token2 = self._fetch_contacts(
             self.api2,
             ACCOUNT_2,
             full_sync,
-            allowed_groups=allowed_groups_2 if allowed_groups_2 else None,
             account_label=self.account2_email,
         )
 
-        # Track contact counts (after filtering if applied)
+        # Track total contact counts (all contacts, for matching)
         result.stats.contacts_in_account1 = len(contacts1)
         result.stats.contacts_in_account2 = len(contacts2)
 
-        # Track filter statistics for verbose reporting
-        result.stats.contacts_before_filter_account1 = original_count1
-        result.stats.contacts_before_filter_account2 = original_count2
-        result.stats.contacts_filtered_out_account1 = original_count1 - len(contacts1)
-        result.stats.contacts_filtered_out_account2 = original_count2 - len(contacts2)
-
-        logger.info(
-            f"Fetched {len(contacts1)} contacts from {self.account1_email}, "
-            f"{len(contacts2)} contacts from {self.account2_email}"
-        )
+        # Track filter statistics - will be updated during sync decisions
+        result.stats.contacts_before_filter_account1 = len(contacts1)
+        result.stats.contacts_before_filter_account2 = len(contacts2)
+        # These will be incremented as contacts are filtered during analysis
+        result.stats.contacts_filtered_out_account1 = 0
+        result.stats.contacts_filtered_out_account2 = 0
 
         # Build indexes by matching key (for fast first-pass matching)
         index1 = self._build_contact_index(contacts1, self.account1_email)
@@ -1050,23 +1046,50 @@ class SyncEngine:
             elif self.duplicate_handling == DuplicateHandling.REPORT_ONLY:
                 duplicate.action_taken = "reported"
                 result.stats.duplicates_reported += 1
-                # Still create the contact, but track it
+                # Still create the contact, but track it (if in filter)
                 if source_account == 1:
-                    result.to_create_in_account2.append(contact)
+                    if self._is_contact_in_filter(contact, self._allowed_groups_1):
+                        result.to_create_in_account2.append(contact)
+                    else:
+                        result.stats.contacts_filtered_out_account1 += 1
                 else:
-                    result.to_create_in_account1.append(contact)
+                    if self._is_contact_in_filter(contact, self._allowed_groups_2):
+                        result.to_create_in_account1.append(contact)
+                    else:
+                        result.stats.contacts_filtered_out_account2 += 1
                 if mlog:
                     mlog.info(f"POTENTIAL DUPLICATE (reported): {contact.display_name}")
                     mlog.info("  Creating anyway, flagged for review")
         else:
-            # No duplicate detected - create normally
+            # No duplicate detected - check filter before creating
             if source_account == 1:
-                result.to_create_in_account2.append(contact)
+                if self._is_contact_in_filter(contact, self._allowed_groups_1):
+                    result.to_create_in_account2.append(contact)
+                    if mlog:
+                        mlog.info(
+                            f"UNMATCHED: {contact.display_name} -> create in account2"
+                        )
+                else:
+                    result.stats.contacts_filtered_out_account1 += 1
+                    if mlog:
+                        mlog.info(
+                            f"FILTERED OUT: {contact.display_name} "
+                            "(not in allowed groups)"
+                        )
             else:
-                result.to_create_in_account1.append(contact)
-            if mlog:
-                target = "account2" if source_account == 1 else "account1"
-                mlog.info(f"UNMATCHED: {contact.display_name} -> create in {target}")
+                if self._is_contact_in_filter(contact, self._allowed_groups_2):
+                    result.to_create_in_account1.append(contact)
+                    if mlog:
+                        mlog.info(
+                            f"UNMATCHED: {contact.display_name} -> create in account1"
+                        )
+                else:
+                    result.stats.contacts_filtered_out_account2 += 1
+                    if mlog:
+                        mlog.info(
+                            f"FILTERED OUT: {contact.display_name} "
+                            "(not in allowed groups)"
+                        )
 
     def _merge_identifiers_into_update(
         self,
@@ -1575,6 +1598,35 @@ class SyncEngine:
 
         return filtered_contacts
 
+    def _is_contact_in_filter(
+        self,
+        contact: Contact,
+        allowed_groups: frozenset[str] | None,
+    ) -> bool:
+        """
+        Check if a contact passes the group filter.
+
+        Used during sync operation decisions to determine if a contact
+        should be synced. This allows matching to happen against all
+        contacts while only syncing contacts in the configured groups.
+
+        Args:
+            contact: The contact to check
+            allowed_groups: The set of allowed group resource names.
+                If None or empty, all contacts pass (backwards compatibility).
+
+        Returns:
+            True if the contact should be synced (passes filter or no filter),
+            False if the contact should not be synced (doesn't pass filter).
+        """
+        # No filter = all contacts pass (backwards compatible)
+        if not allowed_groups:
+            return True
+
+        # Check if contact belongs to any allowed group
+        contact_groups = frozenset(contact.memberships)
+        return bool(contact_groups & allowed_groups)
+
     def _build_group_index(
         self, groups: list[ContactGroup], account_label: str = "unknown"
     ) -> dict[str, ContactGroup]:
@@ -1871,29 +1923,24 @@ class SyncEngine:
         api: PeopleAPI,
         account_id: str,
         full_sync: bool,
-        allowed_groups: frozenset[str] | None = None,
         account_label: str | None = None,
-    ) -> tuple[list[Contact], str | None, int]:
+    ) -> tuple[list[Contact], str | None]:
         """
         Fetch contacts from an account, optionally using sync token.
 
-        Applies group-based filtering after fetching if allowed_groups is provided.
-        Filtering is applied consistently for both full and incremental syncs.
+        Returns ALL contacts without filtering. Filtering is applied later
+        during sync operation decisions to ensure matching happens against
+        all contacts (preventing duplicates).
 
         Args:
             api: PeopleAPI instance for the account
             account_id: Account identifier
             full_sync: If True, ignore stored sync token
-            allowed_groups: Optional frozenset of group resource names to filter by.
-                If provided and non-empty, only contacts belonging to at least
-                one of these groups will be returned. If None or empty, all
-                contacts are returned (backwards compatible behavior).
             account_label: Optional human-readable label for the account
                 (used in logging). Defaults to account_id if not provided.
 
         Returns:
-            Tuple of (list of contacts, new sync token, pre-filter count).
-            Pre-filter count equals len(contacts) if no filtering was applied.
+            Tuple of (list of contacts, new sync token).
         """
         # Use account_label for logging, fall back to account_id
         label = account_label or account_id
@@ -1925,20 +1972,8 @@ class SyncEngine:
             else:
                 raise
 
-        # Apply group-based filtering if configured
-        # This happens after API call but before returning, preserving sync token
-        original_count = len(contacts)
-        if allowed_groups:
-            contacts = self._filter_contacts_by_groups(contacts, allowed_groups, label)
-            filtered_count = original_count - len(contacts)
-            if filtered_count > 0:
-                logger.info(
-                    f"Group filter applied for {label}: "
-                    f"{original_count} fetched -> {len(contacts)} after filter "
-                    f"({filtered_count} contacts excluded)"
-                )
-
-        return contacts, new_token, original_count
+        logger.info(f"Fetched {len(contacts)} contacts from {label}")
+        return contacts, new_token
 
     def _build_contact_index(
         self, contacts: list[Contact], account_label: str = "unknown"
@@ -2122,40 +2157,58 @@ class SyncEngine:
         last_synced_hash = mapping.get("last_synced_hash") if mapping else None
 
         if contact1 and not contact2:
-            # Contact only in account 1 - create in account 2
-            result.to_create_in_account2.append(contact1)
-            logger.debug(
-                f"Will create in {self.account2_email}: {contact1.display_name}"
-            )
-            if mlog:
-                mlog.info(f"UNMATCHED (account1 only): {contact1.display_name}")
-                mlog.info(f"  matching_key: {matching_key}")
-                mlog.info(f"  resource_name: {contact1.resource_name}")
-                mlog.info(f"  emails: {contact1.emails}")
-                mlog.info(f"  phones: {contact1.phones}")
-                mlog.info(f"  ACTION: Will create in {self.account2_email}")
-                mlog.info("")
-            # Analyze photo for new contact creation
-            if contact1.photo_url:
-                result.stats.photos_synced += 1
+            # Contact only in account 1 - check filter before creating in account 2
+            if self._is_contact_in_filter(contact1, self._allowed_groups_1):
+                result.to_create_in_account2.append(contact1)
+                logger.debug(
+                    f"Will create in {self.account2_email}: {contact1.display_name}"
+                )
+                if mlog:
+                    mlog.info(f"UNMATCHED (account1 only): {contact1.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info(f"  resource_name: {contact1.resource_name}")
+                    mlog.info(f"  emails: {contact1.emails}")
+                    mlog.info(f"  phones: {contact1.phones}")
+                    mlog.info(f"  ACTION: Will create in {self.account2_email}")
+                    mlog.info("")
+                # Analyze photo for new contact creation
+                if contact1.photo_url:
+                    result.stats.photos_synced += 1
+            else:
+                # Contact not in filter - skip sync
+                result.stats.contacts_filtered_out_account1 += 1
+                if mlog:
+                    mlog.info(f"FILTERED OUT (account1): {contact1.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info("  ACTION: Not in allowed groups, skipping sync")
+                    mlog.info("")
 
         elif contact2 and not contact1:
-            # Contact only in account 2 - create in account 1
-            result.to_create_in_account1.append(contact2)
-            logger.debug(
-                f"Will create in {self.account1_email}: {contact2.display_name}"
-            )
-            if mlog:
-                mlog.info(f"UNMATCHED (account2 only): {contact2.display_name}")
-                mlog.info(f"  matching_key: {matching_key}")
-                mlog.info(f"  resource_name: {contact2.resource_name}")
-                mlog.info(f"  emails: {contact2.emails}")
-                mlog.info(f"  phones: {contact2.phones}")
-                mlog.info(f"  ACTION: Will create in {self.account1_email}")
-                mlog.info("")
-            # Analyze photo for new contact creation
-            if contact2.photo_url:
-                result.stats.photos_synced += 1
+            # Contact only in account 2 - check filter before creating in account 1
+            if self._is_contact_in_filter(contact2, self._allowed_groups_2):
+                result.to_create_in_account1.append(contact2)
+                logger.debug(
+                    f"Will create in {self.account1_email}: {contact2.display_name}"
+                )
+                if mlog:
+                    mlog.info(f"UNMATCHED (account2 only): {contact2.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info(f"  resource_name: {contact2.resource_name}")
+                    mlog.info(f"  emails: {contact2.emails}")
+                    mlog.info(f"  phones: {contact2.phones}")
+                    mlog.info(f"  ACTION: Will create in {self.account1_email}")
+                    mlog.info("")
+                # Analyze photo for new contact creation
+                if contact2.photo_url:
+                    result.stats.photos_synced += 1
+            else:
+                # Contact not in filter - skip sync
+                result.stats.contacts_filtered_out_account2 += 1
+                if mlog:
+                    mlog.info(f"FILTERED OUT (account2): {contact2.display_name}")
+                    mlog.info(f"  matching_key: {matching_key}")
+                    mlog.info("  ACTION: Not in allowed groups, skipping sync")
+                    mlog.info("")
 
         elif contact1 and contact2:
             # Contact exists in both - track as matched pair and check if sync needed
@@ -2184,7 +2237,9 @@ class SyncEngine:
         """
         Analyze a contact that exists in both accounts.
 
-        Determines if update is needed and which direction.
+        Determines if update is needed and which direction. When filters are
+        active, a contact is synced bidirectionally if it passes the filter
+        on EITHER side. If neither side passes the filter, sync is skipped.
 
         This method detects all field changes including photos, since
         content_hash() includes all syncable fields (names, emails,
@@ -2198,6 +2253,19 @@ class SyncEngine:
             result: SyncResult to populate with actions
         """
         mlog = getattr(self, "_matching_logger", None)
+
+        # Check filter status for each contact
+        c1_in_filter = self._is_contact_in_filter(contact1, self._allowed_groups_1)
+        c2_in_filter = self._is_contact_in_filter(contact2, self._allowed_groups_2)
+
+        # If NEITHER contact passes filter, skip sync for this pair
+        # If EITHER passes, do normal bidirectional sync
+        if not c1_in_filter and not c2_in_filter:
+            if mlog:
+                mlog.info("  STATUS: Both contacts outside filter scope - skipping")
+                mlog.info("")
+            return
+
         hash1 = contact1.content_hash()
         hash2 = contact2.content_hash()
 
@@ -2218,7 +2286,7 @@ class SyncEngine:
             else:
                 mlog.info("  last_synced_hash: None (first sync)")
 
-        # Check if this is a conflict or one-way change
+        # Normal bidirectional sync - check if this is a conflict or one-way change
         if last_synced_hash:
             contact1_changed = hash1 != last_synced_hash
             contact2_changed = hash2 != last_synced_hash

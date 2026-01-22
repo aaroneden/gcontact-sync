@@ -19,6 +19,14 @@ from gcontact_sync.config.loader import (
     ConfigError,
     ConfigLoader,
 )
+from gcontact_sync.config.sync_config import (
+    CONFIG_VERSION,
+    DEFAULT_SYNC_CONFIG_FILE,
+    AccountSyncConfig,
+    SyncConfig,
+    SyncConfigError,
+    load_config,
+)
 
 
 class TestConfigLoaderInitialization:
@@ -925,15 +933,6 @@ class TestConfigError:
 # ==============================================================================
 # SyncConfig Module Tests (Tag-Based Filtering)
 # ==============================================================================
-
-from gcontact_sync.config.sync_config import (
-    AccountSyncConfig,
-    SyncConfig,
-    SyncConfigError,
-    CONFIG_VERSION,
-    DEFAULT_SYNC_CONFIG_FILE,
-    load_config,
-)
 
 
 class TestAccountSyncConfigBasics:
