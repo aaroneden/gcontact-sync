@@ -64,6 +64,25 @@ def parse_interval(interval: Union[str, int]) -> int:
     )
 
 
+from gcontact_sync.daemon.scheduler import (
+    DaemonScheduler,
+    DaemonStats,
+    DaemonError,
+    PIDFileError,
+    DaemonAlreadyRunningError,
+    PIDFileManager,
+    DEFAULT_PID_DIR,
+    DEFAULT_PID_FILE,
+)
+
 __all__ = [
     "parse_interval",
+    "DaemonScheduler",
+    "DaemonStats",
+    "DaemonError",
+    "PIDFileError",
+    "DaemonAlreadyRunningError",
+    "PIDFileManager",
+    "DEFAULT_PID_DIR",
+    "DEFAULT_PID_FILE",
 ]
