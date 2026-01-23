@@ -1569,6 +1569,26 @@ def delete_group_command(
 
 
 # =============================================================================
+# Health Command
+# =============================================================================
+
+
+@cli.command("health")
+def health_command() -> None:
+    """
+    Check application health status.
+
+    Returns a simple health status indicator. Useful for container
+    health checks and monitoring.
+
+    Example:
+
+        gcontact-sync health
+    """
+    click.echo("healthy")
+
+
+# =============================================================================
 # Restore Command
 # =============================================================================
 

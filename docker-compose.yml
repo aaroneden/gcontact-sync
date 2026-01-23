@@ -1,0 +1,95 @@
+services:
+  gcontact-sync:
+    # Build configuration
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Image name (can be overridden to use pre-built images)
+    image: gcontact-sync:latest
+
+    # Container name
+    container_name: gcontact-sync
+
+    # Restart policy - restart unless explicitly stopped
+    restart: unless-stopped
+
+    # Volume mounts for persistent data
+    volumes:
+      # Configuration directory - stores credentials.json and token files
+      - ./config:/app/config:rw
+      # Data directory - stores sync.db SQLite database
+      - ./data:/app/data:rw
+      # Credentials directory - additional credential storage if needed
+      - ./credentials:/app/credentials:rw
+
+    # Environment variables from .env file
+    # Create .env file based on .env.example for custom configuration
+    env_file:
+      - .env
+
+    # Optional environment variable overrides
+    # Uncomment and customize as needed
+    environment:
+      # Config directory inside container
+      - GCONTACT_SYNC_CONFIG_DIR=/app/config
+      # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+      # - GCONTACT_SYNC_LOG_LEVEL=INFO
+      # Debug mode
+      # - GCONTACT_SYNC_DEBUG=false
+
+    # Health check configuration
+    # Uses the health command from CLI: gcontact-sync health
+    healthcheck:
+      test: ["CMD", "gcontact-sync", "health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5s
+      retries: 3
+
+    # User - run as non-root user defined in Dockerfile
+    user: "1000:1000"
+
+    # Labels for metadata and identification
+    labels:
+      com.gcontact-sync.description: "Bidirectional Google Contacts synchronization"
+      com.gcontact-sync.version: "0.1.0"
+      com.gcontact-sync.vendor: "GContact Sync"
+      com.gcontact-sync.license: "MIT"
+
+    # Default command - run daemon mode for continuous sync
+    # The daemon runs in foreground mode (required for Docker) and syncs daily
+    # Override SYNC_INTERVAL environment variable to change interval (e.g., 1h, 6h, 1d)
+    #
+    # For one-off commands, use docker compose run:
+    #   docker compose run --rm gcontact-sync auth account1
+    #   docker compose run --rm gcontact-sync sync --dry-run
+    #   docker compose run --rm gcontact-sync sync
+    #   docker compose run --rm gcontact-sync status
+    #   docker compose run --rm gcontact-sync --help
+    command: ["daemon", "start", "--foreground", "--interval", "${SYNC_INTERVAL:-24h}"]
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem for security (except mounted volumes)
+    # Uncomment if application doesn't need to write to root filesystem
+    # read_only: true
+
+    # Resource limits (optional - uncomment to set limits)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1.0'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.25'
+    #       memory: 128M
+
+# Define named volumes (alternative to bind mounts)
+# Uncomment to use Docker-managed volumes instead of local directories
+# volumes:
+#   config:
+#   data:
+#   credentials:

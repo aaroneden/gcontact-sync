@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Docker Support**: Run gcontact-sync in a container for simplified deployment and isolation
+  - Multi-stage Dockerfile optimized for Python 3.12-slim with minimal image size
+  - docker-compose.yml for easy deployment with persistent volumes for config and data
+  - Health check command (`gcontact-sync health`) for Docker health monitoring
+  - Daemon mode works seamlessly in Docker with `--foreground` flag
+  - Default 24-hour sync interval configurable via `SYNC_INTERVAL` environment variable
+  - Setup script (`scripts/setup_docker.sh`) for quick Docker deployment
+  - GitHub Actions workflow for automated multi-platform image builds (amd64/arm64)
+  - Published to GitHub Container Registry: `ghcr.io/aeden2019/gcontact-sync`
+  - Comprehensive Docker documentation in `docs/DOCKER.md`
+
 - **Built-in Scheduler/Daemon Mode**: Run gcontact-sync as a background service with automatic periodic synchronization
   - Start daemon with configurable intervals: `gcontact-sync daemon start --interval 24h`
   - Support for interval formats: seconds (30s), minutes (5m), hours (1h), days (1d)
