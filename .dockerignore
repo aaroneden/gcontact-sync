@@ -177,8 +177,7 @@ logs/security/
 .github/
 .gitlab-ci.yml
 
-# Documentation
-README.md
+# Documentation (README.md needed for pyproject.toml build)
 LICENSE
 CHANGELOG.md
 docs/

@@ -32,7 +32,7 @@ A Python-based bidirectional synchronization system that keeps Google Contacts s
 
 ```bash
 # Clone the repository
-git clone https://github.com/example/gcontact-sync.git
+git clone https://github.com/aeden2019/gcontact-sync.git
 cd gcontact-sync
 
 # Install dependencies with UV
@@ -46,7 +46,7 @@ uv sync --dev
 
 ```bash
 # Clone the repository
-git clone https://github.com/example/gcontact-sync.git
+git clone https://github.com/aeden2019/gcontact-sync.git
 cd gcontact-sync
 
 # Create virtual environment
@@ -73,19 +73,19 @@ Pre-built Docker images are available from both Docker Hub and GitHub Container 
 **Docker Hub:**
 ```bash
 # Pull the latest version
-docker pull username/gcontact-sync:latest
+docker pull aeden2019/gcontact-sync:latest
 
 # Pull a specific version
-docker pull username/gcontact-sync:v1.0.0
+docker pull aeden2019/gcontact-sync:v1.0.0
 ```
 
 **GitHub Container Registry:**
 ```bash
 # Pull the latest version
-docker pull ghcr.io/username/gcontact-sync:latest
+docker pull ghcr.io/aeden2019/gcontact-sync:latest
 
 # Pull a specific version
-docker pull ghcr.io/username/gcontact-sync:v1.0.0
+docker pull ghcr.io/aeden2019/gcontact-sync:v1.0.0
 ```
 
 **Image Tagging Strategy:**
@@ -104,9 +104,33 @@ All images support both `linux/amd64` and `linux/arm64` architectures. Docker wi
 
 #### Quick Start with Docker Compose
 
+**Automated Setup (Recommended):**
+
+We provide a setup script that automates Docker deployment configuration:
+
 ```bash
 # Clone the repository
-git clone https://github.com/example/gcontact-sync.git
+git clone https://github.com/aeden2019/gcontact-sync.git
+cd gcontact-sync
+
+# Make the script executable and run it
+chmod +x scripts/setup_docker.sh
+./scripts/setup_docker.sh
+```
+
+The script will:
+1. Check for Docker and Docker Compose installation
+2. Create a deployment directory with proper structure
+3. Set up volume directories with correct permissions
+4. Create `.env` file from template
+5. Help locate and copy your `credentials.json`
+6. Optionally pull or build the Docker image
+
+**Manual Setup:**
+
+```bash
+# Clone the repository
+git clone https://github.com/aeden2019/gcontact-sync.git
 cd gcontact-sync
 
 # Create required directories for volume mounts
@@ -116,7 +140,7 @@ mkdir -p config data credentials
 cp .env.example .env
 
 # Option 1: Use pre-built image (recommended)
-# Edit docker-compose.yml and change 'build: .' to 'image: username/gcontact-sync:latest'
+# Edit docker-compose.yml and change 'image: gcontact-sync:latest' to 'image: ghcr.io/aeden2019/gcontact-sync:latest'
 
 # Option 2: Build locally
 docker compose build
@@ -159,6 +183,7 @@ Available environment variables:
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
 | `GCONTACT_SYNC_CONFIG_DIR` | Config directory path inside container | `/app/config` | `/app/config` |
+| `SYNC_INTERVAL` | Sync interval for daemon mode | `24h` | `1h`, `6h`, `1d` |
 | `GCONTACT_SYNC_LOG_LEVEL` | Logging level | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `GCONTACT_SYNC_DEBUG` | Enable debug mode | `false` | `true`, `false` |
 | `ANTHROPIC_API_KEY` | API key for LLM-assisted matching | None | `sk-ant-...` |
@@ -167,7 +192,29 @@ Available environment variables:
 
 #### Docker Usage Examples
 
-**Authenticate accounts:**
+**Start continuous sync daemon (recommended for production):**
+```bash
+# Start daemon in background - syncs daily by default
+docker compose up -d
+
+# View daemon logs
+docker compose logs -f
+
+# Stop daemon
+docker compose down
+```
+
+**Custom sync interval:**
+```bash
+# Set interval via environment variable
+SYNC_INTERVAL=6h docker compose up -d
+
+# Or add to .env file
+echo "SYNC_INTERVAL=6h" >> .env
+docker compose up -d
+```
+
+**Authenticate accounts (required before first sync):**
 ```bash
 # Authenticate Account 1
 docker compose run --rm gcontact-sync auth --account account1
@@ -176,29 +223,25 @@ docker compose run --rm gcontact-sync auth --account account1
 docker compose run --rm gcontact-sync auth --account account2
 ```
 
-**Check status:**
+**One-off commands:**
 ```bash
+# Check status
 docker compose run --rm gcontact-sync status
-```
 
-**Sync contacts (dry run):**
-```bash
+# Manual sync (dry run)
 docker compose run --rm gcontact-sync sync --dry-run
-```
 
-**Execute sync:**
-```bash
+# Manual sync
 docker compose run --rm gcontact-sync sync
-```
 
-**Verbose sync with full refresh:**
-```bash
+# Full sync with verbose output
 docker compose run --rm gcontact-sync sync --full --verbose
-```
 
-**Initialize config file:**
-```bash
+# Initialize config file
 docker compose run --rm gcontact-sync init-config
+
+# Show help
+docker compose run --rm gcontact-sync --help
 ```
 
 #### Building the Docker Image Manually
@@ -914,9 +957,20 @@ gcontact-sync/
 │   │   └── google_auth.py    # OAuth2 authentication
 │   ├── api/
 │   │   └── people_api.py     # Google People API wrapper
+│   ├── backup/
+│   │   └── manager.py        # Backup and restore functionality
+│   ├── config/
+│   │   ├── generator.py      # Config file generation
+│   │   ├── loader.py         # Config file loading and validation
+│   │   └── sync_config.py    # Tag filtering configuration
+│   ├── daemon/
+│   │   ├── scheduler.py      # Background sync scheduler
+│   │   └── service.py        # System service integration
 │   ├── sync/
 │   │   ├── engine.py         # Core sync logic
 │   │   ├── contact.py        # Contact data model
+│   │   ├── group.py          # Contact group/label model
+│   │   ├── photo.py          # Photo synchronization
 │   │   ├── conflict.py       # Conflict resolution strategies
 │   │   ├── matcher.py        # Multi-tier contact matching
 │   │   └── llm_matcher.py    # LLM-assisted matching (Tier 3)
@@ -925,8 +979,11 @@ gcontact-sync/
 │   └── utils/
 │       └── logging.py        # Logging configuration
 ├── scripts/
-│   └── setup_gcloud.sh       # Google Cloud setup script
+│   ├── setup_gcloud.sh       # Google Cloud setup script
+│   └── setup_docker.sh       # Docker deployment setup script
 ├── tests/                    # Unit and integration tests
+├── Dockerfile                # Multi-stage Docker build
+├── docker-compose.yml        # Docker Compose configuration
 └── pyproject.toml           # Project configuration (UV/pip compatible)
 ```
 

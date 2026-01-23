@@ -67,12 +67,12 @@ GContact Sync publishes official Docker images to both Docker Hub and GitHub Con
 
 **Docker Hub** (recommended for public access):
 ```bash
-docker pull username/gcontact-sync:latest
+docker pull aeden2019/gcontact-sync:latest
 ```
 
 **GitHub Container Registry** (integrated with GitHub):
 ```bash
-docker pull ghcr.io/username/gcontact-sync:latest
+docker pull ghcr.io/aeden2019/gcontact-sync:latest
 ```
 
 ### Image Tagging Strategy
@@ -81,12 +81,12 @@ Choose the tag that best fits your deployment needs:
 
 | Tag Pattern | Description | Use Case | Example |
 |-------------|-------------|----------|---------|
-| `latest` | Most recent main branch build | Development, always want newest features | `username/gcontact-sync:latest` |
-| `v*.*.*` | Specific semantic version | Production, want stable specific version | `username/gcontact-sync:v1.2.3` |
-| `v*.*` | Minor version (latest patch) | Production, want latest patches for a minor version | `username/gcontact-sync:v1.2` |
-| `v*` | Major version (latest minor) | Production, want latest compatible version | `username/gcontact-sync:v1` |
-| `main-<sha>` | Specific commit from main | Testing specific changes, reproducible builds | `username/gcontact-sync:main-abc1234` |
-| `<branch>` | Latest from a specific branch | Testing feature branches | `username/gcontact-sync:feature-auth` |
+| `latest` | Most recent main branch build | Development, always want newest features | `aeden2019/gcontact-sync:latest` |
+| `v*.*.*` | Specific semantic version | Production, want stable specific version | `aeden2019/gcontact-sync:v1.2.3` |
+| `v*.*` | Minor version (latest patch) | Production, want latest patches for a minor version | `aeden2019/gcontact-sync:v1.2` |
+| `v*` | Major version (latest minor) | Production, want latest compatible version | `aeden2019/gcontact-sync:v1` |
+| `main-<sha>` | Specific commit from main | Testing specific changes, reproducible builds | `aeden2019/gcontact-sync:main-abc1234` |
+| `<branch>` | Latest from a specific branch | Testing feature branches | `aeden2019/gcontact-sync:feature-auth` |
 
 **Tag Update Schedule:**
 - `latest` - Updated on every push to the main branch
@@ -114,7 +114,7 @@ All images published to GitHub Container Registry include attestations for suppl
 
 ```bash
 # Verify image attestation (requires Docker 4.28+)
-docker buildx imagetools inspect ghcr.io/username/gcontact-sync:latest --format "{{json .Provenance}}"
+docker buildx imagetools inspect ghcr.io/aeden2019/gcontact-sync:latest --format "{{json .Provenance}}"
 ```
 
 ### Using Pre-Built Images with Docker Compose
@@ -128,7 +128,7 @@ services:
     # build: .
 
     # With this line:
-    image: username/gcontact-sync:latest  # or any other tag
+    image: aeden2019/gcontact-sync:latest  # or any other tag
 
     # Rest of your configuration...
 ```
@@ -137,17 +137,41 @@ Or use Docker Compose's image override without editing the file:
 
 ```bash
 # Pull and use pre-built image
-docker pull username/gcontact-sync:latest
+docker pull aeden2019/gcontact-sync:latest
 docker compose run --rm gcontact-sync --help
 ```
 
 ## Quick Start
 
-For experienced users who want to get started immediately:
+### Automated Setup (Recommended)
+
+Use the Docker setup script to automate the deployment configuration:
 
 ```bash
 # Clone and navigate
-git clone https://github.com/example/gcontact-sync.git
+git clone https://github.com/aeden2019/gcontact-sync.git
+cd gcontact-sync
+
+# Run the setup script
+chmod +x scripts/setup_docker.sh
+./scripts/setup_docker.sh
+```
+
+The script will guide you through:
+1. Verifying Docker and Docker Compose installation
+2. Creating a deployment directory with proper structure
+3. Setting up volume directories with correct permissions
+4. Creating `.env` file from template
+5. Locating and copying your `credentials.json`
+6. Pulling or building the Docker image
+
+### Manual Quick Start
+
+For experienced users who want to set up manually:
+
+```bash
+# Clone and navigate
+git clone https://github.com/aeden2019/gcontact-sync.git
 cd gcontact-sync
 
 # Prepare directories and environment
@@ -158,23 +182,23 @@ cp .env.example .env
 cp ~/Downloads/client_secret_*.json config/credentials.json
 
 # Option 1: Use pre-built image (recommended)
-docker pull username/gcontact-sync:latest
-# Edit docker-compose.yml to use 'image: username/gcontact-sync:latest' instead of 'build: .'
+docker pull aeden2019/gcontact-sync:latest
+# Edit docker-compose.yml to use 'image: ghcr.io/aeden2019/gcontact-sync:latest' instead of 'image: gcontact-sync:latest'
 
 # Option 2: Build locally
 docker compose build
 
-# Verify installation
-docker compose run --rm gcontact-sync --help
-
-# Authenticate both accounts
+# Authenticate both accounts (required before first sync)
 docker compose run --rm gcontact-sync auth --account account1
 docker compose run --rm gcontact-sync auth --account account2
 
 # Test with dry run
 docker compose run --rm gcontact-sync sync --dry-run
 
-# Execute sync
+# Start daemon for continuous sync (syncs daily by default)
+docker compose up -d
+
+# Or for a one-time sync
 docker compose run --rm gcontact-sync sync
 ```
 
@@ -188,7 +212,7 @@ Clone the repository and create the required directory structure:
 
 ```bash
 # Clone the repository
-git clone https://github.com/example/gcontact-sync.git
+git clone https://github.com/aeden2019/gcontact-sync.git
 cd gcontact-sync
 
 # Create directories for volume mounts
@@ -255,13 +279,13 @@ Pull the official image from Docker Hub or GitHub Container Registry:
 
 ```bash
 # Pull from Docker Hub (recommended)
-docker pull username/gcontact-sync:latest
+docker pull aeden2019/gcontact-sync:latest
 
 # Or pull from GitHub Container Registry
-docker pull ghcr.io/username/gcontact-sync:latest
+docker pull ghcr.io/aeden2019/gcontact-sync:latest
 
 # Or pull a specific version
-docker pull username/gcontact-sync:v1.2.3
+docker pull aeden2019/gcontact-sync:v1.2.3
 
 # Verify the image was pulled
 docker images | grep gcontact-sync
@@ -283,7 +307,7 @@ services:
     # build: .
 
     # With this:
-    image: username/gcontact-sync:latest
+    image: aeden2019/gcontact-sync:latest
 
     # ... rest of configuration
 ```
@@ -1368,8 +1392,8 @@ jobs:
           context: .
           push: true
           tags: |
-            yourusername/gcontact-sync:latest
-            yourusername/gcontact-sync:${{ github.ref_name }}
+            youraeden2019/gcontact-sync:latest
+            youraeden2019/gcontact-sync:${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 ```

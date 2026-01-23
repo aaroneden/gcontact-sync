@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   gcontact-sync:
     # Build configuration
@@ -59,12 +57,17 @@ services:
       com.gcontact-sync.vendor: "GContact Sync"
       com.gcontact-sync.license: "MIT"
 
-    # Default command - override to run specific sync operations
-    # Examples:
+    # Default command - run daemon mode for continuous sync
+    # The daemon runs in foreground mode (required for Docker) and syncs daily
+    # Override SYNC_INTERVAL environment variable to change interval (e.g., 1h, 6h, 1d)
+    #
+    # For one-off commands, use docker compose run:
     #   docker compose run --rm gcontact-sync auth account1
     #   docker compose run --rm gcontact-sync sync --dry-run
     #   docker compose run --rm gcontact-sync sync
-    command: ["--help"]
+    #   docker compose run --rm gcontact-sync status
+    #   docker compose run --rm gcontact-sync --help
+    command: ["daemon", "start", "--foreground", "--interval", "${SYNC_INTERVAL:-24h}"]
 
     # Security options
     security_opt:

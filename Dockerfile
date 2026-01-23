@@ -11,8 +11,8 @@ RUN apt-get update && \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pyproject.toml first to leverage Docker layer caching
-COPY pyproject.toml ./
+# Copy build files needed for installation
+COPY pyproject.toml README.md ./
 
 # Create virtual environment
 RUN python -m venv /opt/venv
@@ -21,11 +21,7 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Upgrade pip and install build tools
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# Install dependencies from pyproject.toml
-# This installs only production dependencies (not dev dependencies)
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel hatchling
 
 # Copy the entire application source
 COPY gcontact_sync ./gcontact_sync
