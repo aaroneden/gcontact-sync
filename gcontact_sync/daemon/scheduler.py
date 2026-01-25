@@ -318,6 +318,9 @@ class DaemonScheduler:
         Sleep for the specified duration, checking for shutdown.
 
         Sleeps in small increments to allow quick response to shutdown signals.
+        Uses wall-clock time to handle system sleep correctly - when the OS
+        suspends (e.g., laptop lid closed), wall-clock time continues to advance
+        so the sync will run on schedule after wake.
 
         Args:
             seconds: Total seconds to sleep.
@@ -325,12 +328,16 @@ class DaemonScheduler:
         Returns:
             True if sleep completed normally, False if interrupted by shutdown.
         """
-        # Sleep in 1-second increments for responsiveness
-        remaining = seconds
-        while remaining > 0 and not self._shutdown_requested:
-            sleep_time = min(1, remaining)
-            time.sleep(sleep_time)
-            remaining -= sleep_time
+        # Use wall-clock time to handle system sleep correctly.
+        # When the system sleeps, time.time() continues to advance,
+        # ensuring syncs happen on schedule after wake.
+        end_time = time.time() + seconds
+        while time.time() < end_time and not self._shutdown_requested:
+            # Sleep in 1-second increments for responsiveness to shutdown
+            remaining = end_time - time.time()
+            sleep_time = min(1.0, max(0, remaining))
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         return not self._shutdown_requested
 
