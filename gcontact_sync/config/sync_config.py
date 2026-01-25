@@ -35,10 +35,23 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class GroupSyncMode(str, Enum):
+    """Controls how groups are synced between accounts."""
+
+    ALL = "all"  # Sync all user-created groups (current behavior)
+    USED = "used"  # Only sync groups that have contacts being synced
+    NONE = "none"  # Don't sync groups, only map existing memberships
+
+
+# Valid group sync mode values for validation
+VALID_GROUP_SYNC_MODES = {mode.value for mode in GroupSyncMode}
 
 # Current configuration schema version
 CONFIG_VERSION = "1.0"
@@ -150,6 +163,10 @@ class AccountSyncConfig:
     Attributes:
         sync_groups: List of group names or resource names to filter contacts.
                     Empty list means sync all contacts (no filtering).
+        target_group: Target group name for incoming synced contacts. If set,
+                     contacts synced TO this account will be added to this group.
+        preserve_source_groups: Whether to preserve group memberships from
+                               the source account when syncing contacts.
 
     Usage:
         # Create with specific groups to sync
@@ -164,9 +181,14 @@ class AccountSyncConfig:
         if config.should_sync_group("Work"):
             # Include contacts from this group
             pass
+
+        # Configure target group for incoming contacts
+        config = AccountSyncConfig(target_group="Brain Bridge")
     """
 
     sync_groups: list[str] = field(default_factory=list)
+    target_group: str | None = None
+    preserve_source_groups: bool = True
 
     def has_filter(self) -> bool:
         """
@@ -244,7 +266,28 @@ class AccountSyncConfig:
                     f"sync_groups[{i}] must be a string, got {type(group).__name__}"
                 )
 
-        return cls(sync_groups=sync_groups)
+        # Parse target_group
+        target_group = data.get("target_group")
+        if target_group is not None and not isinstance(target_group, str):
+            raise SyncConfigError(
+                f"target_group must be a string, got {type(target_group).__name__}"
+            )
+        if target_group is not None and not target_group.strip():
+            raise SyncConfigError("target_group cannot be empty if specified")
+
+        # Parse preserve_source_groups
+        preserve_source_groups = data.get("preserve_source_groups", True)
+        if not isinstance(preserve_source_groups, bool):
+            raise SyncConfigError(
+                f"preserve_source_groups must be a boolean, "
+                f"got {type(preserve_source_groups).__name__}"
+            )
+
+        return cls(
+            sync_groups=sync_groups,
+            target_group=target_group,
+            preserve_source_groups=preserve_source_groups,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -253,7 +296,12 @@ class AccountSyncConfig:
         Returns:
             Dictionary representation of the account config
         """
-        return {"sync_groups": self.sync_groups}
+        result: dict[str, Any] = {"sync_groups": self.sync_groups}
+        if self.target_group is not None:
+            result["target_group"] = self.target_group
+        if not self.preserve_source_groups:  # Only include if False (non-default)
+            result["preserve_source_groups"] = self.preserve_source_groups
+        return result
 
 
 @dataclass
@@ -267,6 +315,7 @@ class SyncConfig:
 
     Attributes:
         version: Configuration schema version (currently "1.0")
+        group_sync_mode: Controls how groups are synced ("all", "used", "none")
         sync_label: Configuration for automatic sync labeling
         account1: Sync configuration for account 1
         account2: Sync configuration for account 2
@@ -288,6 +337,7 @@ class SyncConfig:
 
         # Create programmatically
         config = SyncConfig(
+            group_sync_mode="used",
             sync_label=SyncLabelConfig(group_name="My Synced"),
             account1=AccountSyncConfig(sync_groups=["Work", "Family"]),
             account2=AccountSyncConfig(sync_groups=["Important"]),
@@ -295,6 +345,7 @@ class SyncConfig:
     """
 
     version: str = CONFIG_VERSION
+    group_sync_mode: str = GroupSyncMode.ALL.value
     sync_label: SyncLabelConfig = field(default_factory=SyncLabelConfig)
     account1: AccountSyncConfig = field(default_factory=AccountSyncConfig)
     account2: AccountSyncConfig = field(default_factory=AccountSyncConfig)
@@ -342,6 +393,19 @@ class SyncConfig:
                 f"version must be a string, got {type(version).__name__}"
             )
 
+        # Parse group_sync_mode
+        group_sync_mode = data.get("group_sync_mode", GroupSyncMode.ALL.value)
+        if not isinstance(group_sync_mode, str):
+            raise SyncConfigError(
+                f"group_sync_mode must be a string, "
+                f"got {type(group_sync_mode).__name__}"
+            )
+        if group_sync_mode not in VALID_GROUP_SYNC_MODES:
+            raise SyncConfigError(
+                f"group_sync_mode must be one of {VALID_GROUP_SYNC_MODES}, "
+                f"got {group_sync_mode!r}"
+            )
+
         # Parse sync label configuration
         sync_label = SyncLabelConfig.from_dict(data.get("sync_label"))
 
@@ -351,6 +415,7 @@ class SyncConfig:
 
         return cls(
             version=version,
+            group_sync_mode=group_sync_mode,
             sync_label=sync_label,
             account1=account1,
             account2=account2,
@@ -363,12 +428,16 @@ class SyncConfig:
         Returns:
             Dictionary representation of the sync config
         """
-        return {
+        result: dict[str, Any] = {
             "version": self.version,
             "sync_label": self.sync_label.to_dict(),
             "account1": self.account1.to_dict(),
             "account2": self.account2.to_dict(),
         }
+        # Only include group_sync_mode if not default
+        if self.group_sync_mode != GroupSyncMode.ALL.value:
+            result["group_sync_mode"] = self.group_sync_mode
+        return result
 
     @classmethod
     def load_from_file(cls, path: Path | str) -> SyncConfig:
@@ -444,6 +513,7 @@ class SyncConfig:
         """Return a readable string representation."""
         return (
             f"SyncConfig(version={self.version!r}, "
+            f"group_sync_mode={self.group_sync_mode!r}, "
             f"sync_label={self.sync_label.group_name!r} "
             f"(enabled={self.sync_label.enabled}), "
             f"account1_groups={self.account1.sync_groups!r}, "
