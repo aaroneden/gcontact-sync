@@ -438,6 +438,34 @@ class TestDaemonSchedulerSleep:
         assert result is False
         assert elapsed < 2  # Should return quickly
 
+    def test_sleep_interruptible_uses_wall_clock_time(self):
+        """Test _sleep_interruptible uses wall-clock time, not countdown.
+
+        This verifies the fix for the system sleep bug: when the system
+        sleeps, wall-clock time advances but the sleep countdown would
+        pause. By using time.time() to check the end time, we ensure
+        syncs run on schedule even after system sleep.
+        """
+        scheduler = DaemonScheduler()
+
+        # Create a mock that simulates time jumping forward (as during system sleep)
+        # First call returns base time, second call shows time has "jumped" past end
+        base_time = 1000000.0
+        mock_time = MagicMock(side_effect=[base_time, base_time + 100])
+        mock_sleep = MagicMock()
+
+        with (
+            patch("gcontact_sync.daemon.scheduler.time.time", mock_time),
+            patch("gcontact_sync.daemon.scheduler.time.sleep", mock_sleep),
+        ):
+            result = scheduler._sleep_interruptible(60)
+
+        # Should complete because wall-clock time shows we're past end_time
+        assert result is True
+        # Sleep should not have been called (or called minimally) since
+        # time already shows we're past the target
+        assert mock_sleep.call_count == 0
+
 
 class TestDaemonSchedulerClassMethods:
     """Tests for class methods of DaemonScheduler."""
