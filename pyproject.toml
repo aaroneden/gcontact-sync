@@ -42,6 +42,7 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "types-requests>=2.31.0",
+    "types-PyYAML>=6.0.0",
 ]
 
 [project.scripts]
@@ -65,8 +66,12 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "types-requests>=2.31.0",
+    "types-pyyaml>=6.0.0",
     "bandit>=1.8.6",
     "anthropic>=0.76.0",
+    "radon>=6.0.1",
+    "pylint>=4.0.4",
+    "vulture>=2.14",
 ]
 
 [tool.hatch.build.targets.wheel]

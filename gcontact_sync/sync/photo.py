@@ -195,7 +195,7 @@ def process_photo(
     try:
         # Load and validate the image
         logger.debug(f"Processing photo: {len(photo_data)} bytes")
-        image = Image.open(io.BytesIO(photo_data))
+        image: Image.Image = Image.open(io.BytesIO(photo_data))
 
         # Validate it's a real image by loading data
         image.load()
