@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Target Groups Feature**: Configure how synced contacts are assigned to groups in destination accounts
+  - `target_group`: Assign all incoming synced contacts to a specific group (e.g., "Brain Bridge" or "Personal")
+  - `preserve_source_groups`: Control whether source group memberships are mapped to destination (default: false)
+  - `group_sync_mode`: Control group creation/deletion behavior with three modes:
+    - `"all"`: Create all groups from source in destination
+    - `"used"`: Only create groups that have synced contacts
+    - `"none"`: Don't create or manage groups at all (recommended for most users)
+  - Per-account configuration allows different sync strategies for each direction
+  - Example: Sync "Personal" contacts from account1 → "Brain Bridge" group on account2
+
 - **Duplicate Contact Removal Script**: New utility to identify and remove duplicate contacts
   - Located at `scripts/remove_duplicates.py`
   - Detects duplicates by matching name + emails + phone numbers
