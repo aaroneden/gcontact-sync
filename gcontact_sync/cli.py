@@ -2045,6 +2045,31 @@ def daemon_start_command(
                 database = SyncDatabase(str(db_path))
                 database.initialize()
 
+                # Load sync configuration for tag-based filtering
+                sync_config = None
+                try:
+                    sync_config = load_sync_config(config_dir)
+                    if sync_config.has_any_filter():
+                        logger.info("Sync config loaded with group filtering enabled")
+                        if sync_config.account1.has_filter():
+                            logger.debug(
+                                f"Account1 filter groups: "
+                                f"{sync_config.account1.sync_groups}"
+                            )
+                        if sync_config.account2.has_filter():
+                            logger.debug(
+                                f"Account2 filter groups: "
+                                f"{sync_config.account2.sync_groups}"
+                            )
+                    else:
+                        logger.debug(
+                            "Sync config loaded with no group filtering (sync all)"
+                        )
+                except SyncConfigError as e:
+                    # Log warning but continue without filtering (backwards compatible)
+                    logger.warning(f"Could not load sync config: {e}")
+                    logger.info("Continuing with no group filtering")
+
                 # Build MatchConfig from config
                 anthropic_api_key = config.get("anthropic_api_key")
                 if not anthropic_api_key:
@@ -2101,6 +2126,7 @@ def daemon_start_command(
                     account2_email=account2_email,
                     match_config=match_config,
                     duplicate_handling=config.get("duplicate_handling", "skip"),
+                    config=sync_config,
                 )
 
                 # Run sync

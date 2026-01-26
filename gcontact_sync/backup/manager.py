@@ -313,7 +313,7 @@ class BackupManager:
         """
         import base64
 
-        result = {}
+        result: dict[str, Any] = {}
 
         for key, value in obj.__dict__.items():
             if value is None:

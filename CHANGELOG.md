@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Target Groups Feature**: Configure how synced contacts are assigned to groups in destination accounts
+  - `target_group`: Assign all incoming synced contacts to a specific group (e.g., "Brain Bridge" or "Personal")
+  - `preserve_source_groups`: Control whether source group memberships are mapped to destination (default: false)
+  - `group_sync_mode`: Control group creation/deletion behavior with three modes:
+    - `"all"`: Create all groups from source in destination
+    - `"used"`: Only create groups that have synced contacts
+    - `"none"`: Don't create or manage groups at all (recommended for most users)
+  - Per-account configuration allows different sync strategies for each direction
+  - Example: Sync "Personal" contacts from account1 → "Brain Bridge" group on account2
+
+- **Duplicate Contact Removal Script**: New utility to identify and remove duplicate contacts
+  - Located at `scripts/remove_duplicates.py`
+  - Detects duplicates by matching name + emails + phone numbers
+  - Supports dry-run mode to preview changes before deletion
+  - Rate-limiting with configurable delays to avoid Google API throttling
+  - Process individual accounts or both at once
+  - Keeps the oldest contact (by modification time) when removing duplicates
+
 - **Docker Support**: Run gcontact-sync in a container for simplified deployment and isolation
   - Multi-stage Dockerfile optimized for Python 3.12-slim with minimal image size
   - docker-compose.yml for easy deployment with persistent volumes for config and data
@@ -48,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New groups are created automatically in the destination account
   - Group membership is preserved when contacts are synced
   - System groups (like "myContacts") are excluded from synchronization
+
+### Fixed
+
+- **Daemon Now Loads Sync Configuration**: Fixed critical bug where the daemon scheduler was not loading `sync_config.json`
+  - Previously, daemon syncs ignored group filtering settings, causing contacts from all groups to sync
+  - This could result in mass duplicate contact creation when group filtering was expected
+  - Daemon now properly loads and applies `sync_groups`, `target_group`, `group_sync_mode`, and `preserve_source_groups` settings
 
 ### Changed
 

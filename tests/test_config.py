@@ -2024,3 +2024,305 @@ class TestSyncLabelConfigConstants:
         assert DEFAULT_SYNC_LABEL_GROUP_NAME is not None
         assert isinstance(DEFAULT_SYNC_LABEL_GROUP_NAME, str)
         assert DEFAULT_SYNC_LABEL_GROUP_NAME == "Synced Contacts"
+
+
+# ==============================================================================
+# AccountSyncConfig Target Group Tests
+# ==============================================================================
+
+
+class TestAccountSyncConfigTargetGroup:
+    """Tests for AccountSyncConfig target_group and preserve_source_groups."""
+
+    def test_target_group_default_none(self):
+        """Test that target_group defaults to None."""
+        config = AccountSyncConfig()
+        assert config.target_group is None
+
+    def test_target_group_from_dict_valid_string(self):
+        """Test creating from dict with valid target_group string."""
+        data = {"sync_groups": [], "target_group": "Brain Bridge"}
+        config = AccountSyncConfig.from_dict(data)
+        assert config.target_group == "Brain Bridge"
+
+    def test_target_group_from_dict_with_spaces(self):
+        """Test that spaces in target_group are preserved."""
+        data = {"target_group": "  My Group  "}
+        config = AccountSyncConfig.from_dict(data)
+        assert config.target_group == "  My Group  "
+
+    def test_target_group_empty_string_raises_sync_config_error(self):
+        """Test that empty target_group raises SyncConfigError."""
+        data = {"target_group": ""}
+        with pytest.raises(SyncConfigError) as exc_info:
+            AccountSyncConfig.from_dict(data)
+        assert "target_group cannot be empty if specified" in str(exc_info.value)
+
+    def test_target_group_whitespace_only_raises_sync_config_error(self):
+        """Test that whitespace-only target_group raises SyncConfigError."""
+        data = {"target_group": "   "}
+        with pytest.raises(SyncConfigError) as exc_info:
+            AccountSyncConfig.from_dict(data)
+        assert "target_group cannot be empty if specified" in str(exc_info.value)
+
+    def test_target_group_invalid_type_int_raises_sync_config_error(self):
+        """Test that int target_group raises SyncConfigError."""
+        data = {"target_group": 123}
+        with pytest.raises(SyncConfigError) as exc_info:
+            AccountSyncConfig.from_dict(data)
+        assert "target_group must be a string, got int" in str(exc_info.value)
+
+    def test_target_group_invalid_type_list_raises_sync_config_error(self):
+        """Test that list target_group raises SyncConfigError."""
+        data = {"target_group": ["Work"]}
+        with pytest.raises(SyncConfigError) as exc_info:
+            AccountSyncConfig.from_dict(data)
+        assert "target_group must be a string, got list" in str(exc_info.value)
+
+    def test_target_group_null_in_json_is_valid(self):
+        """Test that None/null target_group is valid."""
+        data = {"target_group": None}
+        config = AccountSyncConfig.from_dict(data)
+        assert config.target_group is None
+
+    def test_preserve_source_groups_default_true(self):
+        """Test that preserve_source_groups defaults to True."""
+        config = AccountSyncConfig()
+        assert config.preserve_source_groups is True
+
+    def test_preserve_source_groups_false_from_dict(self):
+        """Test creating from dict with preserve_source_groups=False."""
+        data = {"preserve_source_groups": False}
+        config = AccountSyncConfig.from_dict(data)
+        assert config.preserve_source_groups is False
+
+    def test_preserve_source_groups_invalid_type_string_raises(self):
+        """Test that string preserve_source_groups raises SyncConfigError."""
+        data = {"preserve_source_groups": "yes"}
+        with pytest.raises(SyncConfigError) as exc_info:
+            AccountSyncConfig.from_dict(data)
+        assert "preserve_source_groups must be a boolean, got str" in str(
+            exc_info.value
+        )
+
+    def test_preserve_source_groups_invalid_type_int_raises(self):
+        """Test that int preserve_source_groups raises SyncConfigError."""
+        data = {"preserve_source_groups": 1}
+        with pytest.raises(SyncConfigError) as exc_info:
+            AccountSyncConfig.from_dict(data)
+        assert "preserve_source_groups must be a boolean, got int" in str(
+            exc_info.value
+        )
+
+    def test_to_dict_omits_none_target_group(self):
+        """Test that to_dict omits target_group when None."""
+        config = AccountSyncConfig(target_group=None)
+        d = config.to_dict()
+        assert "target_group" not in d
+
+    def test_to_dict_includes_target_group_when_set(self):
+        """Test that to_dict includes target_group when set."""
+        config = AccountSyncConfig(target_group="Brain Bridge")
+        d = config.to_dict()
+        assert d["target_group"] == "Brain Bridge"
+
+    def test_to_dict_omits_preserve_source_groups_when_true(self):
+        """Test that to_dict omits preserve_source_groups when True (default)."""
+        config = AccountSyncConfig(preserve_source_groups=True)
+        d = config.to_dict()
+        assert "preserve_source_groups" not in d
+
+    def test_to_dict_includes_preserve_source_groups_when_false(self):
+        """Test that to_dict includes preserve_source_groups when False."""
+        config = AccountSyncConfig(preserve_source_groups=False)
+        d = config.to_dict()
+        assert d["preserve_source_groups"] is False
+
+    def test_target_group_unicode_characters(self):
+        """Test that unicode characters work in target_group."""
+        data = {"target_group": "工作联系人"}
+        config = AccountSyncConfig.from_dict(data)
+        assert config.target_group == "工作联系人"
+
+    def test_target_group_with_emoji(self):
+        """Test that emojis work in target_group."""
+        data = {"target_group": "Work 👔"}
+        config = AccountSyncConfig.from_dict(data)
+        assert config.target_group == "Work 👔"
+
+
+# ==============================================================================
+# GroupSyncMode Config Tests
+# ==============================================================================
+
+
+class TestGroupSyncModeConfig:
+    """Tests for SyncConfig group_sync_mode field."""
+
+    def test_group_sync_mode_default_all(self):
+        """Test that group_sync_mode defaults to 'all'."""
+        config = SyncConfig()
+        assert config.group_sync_mode == "all"
+
+    def test_group_sync_mode_from_dict_all_explicit(self):
+        """Test creating from dict with explicit group_sync_mode='all'."""
+        data = {"group_sync_mode": "all"}
+        config = SyncConfig.from_dict(data)
+        assert config.group_sync_mode == "all"
+
+    def test_group_sync_mode_from_dict_used(self):
+        """Test creating from dict with group_sync_mode='used'."""
+        data = {"group_sync_mode": "used"}
+        config = SyncConfig.from_dict(data)
+        assert config.group_sync_mode == "used"
+
+    def test_group_sync_mode_from_dict_none(self):
+        """Test creating from dict with group_sync_mode='none'."""
+        data = {"group_sync_mode": "none"}
+        config = SyncConfig.from_dict(data)
+        assert config.group_sync_mode == "none"
+
+    def test_group_sync_mode_invalid_value_raises(self):
+        """Test that invalid group_sync_mode value raises SyncConfigError."""
+        data = {"group_sync_mode": "invalid"}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncConfig.from_dict(data)
+        assert "group_sync_mode must be one of" in str(exc_info.value)
+
+    def test_group_sync_mode_case_sensitive_ALL_raises(self):
+        """Test that uppercase 'ALL' is rejected (case sensitive)."""
+        data = {"group_sync_mode": "ALL"}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncConfig.from_dict(data)
+        assert "must be one of" in str(exc_info.value)
+
+    def test_group_sync_mode_invalid_type_int_raises(self):
+        """Test that int group_sync_mode raises SyncConfigError."""
+        data = {"group_sync_mode": 123}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncConfig.from_dict(data)
+        assert "group_sync_mode must be a string, got int" in str(exc_info.value)
+
+    def test_group_sync_mode_invalid_type_bool_raises(self):
+        """Test that bool group_sync_mode raises SyncConfigError."""
+        data = {"group_sync_mode": True}
+        with pytest.raises(SyncConfigError) as exc_info:
+            SyncConfig.from_dict(data)
+        assert "group_sync_mode must be a string, got bool" in str(exc_info.value)
+
+    def test_to_dict_omits_group_sync_mode_when_default(self):
+        """Test that to_dict omits group_sync_mode when 'all' (default)."""
+        config = SyncConfig(group_sync_mode="all")
+        d = config.to_dict()
+        assert "group_sync_mode" not in d
+
+    def test_to_dict_includes_group_sync_mode_used(self):
+        """Test that to_dict includes group_sync_mode when 'used'."""
+        config = SyncConfig(group_sync_mode="used")
+        d = config.to_dict()
+        assert d["group_sync_mode"] == "used"
+
+    def test_to_dict_includes_group_sync_mode_none(self):
+        """Test that to_dict includes group_sync_mode when 'none'."""
+        config = SyncConfig(group_sync_mode="none")
+        d = config.to_dict()
+        assert d["group_sync_mode"] == "none"
+
+    def test_group_sync_mode_missing_uses_default(self):
+        """Test that missing group_sync_mode uses default 'all'."""
+        data = {"version": "1.0"}
+        config = SyncConfig.from_dict(data)
+        assert config.group_sync_mode == "all"
+
+
+# ==============================================================================
+# Full Config Integration Tests
+# ==============================================================================
+
+
+class TestFullConfigIntegration:
+    """Tests for complete config with all new fields."""
+
+    def test_full_config_from_dict(self):
+        """Test creating full config with all new fields from dict."""
+        data = {
+            "version": "1.0",
+            "group_sync_mode": "used",
+            "sync_label": {"enabled": True, "group_name": "Synced Contacts"},
+            "account1": {
+                "sync_groups": ["Work"],
+                "target_group": "From Account 2",
+                "preserve_source_groups": True,
+            },
+            "account2": {
+                "sync_groups": [],
+                "target_group": "Brain Bridge",
+                "preserve_source_groups": False,
+            },
+        }
+        config = SyncConfig.from_dict(data)
+
+        assert config.group_sync_mode == "used"
+        assert config.account1.target_group == "From Account 2"
+        assert config.account1.preserve_source_groups is True
+        assert config.account2.target_group == "Brain Bridge"
+        assert config.account2.preserve_source_groups is False
+
+    def test_full_config_save_and_load_roundtrip(self, tmp_path):
+        """Test save then load preserves all new fields."""
+
+        config_file = tmp_path / "sync_config.json"
+        original = SyncConfig(
+            group_sync_mode="none",
+            account1=AccountSyncConfig(
+                target_group="From Account 2",
+                preserve_source_groups=False,
+            ),
+            account2=AccountSyncConfig(
+                target_group="Brain Bridge",
+                preserve_source_groups=True,
+            ),
+        )
+
+        original.save_to_file(config_file)
+        loaded = SyncConfig.load_from_file(config_file)
+
+        assert loaded.group_sync_mode == original.group_sync_mode
+        assert loaded.account1.target_group == original.account1.target_group
+        assert (
+            loaded.account1.preserve_source_groups
+            == original.account1.preserve_source_groups
+        )
+        assert loaded.account2.target_group == original.account2.target_group
+        assert (
+            loaded.account2.preserve_source_groups
+            == original.account2.preserve_source_groups
+        )
+
+    def test_repr_includes_group_sync_mode(self):
+        """Test that repr includes group_sync_mode."""
+        config = SyncConfig(group_sync_mode="used")
+        repr_str = repr(config)
+        assert "group_sync_mode='used'" in repr_str
+
+
+class TestGroupSyncModeEnum:
+    """Tests for GroupSyncMode enum."""
+
+    def test_enum_values(self):
+        """Test that GroupSyncMode enum has expected values."""
+        from gcontact_sync.config.sync_config import GroupSyncMode
+
+        assert GroupSyncMode.ALL.value == "all"
+        assert GroupSyncMode.USED.value == "used"
+        assert GroupSyncMode.NONE.value == "none"
+
+    def test_valid_group_sync_modes_set(self):
+        """Test that VALID_GROUP_SYNC_MODES contains all enum values."""
+        from gcontact_sync.config.sync_config import (
+            VALID_GROUP_SYNC_MODES,
+            GroupSyncMode,
+        )
+
+        assert {"all", "used", "none"} == VALID_GROUP_SYNC_MODES
+        assert all(mode.value in VALID_GROUP_SYNC_MODES for mode in GroupSyncMode)

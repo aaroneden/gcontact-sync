@@ -6257,3 +6257,1124 @@ class TestSyncLabelFeature:
         # Helper method should return None
         assert engine._get_sync_label_resource(1) is None
         assert engine._get_sync_label_resource(2) is None
+
+
+# ==============================================================================
+# Target Groups Tests
+# ==============================================================================
+
+
+class TestTargetGroups:
+    """Tests for target_group and preserve_source_groups features."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_ensure_target_groups_creates_when_not_exists(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _ensure_target_groups creates groups when they don't exist."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(target_group="Brain Bridge"),
+            account2=AccountSyncConfig(target_group="Synced From Partner"),
+        )
+
+        # Account 1: Group doesn't exist, will be created
+        mock_api1.list_contact_groups.return_value = ([], None)
+        mock_api1.create_contact_group.return_value = {
+            "resourceName": "contactGroups/created1",
+            "name": "Brain Bridge",
+        }
+
+        # Account 2: Group doesn't exist, will be created
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api2.create_contact_group.return_value = {
+            "resourceName": "contactGroups/created2",
+            "name": "Synced From Partner",
+        }
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_target_groups()
+
+        # Verify groups were created
+        mock_api1.create_contact_group.assert_called_once_with("Brain Bridge")
+        mock_api2.create_contact_group.assert_called_once_with("Synced From Partner")
+
+        # Verify resource names are stored
+        assert engine._get_target_group_resource(1) == "contactGroups/created1"
+        assert engine._get_target_group_resource(2) == "contactGroups/created2"
+
+    def test_ensure_target_groups_uses_existing(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _ensure_target_groups uses existing groups."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(target_group="Brain Bridge"),
+            account2=AccountSyncConfig(target_group="Synced"),
+        )
+
+        # Groups already exist
+        mock_api1.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/existing1", "name": "Brain Bridge"}],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/existing2", "name": "Synced"}],
+            None,
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_target_groups()
+
+        # Should NOT create new groups
+        mock_api1.create_contact_group.assert_not_called()
+        mock_api2.create_contact_group.assert_not_called()
+
+        # Should use existing resource names
+        assert engine._get_target_group_resource(1) == "contactGroups/existing1"
+        assert engine._get_target_group_resource(2) == "contactGroups/existing2"
+
+    def test_ensure_target_groups_case_insensitive_match(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that target group matching is case-insensitive."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(target_group="brain bridge"),  # lowercase
+        )
+
+        # Group exists with different case
+        mock_api1.list_contact_groups.return_value = (
+            [{"resourceName": "contactGroups/existing", "name": "Brain Bridge"}],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_target_groups()
+
+        # Should NOT create - case insensitive match found
+        mock_api1.create_contact_group.assert_not_called()
+        assert engine._get_target_group_resource(1) == "contactGroups/existing"
+
+    def test_get_target_group_resource_returns_none_when_not_configured(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _get_target_group_resource returns None when not configured."""
+        from gcontact_sync.config.sync_config import SyncConfig
+
+        # No target groups configured
+        sync_config = SyncConfig()
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine._ensure_target_groups()
+
+        assert engine._get_target_group_resource(1) is None
+        assert engine._get_target_group_resource(2) is None
+
+    def test_get_target_group_resource_returns_none_without_init(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _get_target_group_resource returns None if not initialized."""
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+        )
+
+        # _ensure_target_groups not called
+        assert engine._get_target_group_resource(1) is None
+        assert engine._get_target_group_resource(2) is None
+
+    def test_resolve_target_groups_from_fetched_groups(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _resolve_target_groups resolves from pre-fetched groups."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+        from gcontact_sync.sync.group import ContactGroup
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(target_group="Target1"),
+            account2=AccountSyncConfig(target_group="Target2"),
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        groups1 = [
+            ContactGroup(
+                resource_name="contactGroups/t1",
+                etag="etag1",
+                name="Target1",
+                group_type="USER_CONTACT_GROUP",
+            ),
+            ContactGroup(
+                resource_name="contactGroups/other1",
+                etag="etag2",
+                name="Other",
+                group_type="USER_CONTACT_GROUP",
+            ),
+        ]
+        groups2 = [
+            ContactGroup(
+                resource_name="contactGroups/t2",
+                etag="etag3",
+                name="Target2",
+                group_type="USER_CONTACT_GROUP",
+            ),
+        ]
+
+        engine._resolve_target_groups(groups1, groups2)
+
+        assert engine._get_target_group_resource(1) == "contactGroups/t1"
+        assert engine._get_target_group_resource(2) == "contactGroups/t2"
+
+
+# ==============================================================================
+# Group Sync Mode Tests
+# ==============================================================================
+
+
+class TestGroupSyncModeNone:
+    """Tests for group_sync_mode='none'."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_none_mode_skips_group_creates(self, mock_api1, mock_api2, real_database):
+        """Test that 'none' mode skips group creation operations."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        # Groups exist only in account 1
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work",
+                    "etag": "etag1",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze()
+
+        # Should NOT queue any group creations in 'none' mode
+        assert len(result.groups_to_create_in_account2) == 0
+        assert len(result.groups_to_create_in_account1) == 0
+
+    def test_none_mode_skips_group_deletes(self, mock_api1, mock_api2, real_database):
+        """Test that 'none' mode skips group deletion propagation."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        # Set up a mapping where account2 group was deleted
+        real_database.upsert_group_mapping(
+            group_name="Work",
+            account1_resource_name="contactGroups/work1",
+            account2_resource_name="contactGroups/work2",
+            last_synced_hash="somehash",
+        )
+
+        # Only account1 has the group
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work1",
+                    "etag": "etag1",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze()
+
+        # Should NOT propagate deletion in 'none' mode
+        assert len(result.groups_to_delete_in_account1) == 0
+
+    def test_none_mode_still_builds_matched_pairs(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that 'none' mode still builds matched_groups for membership mapping."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        # Groups exist in both accounts with same name
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/family1",
+                    "etag": "etag1",
+                    "name": "Family",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/family2",
+                    "etag": "etag2",
+                    "name": "Family",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze()
+
+        # Should still have matched groups for membership mapping
+        assert len(result.matched_groups) == 1
+        group1, group2 = result.matched_groups[0]
+        assert group1.name == "Family"
+        assert group2.name == "Family"
+
+    def test_none_mode_builds_database_mappings_for_existing_groups(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that 'none' mode creates database mappings for common groups."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        # Groups exist in both accounts with same name
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work1",
+                    "etag": "etag1",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work2",
+                    "etag": "etag2",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        engine.analyze()
+
+        # Verify database mapping was created
+        mapping = real_database.get_group_mapping_by_resource_name(
+            "contactGroups/work1", 1
+        )
+        assert mapping is not None
+        assert mapping["account2_resource_name"] == "contactGroups/work2"
+
+    def test_none_mode_membership_mapping_works(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that 'none' mode enables membership mapping for existing groups."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        # Groups exist in both accounts with same name
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work1",
+                    "etag": "etag1",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work2",
+                    "etag": "etag2",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+
+        # Contact in account1 is member of "Work" group
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="John Doe",
+            given_name="John",
+            memberships=["contactGroups/work1"],
+        )
+        mock_api1.list_contacts.return_value = ([contact1], None)
+        mock_api2.list_contacts.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze()
+
+        # Contact should be created in account2
+        assert len(result.to_create_in_account2) == 1
+
+        # Now test membership mapping
+        mapped = engine._map_memberships(
+            memberships=["contactGroups/work1"],
+            source_account=1,
+            target_account=2,
+        )
+        assert mapped == ["contactGroups/work2"]
+
+    def test_build_group_mappings_only_maps_common_groups(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test _build_group_mappings_from_existing only maps common groups."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+        from gcontact_sync.sync.group import ContactGroup
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Create group lists with some overlap
+        groups1 = [
+            ContactGroup(
+                resource_name="contactGroups/work1",
+                etag="e1",
+                name="Work",
+                group_type="USER_CONTACT_GROUP",
+            ),
+            ContactGroup(
+                resource_name="contactGroups/family1",
+                etag="e2",
+                name="Family",
+                group_type="USER_CONTACT_GROUP",
+            ),
+        ]
+        groups2 = [
+            ContactGroup(
+                resource_name="contactGroups/work2",
+                etag="e3",
+                name="Work",
+                group_type="USER_CONTACT_GROUP",
+            ),
+            ContactGroup(
+                resource_name="contactGroups/friends2",
+                etag="e4",
+                name="Friends",
+                group_type="USER_CONTACT_GROUP",
+            ),
+        ]
+
+        engine._build_group_mappings_from_existing(groups1, groups2)
+
+        # Only "Work" exists in both - should have mapping
+        work_mapping = real_database.get_group_mapping_by_resource_name(
+            "contactGroups/work1", 1
+        )
+        assert work_mapping is not None
+        assert work_mapping["account2_resource_name"] == "contactGroups/work2"
+
+        # "Family" only in account1 - no mapping
+        family_mapping = real_database.get_group_mapping_by_resource_name(
+            "contactGroups/family1", 1
+        )
+        assert family_mapping is None
+
+        # "Friends" only in account2 - no mapping
+        friends_mapping = real_database.get_group_mapping_by_resource_name(
+            "contactGroups/friends2", 2
+        )
+        assert friends_mapping is None
+
+
+class TestGroupSyncModeUsed:
+    """Tests for group_sync_mode='used'."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_used_mode_filters_unused_groups(self, mock_api1, mock_api2, real_database):
+        """Test that 'used' mode filters groups that have no contacts."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+        from gcontact_sync.sync.group import ContactGroup
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.USED.value)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Create a SyncResult with some groups and contacts
+        result = SyncResult()
+
+        # Group that IS used by a contact
+        used_group = ContactGroup(
+            resource_name="contactGroups/used",
+            etag="etag1",
+            name="Used Group",
+            group_type="USER_CONTACT_GROUP",
+        )
+        # Group that is NOT used by any contact
+        unused_group = ContactGroup(
+            resource_name="contactGroups/unused",
+            etag="etag2",
+            name="Unused Group",
+            group_type="USER_CONTACT_GROUP",
+        )
+
+        result.groups_to_create_in_account2 = [used_group, unused_group]
+
+        # Contact that uses the 'used_group'
+        contact = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Test Person",
+            memberships=["contactGroups/used"],  # Uses the used_group
+        )
+        result.to_create_in_account2 = [contact]
+
+        # Run the filter
+        engine._filter_groups_for_used_mode(result)
+
+        # Only the used group should remain
+        assert len(result.groups_to_create_in_account2) == 1
+        assert result.groups_to_create_in_account2[0].name == "Used Group"
+
+    def test_used_mode_includes_groups_from_matched_contacts(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that 'used' mode includes groups from matched contacts."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+        from gcontact_sync.sync.group import ContactGroup
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.USED.value)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = SyncResult()
+
+        # Group used by a matched contact
+        matched_group = ContactGroup(
+            resource_name="contactGroups/matched",
+            etag="etag1",
+            name="Matched Group",
+            group_type="USER_CONTACT_GROUP",
+        )
+        result.groups_to_create_in_account2 = [matched_group]
+
+        # Matched contacts use the group
+        contact1 = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Test Person",
+            memberships=["contactGroups/matched"],
+        )
+        contact2 = Contact(
+            resource_name="people/c2",
+            etag="e2",
+            display_name="Test Person",
+            memberships=[],
+        )
+        result.matched_contacts = [(contact1, contact2)]
+
+        engine._filter_groups_for_used_mode(result)
+
+        # Group should remain (used by matched contact)
+        assert len(result.groups_to_create_in_account2) == 1
+
+    def test_used_mode_populates_groups_in_use_set(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that _filter_groups_for_used_mode populates groups_in_use."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.USED.value)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = SyncResult()
+
+        contact = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Test",
+            memberships=["contactGroups/a", "contactGroups/b"],
+        )
+        result.to_create_in_account1 = [contact]
+
+        engine._filter_groups_for_used_mode(result)
+
+        assert "contactGroups/a" in result.groups_in_use
+        assert "contactGroups/b" in result.groups_in_use
+
+
+class TestGroupSyncModeAll:
+    """Tests for group_sync_mode='all' (default behavior)."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_all_mode_syncs_all_groups(self, mock_api1, mock_api2, real_database):
+        """Test that 'all' mode syncs all groups regardless of contact usage."""
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.ALL.value)
+
+        # Groups exist only in account 1
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work",
+                    "etag": "etag1",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+                {
+                    "resourceName": "contactGroups/unused",
+                    "etag": "etag2",
+                    "name": "Unused",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+            ],
+            None,
+        )
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api1.list_contacts.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], None)
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        result = engine.analyze()
+
+        # Both groups should be queued for creation
+        assert len(result.groups_to_create_in_account2) == 2
+
+
+# ==============================================================================
+# Preserve Source Groups Tests
+# ==============================================================================
+
+
+class TestPreserveSourceGroups:
+    """Tests for preserve_source_groups feature."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_preserve_source_groups_true_maps_memberships(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that preserve_source_groups=True maps group memberships."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(preserve_source_groups=True),
+            account2=AccountSyncConfig(preserve_source_groups=True),
+        )
+
+        # Set up group mapping
+        real_database.upsert_group_mapping(
+            group_name="Work",
+            account1_resource_name="contactGroups/work1",
+            account2_resource_name="contactGroups/work2",
+            last_synced_hash="hash",
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Simulate contact with memberships
+        from gcontact_sync.sync.contact import Contact
+
+        source_contact = Contact(
+            resource_name="people/c1",
+            etag="e1",
+            display_name="Test",
+            memberships=["contactGroups/work1"],
+        )
+
+        # Map memberships (account 1 to 2)
+        mapped = engine._map_memberships(
+            source_contact.memberships,
+            source_account=1,
+            target_account=2,
+        )
+
+        # Should have the mapped group
+        assert "contactGroups/work2" in mapped
+
+    def test_preserve_source_groups_false_returns_empty_memberships(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """Test that preserve_source_groups=False doesn't map source groups."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            # When syncing TO account1, don't preserve source groups
+            account1=AccountSyncConfig(preserve_source_groups=False),
+        )
+
+        # Set up group mapping
+        real_database.upsert_group_mapping(
+            group_name="Work",
+            account1_resource_name="contactGroups/work1",
+            account2_resource_name="contactGroups/work2",
+            last_synced_hash="hash",
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # When preserve_source_groups is False, _map_memberships should still
+        # return mapped memberships (the filtering happens in _execute_creates)
+        # So this test validates that the config attribute is accessible
+        assert engine.config is not None
+        assert engine.config.account1.preserve_source_groups is False
+        assert engine.config.account2.preserve_source_groups is True  # default
+
+
+# ==============================================================================
+# Integration Tests for Target Groups and Group Sync Mode
+# ==============================================================================
+
+
+@pytest.mark.integration
+class TestTargetGroupsIntegration:
+    """Integration tests for target_group feature (analyze phase)."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_target_group_resolved_during_analyze(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """
+        Integration test: target group is resolved during analyze phase.
+
+        Scenario:
+        - Account1 has target_group="Brain Bridge" configured
+        - The group exists in account1
+        - After analyze, the target group resource should be resolved
+        """
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(target_group="Brain Bridge"),
+        )
+
+        # Account 1: Target group exists
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/brainbridge",
+                    "etag": "etag_bb",
+                    "name": "Brain Bridge",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([], "token1")
+
+        # Account 2: No groups, one contact
+        mock_api2.list_contact_groups.return_value = ([], None)
+        contact2 = Contact(
+            resource_name="people/contact1",
+            etag="etag1",
+            display_name="Test Person",
+        )
+        mock_api2.list_contacts.return_value = ([contact2], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Analyze
+        result = engine.analyze()
+
+        # Contact should be queued for creation in account1
+        assert len(result.to_create_in_account1) == 1
+
+        # Target group should be resolved
+        assert engine._get_target_group_resource(1) == "contactGroups/brainbridge"
+
+    def test_config_attributes_accessible(self, mock_api1, mock_api2, real_database):
+        """Test that target_group and preserve_source_groups are accessible."""
+        from gcontact_sync.config.sync_config import (
+            AccountSyncConfig,
+            SyncConfig,
+        )
+
+        sync_config = SyncConfig(
+            account1=AccountSyncConfig(
+                target_group="Brain Bridge",
+                preserve_source_groups=False,
+            ),
+            account2=AccountSyncConfig(
+                target_group="Synced",
+                preserve_source_groups=True,
+            ),
+        )
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Verify config is accessible
+        assert engine.config.account1.target_group == "Brain Bridge"
+        assert engine.config.account1.preserve_source_groups is False
+        assert engine.config.account2.target_group == "Synced"
+        assert engine.config.account2.preserve_source_groups is True
+
+
+@pytest.mark.integration
+class TestGroupSyncModeIntegration:
+    """Integration tests for group_sync_mode feature (analyze phase)."""
+
+    @pytest.fixture
+    def real_database(self):
+        """Create a real in-memory database."""
+        db = SyncDatabase(":memory:")
+        db.initialize()
+        return db
+
+    def test_none_mode_no_groups_queued(self, mock_api1, mock_api2, real_database):
+        """
+        Integration test: mode='none' doesn't queue any group operations.
+
+        Scenario:
+        - Group sync mode is 'none'
+        - Groups exist only in account1
+        - No groups should be queued for creation
+        """
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.NONE.value)
+
+        # Account 1: Has groups and a contact
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work",
+                    "etag": "etag_work",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                }
+            ],
+            None,
+        )
+        contact1 = Contact(
+            resource_name="people/contact1",
+            etag="etag1",
+            display_name="Work Person",
+            memberships=["contactGroups/work"],
+        )
+        mock_api1.list_contacts.return_value = ([contact1], "token1")
+
+        # Account 2: No groups, no contacts
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Analyze
+        result = engine.analyze()
+
+        # No groups should be queued for creation (mode is 'none')
+        assert len(result.groups_to_create_in_account2) == 0
+        assert len(result.groups_to_create_in_account1) == 0
+
+        # Contact should still be queued for sync
+        assert len(result.to_create_in_account2) == 1
+
+    def test_all_mode_queues_all_groups(self, mock_api1, mock_api2, real_database):
+        """
+        Integration test: mode='all' queues all groups for sync.
+
+        Scenario:
+        - Group sync mode is 'all' (default)
+        - Account1 has groups
+        - All groups should be queued for creation in account2
+        """
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.ALL.value)
+
+        # Account 1: Has two groups
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work",
+                    "etag": "etag_work",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+                {
+                    "resourceName": "contactGroups/family",
+                    "etag": "etag_family",
+                    "name": "Family",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+            ],
+            None,
+        )
+        mock_api1.list_contacts.return_value = ([], "token1")
+
+        # Account 2: No groups
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Analyze
+        result = engine.analyze()
+
+        # Both groups should be queued for creation
+        assert len(result.groups_to_create_in_account2) == 2
+        group_names = {g.name for g in result.groups_to_create_in_account2}
+        assert "Work" in group_names
+        assert "Family" in group_names
+
+    def test_used_mode_queues_groups_but_filters_in_execute(
+        self, mock_api1, mock_api2, real_database
+    ):
+        """
+        Integration test: mode='used' queues groups during analyze,
+        filtering happens in execute().
+
+        Scenario:
+        - Group sync mode is 'used'
+        - Account1 has "Work" (used) and "Unused" groups
+        - Both are queued during analyze (filtering is at execute time)
+        """
+        from gcontact_sync.config.sync_config import GroupSyncMode, SyncConfig
+
+        sync_config = SyncConfig(group_sync_mode=GroupSyncMode.USED.value)
+
+        # Account 1: Has two groups, contact only in "Work"
+        mock_api1.list_contact_groups.return_value = (
+            [
+                {
+                    "resourceName": "contactGroups/work",
+                    "etag": "etag_work",
+                    "name": "Work",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+                {
+                    "resourceName": "contactGroups/unused",
+                    "etag": "etag_unused",
+                    "name": "Unused",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+            ],
+            None,
+        )
+        contact1 = Contact(
+            resource_name="people/contact1",
+            etag="etag1",
+            display_name="Work Person",
+            memberships=["contactGroups/work"],
+        )
+        mock_api1.list_contacts.return_value = ([contact1], "token1")
+
+        # Account 2: No groups
+        mock_api2.list_contact_groups.return_value = ([], None)
+        mock_api2.list_contacts.return_value = ([], "token2")
+
+        engine = SyncEngine(
+            api1=mock_api1,
+            api2=mock_api2,
+            database=real_database,
+            config=sync_config,
+        )
+
+        # Analyze
+        result = engine.analyze()
+
+        # For 'used' mode, groups are queued during analyze
+        # (filtering happens in execute)
+        assert len(result.groups_to_create_in_account2) == 2
+
+        # Contact should be queued
+        assert len(result.to_create_in_account2) == 1

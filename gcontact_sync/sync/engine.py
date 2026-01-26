@@ -167,6 +167,11 @@ class SyncResult:
         default_factory=list
     )
 
+    # Groups in use (for "used" group_sync_mode): set of group resource names
+    # Populated during contact analysis - contains resource names from BOTH accounts
+    # for groups that have contacts being synced
+    groups_in_use: set[str] = field(default_factory=set)
+
     # Statistics
     stats: SyncStats = field(default_factory=SyncStats)
 
@@ -406,6 +411,10 @@ class SyncEngine:
         # Sync configuration for tag-based filtering
         self.config = config
 
+        # Group resource names (set by _ensure_* or _resolve_* methods)
+        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+        self._target_group_resources: dict[int, str | None] = {1: None, 2: None}
+
     def _get_account_label(self, account: int) -> str:
         """
         Get a human-readable label for an account.
@@ -432,8 +441,8 @@ class SyncEngine:
         This method should be called at the start of execute() before any
         contact operations.
         """
-        # Initialize the resource name storage
-        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+        # Reset the resource name storage
+        self._sync_label_group_resources = {1: None, 2: None}
 
         # Check if sync labeling is enabled
         if not self.config or not self.config.sync_label.enabled:
@@ -514,8 +523,8 @@ class SyncEngine:
             groups1: Groups already fetched from account 1
             groups2: Groups already fetched from account 2
         """
-        # Initialize the resource name storage
-        self._sync_label_group_resources: dict[int, str | None] = {1: None, 2: None}
+        # Reset the resource name storage
+        self._sync_label_group_resources = {1: None, 2: None}
 
         # Check if sync labeling is enabled
         if not self.config or not self.config.sync_label.enabled:
@@ -556,6 +565,290 @@ class SyncEngine:
             return True
 
         return sync_label_resource not in contact.memberships
+
+    # =========================================================================
+    # Target Group Methods
+    # =========================================================================
+
+    def _ensure_target_groups(self) -> None:
+        """
+        Ensure target groups exist in both accounts.
+
+        Similar to _ensure_sync_label_groups but for target_group config.
+        Creates groups if they don't exist, stores resource names for use
+        during contact creation/update.
+        """
+        self._target_group_resources = {1: None, 2: None}
+
+        if not self.config:
+            return
+
+        for account, api, account_config in [
+            (1, self.api1, self.config.account1),
+            (2, self.api2, self.config.account2),
+        ]:
+            target_group_name = account_config.target_group
+            if not target_group_name:
+                continue
+
+            account_label = self._get_account_label(account)
+            logger.info(
+                f"Ensuring target group '{target_group_name}' exists in {account_label}"
+            )
+
+            try:
+                # Fetch existing groups (returns list of dicts)
+                groups_data, _ = api.list_contact_groups()
+
+                # Convert to ContactGroup objects
+                groups = [ContactGroup.from_api_response(g) for g in groups_data]
+
+                # Search for existing group with matching name (case-insensitive)
+                existing_group = None
+                for group in groups:
+                    if group.name.lower() == target_group_name.lower():
+                        existing_group = group
+                        break
+
+                if existing_group:
+                    # Group already exists
+                    self._target_group_resources[account] = existing_group.resource_name
+                    logger.debug(
+                        f"Target group '{target_group_name}' already exists in "
+                        f"{account_label}: {existing_group.resource_name}"
+                    )
+                else:
+                    # Create the group
+                    created = api.create_contact_group(target_group_name)
+                    resource_name = created.get("resourceName", "")
+                    self._target_group_resources[account] = resource_name
+                    logger.info(
+                        f"Created target group '{target_group_name}' in "
+                        f"{account_label}: {resource_name}"
+                    )
+
+            except PeopleAPIError as e:
+                logger.warning(f"Failed to ensure target group in {account_label}: {e}")
+                # Don't fail the entire sync if we can't create the target group
+                self._target_group_resources[account] = None
+
+    def _get_target_group_resource(self, account: int) -> str | None:
+        """
+        Get the target group resource name for an account.
+
+        Args:
+            account: Account number (1 or 2)
+
+        Returns:
+            The resource name of the target group, or None if not configured
+        """
+        if not hasattr(self, "_target_group_resources"):
+            return None
+        return self._target_group_resources.get(account)
+
+    def _resolve_target_groups(
+        self, groups1: list[ContactGroup], groups2: list[ContactGroup]
+    ) -> None:
+        """
+        Resolve target group resource names from already-fetched groups.
+
+        Similar to _resolve_sync_label_groups - used during analyze() to detect
+        contacts that need the target group added. Does NOT create groups.
+
+        Args:
+            groups1: Groups already fetched from account 1
+            groups2: Groups already fetched from account 2
+        """
+        self._target_group_resources = {1: None, 2: None}
+
+        if not self.config:
+            return
+
+        # Account 1 target group
+        if self.config.account1.target_group:
+            target_name = self.config.account1.target_group.lower()
+            for group in groups1:
+                if group.name.lower() == target_name:
+                    self._target_group_resources[1] = group.resource_name
+                    break
+
+        # Account 2 target group
+        if self.config.account2.target_group:
+            target_name = self.config.account2.target_group.lower()
+            for group in groups2:
+                if group.name.lower() == target_name:
+                    self._target_group_resources[2] = group.resource_name
+                    break
+
+    def _filter_groups_for_used_mode(self, result: SyncResult) -> None:
+        """
+        Filter group operations to only include groups that have contacts being synced.
+
+        For "used" group_sync_mode, we only want to sync groups that are actually
+        used by contacts being created/updated. This method:
+        1. Collects all group resource names from contacts being synced
+        2. Filters group create/update/delete lists to only include those groups
+
+        Args:
+            result: SyncResult to filter (modified in-place)
+        """
+        logger.info("Filtering groups for 'used' mode")
+
+        # Collect all groups in use from contacts being synced
+        groups_in_use: set[str] = set()
+
+        # From contacts being created in account 1 (source is account 2)
+        for contact in result.to_create_in_account1:
+            groups_in_use.update(contact.memberships)
+
+        # From contacts being created in account 2 (source is account 1)
+        for contact in result.to_create_in_account2:
+            groups_in_use.update(contact.memberships)
+
+        # From contacts being updated in account 1
+        for _resource_name, contact in result.to_update_in_account1:
+            groups_in_use.update(contact.memberships)
+
+        # From contacts being updated in account 2
+        for _resource_name, contact in result.to_update_in_account2:
+            groups_in_use.update(contact.memberships)
+
+        # Also add groups from matched contacts (to preserve existing memberships)
+        for contact1, contact2 in result.matched_contacts:
+            groups_in_use.update(contact1.memberships)
+            groups_in_use.update(contact2.memberships)
+
+        # Store for reference
+        result.groups_in_use = groups_in_use
+
+        logger.info(f"Groups in use: {len(groups_in_use)}")
+
+        # Filter groups_to_create_in_account1 (source is account 2)
+        # Keep only if the source group is in use
+        original_count = len(result.groups_to_create_in_account1)
+        result.groups_to_create_in_account1 = [
+            group
+            for group in result.groups_to_create_in_account1
+            if group.resource_name in groups_in_use
+        ]
+        filtered = original_count - len(result.groups_to_create_in_account1)
+        if filtered:
+            logger.info(f"Filtered {filtered} groups from create_in_account1")
+
+        # Filter groups_to_create_in_account2 (source is account 1)
+        original_count = len(result.groups_to_create_in_account2)
+        result.groups_to_create_in_account2 = [
+            group
+            for group in result.groups_to_create_in_account2
+            if group.resource_name in groups_in_use
+        ]
+        filtered = original_count - len(result.groups_to_create_in_account2)
+        if filtered:
+            logger.info(f"Filtered {filtered} groups from create_in_account2")
+
+        # Filter groups_to_update_in_account1
+        original_count = len(result.groups_to_update_in_account1)
+        result.groups_to_update_in_account1 = [
+            (resource_name, group)
+            for resource_name, group in result.groups_to_update_in_account1
+            if resource_name in groups_in_use or group.resource_name in groups_in_use
+        ]
+        filtered = original_count - len(result.groups_to_update_in_account1)
+        if filtered:
+            logger.info(f"Filtered {filtered} groups from update_in_account1")
+
+        # Filter groups_to_update_in_account2
+        original_count = len(result.groups_to_update_in_account2)
+        result.groups_to_update_in_account2 = [
+            (resource_name, group)
+            for resource_name, group in result.groups_to_update_in_account2
+            if resource_name in groups_in_use or group.resource_name in groups_in_use
+        ]
+        filtered = original_count - len(result.groups_to_update_in_account2)
+        if filtered:
+            logger.info(f"Filtered {filtered} groups from update_in_account2")
+
+        # Filter groups_to_delete_in_account1
+        original_count = len(result.groups_to_delete_in_account1)
+        result.groups_to_delete_in_account1 = [
+            resource_name
+            for resource_name in result.groups_to_delete_in_account1
+            if resource_name in groups_in_use
+        ]
+        filtered = original_count - len(result.groups_to_delete_in_account1)
+        if filtered:
+            logger.info(f"Filtered {filtered} groups from delete_in_account1")
+
+        # Filter groups_to_delete_in_account2
+        original_count = len(result.groups_to_delete_in_account2)
+        result.groups_to_delete_in_account2 = [
+            resource_name
+            for resource_name in result.groups_to_delete_in_account2
+            if resource_name in groups_in_use
+        ]
+        filtered = original_count - len(result.groups_to_delete_in_account2)
+        if filtered:
+            logger.info(f"Filtered {filtered} groups from delete_in_account2")
+
+    def _build_group_mappings_from_existing(
+        self,
+        groups1: list[ContactGroup],
+        groups2: list[ContactGroup],
+    ) -> None:
+        """
+        Build group mappings from groups that already exist in both accounts.
+
+        Used in "none" mode to enable membership mapping without creating groups.
+        Only maps groups that have the same name in both accounts.
+
+        This ensures that when group_sync_mode is "none", contacts can still have
+        their group memberships mapped correctly if the groups already exist in
+        both accounts (manually created or from previous syncs).
+
+        Args:
+            groups1: Groups from account 1
+            groups2: Groups from account 2
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
+        # Build lookup by normalized name (matching key)
+        groups1_by_key = {g.matching_key(): g for g in groups1 if g.is_syncable()}
+        groups2_by_key = {g.matching_key(): g for g in groups2 if g.is_syncable()}
+
+        # Find groups that exist in both accounts
+        common_keys = set(groups1_by_key.keys()) & set(groups2_by_key.keys())
+
+        if mlog:
+            mlog.info(
+                f"Building mappings for {len(common_keys)} groups "
+                f"existing in both accounts"
+            )
+
+        mappings_created = 0
+        for key in common_keys:
+            g1 = groups1_by_key[key]
+            g2 = groups2_by_key[key]
+
+            # Upsert mapping for existing pair
+            self.database.upsert_group_mapping(
+                group_name=key,
+                account1_resource_name=g1.resource_name,
+                account2_resource_name=g2.resource_name,
+                account1_etag=g1.etag,
+                account2_etag=g2.etag,
+                last_synced_hash=g1.content_hash(),
+            )
+            mappings_created += 1
+
+            if mlog:
+                mlog.debug(
+                    f"  Created mapping: {g1.name} "
+                    f"({g1.resource_name} <-> {g2.resource_name})"
+                )
+
+        logger.info(
+            f"Built {mappings_created} group mappings from existing groups (mode=none)"
+        )
 
     def sync(
         self,
@@ -697,6 +990,10 @@ class SyncEngine:
         # Find existing sync label groups (if configured) for use in detecting
         # contacts that need the sync label added during analysis
         self._resolve_sync_label_groups(groups1, groups2)
+
+        # === RESOLVE TARGET GROUPS ===
+        # Find existing target groups for use in adding memberships during sync
+        self._resolve_target_groups(groups1, groups2)
 
         # === RESOLVE GROUP FILTERS ===
         # Convert configured group names to resource names for filtering
@@ -1319,10 +1616,16 @@ class SyncEngine:
         logger.info("Analyzing contact groups for sync")
         mlog = getattr(self, "_matching_logger", None)
 
+        # Get group sync mode from config (default to "all")
+        group_sync_mode = "all"
+        if self.config:
+            group_sync_mode = self.config.group_sync_mode
+
         if mlog:
             mlog.info("")
             mlog.info("=" * 60)
             mlog.info("GROUP SYNC ANALYSIS")
+            mlog.info(f"Group sync mode: {group_sync_mode}")
             mlog.info("=" * 60)
 
         # Fetch groups from both accounts
@@ -1394,28 +1697,45 @@ class SyncEngine:
                 # Track as matched pair
                 result.matched_groups.append((group1, group2))
 
-                # Check if updates are needed
-                self._analyze_group_pair_for_updates(
-                    group_name, group1, group2, last_synced_hash, result
-                )
+                # Check if updates are needed (skip if mode is "none")
+                if group_sync_mode != "none":
+                    self._analyze_group_pair_for_updates(
+                        group_name, group1, group2, last_synced_hash, result
+                    )
 
             elif group1 and not group2:
                 # Group 2 was deleted - propagate deletion to account 1
-                if mlog:
-                    mlog.info(
-                        f"GROUP MAPPING ORPHANED (account2 deleted): {group1.name}"
-                    )
-                result.groups_to_delete_in_account1.append(group1.resource_name)
-                self.database.delete_group_mapping(group_name)
+                # Skip deletion propagation if mode is "none"
+                if group_sync_mode != "none":
+                    if mlog:
+                        mlog.info(
+                            f"GROUP MAPPING ORPHANED (account2 deleted): {group1.name}"
+                        )
+                    result.groups_to_delete_in_account1.append(group1.resource_name)
+                    self.database.delete_group_mapping(group_name)
+                else:
+                    if mlog:
+                        mlog.info(
+                            f"GROUP MAPPING ORPHANED (account2 deleted): {group1.name} "
+                            f"[SKIPPED - mode=none]"
+                        )
 
             elif group2 and not group1:
                 # Group 1 was deleted - propagate deletion to account 2
-                if mlog:
-                    mlog.info(
-                        f"GROUP MAPPING ORPHANED (account1 deleted): {group2.name}"
-                    )
-                result.groups_to_delete_in_account2.append(group2.resource_name)
-                self.database.delete_group_mapping(group_name)
+                # Skip deletion propagation if mode is "none"
+                if group_sync_mode != "none":
+                    if mlog:
+                        mlog.info(
+                            f"GROUP MAPPING ORPHANED (account1 deleted): {group2.name}"
+                        )
+                    result.groups_to_delete_in_account2.append(group2.resource_name)
+                    self.database.delete_group_mapping(group_name)
+                else:
+                    if mlog:
+                        mlog.info(
+                            f"GROUP MAPPING ORPHANED (account1 deleted): {group2.name} "
+                            f"[SKIPPED - mode=none]"
+                        )
 
         # === PHASE 1: Key-based matching for new groups ===
         if mlog:
@@ -1448,21 +1768,41 @@ class SyncEngine:
                     mlog.info(f"  account2: {group2.resource_name}")
 
                 # Check if updates are needed (first sync of this pair)
-                self._analyze_group_pair_for_updates(key, group1, group2, None, result)
+                # Skip updates if mode is "none"
+                if group_sync_mode != "none":
+                    self._analyze_group_pair_for_updates(
+                        key, group1, group2, None, result
+                    )
 
             elif group1 and not group2:
                 # Group only in account 1 - create in account 2
-                result.groups_to_create_in_account2.append(group1)
-                if mlog:
-                    mlog.info(f"NEW GROUP (account1 only): {group1.name}")
-                    mlog.info(f"  -> Will create in {self.account2_email}")
+                # Skip creation if mode is "none"
+                if group_sync_mode != "none":
+                    result.groups_to_create_in_account2.append(group1)
+                    if mlog:
+                        mlog.info(f"NEW GROUP (account1 only): {group1.name}")
+                        mlog.info(f"  -> Will create in {self.account2_email}")
+                else:
+                    if mlog:
+                        mlog.info(
+                            f"NEW GROUP (account1 only): {group1.name} "
+                            f"[SKIPPED - mode=none]"
+                        )
 
             elif group2 and not group1:
                 # Group only in account 2 - create in account 1
-                result.groups_to_create_in_account1.append(group2)
-                if mlog:
-                    mlog.info(f"NEW GROUP (account2 only): {group2.name}")
-                    mlog.info(f"  -> Will create in {self.account1_email}")
+                # Skip creation if mode is "none"
+                if group_sync_mode != "none":
+                    result.groups_to_create_in_account1.append(group2)
+                    if mlog:
+                        mlog.info(f"NEW GROUP (account2 only): {group2.name}")
+                        mlog.info(f"  -> Will create in {self.account1_email}")
+                else:
+                    if mlog:
+                        mlog.info(
+                            f"NEW GROUP (account2 only): {group2.name} "
+                            f"[SKIPPED - mode=none]"
+                        )
 
         # Log group sync summary
         if mlog:
@@ -1496,6 +1836,13 @@ class SyncEngine:
             )
             mlog.info("-" * 40)
             mlog.info("")
+
+        # === BUILD MAPPINGS FOR "NONE" MODE ===
+        # In "none" mode, we don't create/update/delete groups, but we still need
+        # database mappings for membership mapping to work. Build mappings for all
+        # groups that exist in both accounts with the same name.
+        if group_sync_mode == "none":
+            self._build_group_mappings_from_existing(groups1, groups2)
 
         logger.info(
             f"Group analysis complete: "
@@ -1925,6 +2272,16 @@ class SyncEngine:
             # === ENSURE SYNC LABEL GROUP EXISTS ===
             # Create the sync label group in both accounts if configured
             self._ensure_sync_label_groups()
+
+            # === ENSURE TARGET GROUPS EXIST ===
+            # Create target groups in accounts if configured
+            self._ensure_target_groups()
+
+            # === FILTER GROUPS FOR "USED" MODE ===
+            # If group_sync_mode is "used", filter group operations to only
+            # include groups that have contacts being synced
+            if self.config and self.config.group_sync_mode == "used":
+                self._filter_groups_for_used_mode(result)
 
             # === EXECUTE GROUP OPERATIONS FIRST ===
             # Groups must be synced before contacts so membership mappings exist
@@ -2827,11 +3184,26 @@ class SyncEngine:
             # Get sync label group resource name for target account (if enabled)
             sync_label_resource = self._get_sync_label_resource(account)
 
+            # Get target group resource name for target account (if configured)
+            target_group_resource = self._get_target_group_resource(account)
+
+            # Get preserve_source_groups setting for target account
+            preserve_source_groups = True
+            if self.config:
+                account_config = (
+                    self.config.account1 if account == 1 else self.config.account2
+                )
+                preserve_source_groups = account_config.preserve_source_groups
+
             contacts_with_mapped_memberships = []
             for contact in contacts:
-                mapped_memberships = self._map_memberships(
-                    contact.memberships, source_account, account
-                )
+                # Only map source memberships if preserve_source_groups is True
+                if preserve_source_groups:
+                    mapped_memberships = self._map_memberships(
+                        contact.memberships, source_account, account
+                    )
+                else:
+                    mapped_memberships = []
 
                 # Add sync label group membership if enabled
                 if (
@@ -2840,6 +3212,15 @@ class SyncEngine:
                 ):
                     mapped_memberships = list(mapped_memberships) + [
                         sync_label_resource
+                    ]
+
+                # Add target group membership if configured
+                if (
+                    target_group_resource
+                    and target_group_resource not in mapped_memberships
+                ):
+                    mapped_memberships = list(mapped_memberships) + [
+                        target_group_resource
                     ]
 
                 # Create new contact with mapped memberships
@@ -2947,16 +3328,30 @@ class SyncEngine:
         # Get sync label group resource name for target account (if enabled)
         sync_label_resource = self._get_sync_label_resource(account)
 
+        # Get target group resource name for target account (if configured)
+        target_group_resource = self._get_target_group_resource(account)
+
+        # Get preserve_source_groups setting for target account
+        preserve_source_groups = True
+        if self.config:
+            account_config = (
+                self.config.account1 if account == 1 else self.config.account2
+            )
+            preserve_source_groups = account_config.preserve_source_groups
+
         try:
             # Get current etags for the contacts being updated
             updates_with_etags = []
             for resource_name, source_contact in updates:
                 try:
                     current = api.get_contact(resource_name)
-                    # Map memberships from source account to target account
-                    mapped_memberships = self._map_memberships(
-                        source_contact.memberships, source_account, account
-                    )
+                    # Only map source memberships if preserve_source_groups is True
+                    if preserve_source_groups:
+                        mapped_memberships = self._map_memberships(
+                            source_contact.memberships, source_account, account
+                        )
+                    else:
+                        mapped_memberships = []
 
                     # Add sync label group membership if enabled
                     if (
@@ -2965,6 +3360,15 @@ class SyncEngine:
                     ):
                         mapped_memberships = list(mapped_memberships) + [
                             sync_label_resource
+                        ]
+
+                    # Add target group membership if configured
+                    if (
+                        target_group_resource
+                        and target_group_resource not in mapped_memberships
+                    ):
+                        mapped_memberships = list(mapped_memberships) + [
+                            target_group_resource
                         ]
 
                     # Create a contact with source data but target's resource name
