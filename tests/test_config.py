@@ -14,7 +14,6 @@ import yaml
 
 from gcontact_sync.config.generator import generate_default_config, save_config_file
 from gcontact_sync.config.loader import (
-    DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_FILE,
     ConfigError,
     ConfigLoader,
@@ -27,6 +26,7 @@ from gcontact_sync.config.sync_config import (
     SyncConfigError,
     load_config,
 )
+from gcontact_sync.utils import DEFAULT_CONFIG_DIR
 
 
 class TestConfigLoaderInitialization:

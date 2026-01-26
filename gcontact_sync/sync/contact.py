@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+from gcontact_sync.utils import normalize_string
 
 
 @dataclass
@@ -278,14 +279,16 @@ class Contact:
         """
         # Normalize and lowercase the display name, sorting words alphabetically
         # This handles name order variations like "Last, First" vs "First Last"
-        name = self._normalize_string(self.display_name, sort_words=True)
+        name = normalize_string(
+            self.display_name, sort_words=True, allow_email_chars=True
+        )
 
         # Get all normalized emails, sorted for consistency
         normalized_emails = sorted(
             [
-                self._normalize_string(email)
+                normalize_string(email, allow_email_chars=True)
                 for email in self.emails
-                if email and self._normalize_string(email)
+                if email and normalize_string(email, allow_email_chars=True)
             ]
         )
 
@@ -330,12 +333,12 @@ class Contact:
             - Name + each individual phone combination
         """
         keys: list[str] = []
-        name = self._normalize_string(self.display_name)
+        name = normalize_string(self.display_name, allow_email_chars=True)
 
         # Add individual email-based keys
         for email in self.emails:
             if email:
-                normalized_email = self._normalize_string(email)
+                normalized_email = normalize_string(email, allow_email_chars=True)
                 if normalized_email:
                     keys.append(f"email:{normalized_email}")
                     keys.append(f"{name}|email:{normalized_email}")
@@ -387,47 +390,6 @@ class Contact:
 
         # Generate SHA-256 hash
         return hashlib.sha256(content_string.encode("utf-8")).hexdigest()
-
-    def _normalize_string(self, value: str, sort_words: bool = False) -> str:
-        """
-        Normalize a string for matching key generation.
-
-        Args:
-            value: String to normalize
-            sort_words: If True, sort words alphabetically before joining.
-                       This handles name order variations like "Last, First"
-                       vs "First Last".
-
-        Returns:
-            Normalized lowercase string with special characters removed
-        """
-        if not value:
-            return ""
-
-        # Normalize unicode (decompose accents, etc.)
-        normalized = unicodedata.normalize("NFKD", value)
-
-        # Remove combining characters (accents)
-        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-
-        # Convert to lowercase
-        normalized = normalized.lower()
-
-        # Remove non-alphanumeric characters except @ and spaces
-        # Replace multiple spaces with single space
-        normalized = re.sub(r"[^a-z0-9@\s]", "", normalized)
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-
-        # Sort words alphabetically if requested (for name normalization)
-        # This handles "Last, First" vs "First Last" variations
-        if sort_words:
-            words = normalized.split()
-            normalized = "".join(sorted(words))
-        else:
-            # Remove spaces for key generation
-            normalized = normalized.replace(" ", "")
-
-        return normalized
 
     def _normalize_phones(self) -> list[str]:
         """

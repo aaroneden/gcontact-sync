@@ -10,10 +10,10 @@ Provides a normalized ContactGroup representation with methods for:
 from __future__ import annotations
 
 import hashlib
-import re
-import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
+
+from gcontact_sync.utils import normalize_string
 
 # Group types as defined by Google People API
 GROUP_TYPE_UNSPECIFIED = "GROUP_TYPE_UNSPECIFIED"
@@ -163,7 +163,7 @@ class ContactGroup:
             Group names are unique within an account, so the normalized name
             serves as a reliable matching key across accounts.
         """
-        return self._normalize_string(self.name)
+        return normalize_string(self.name, strip_punctuation=False, remove_spaces=False)
 
     def content_hash(self) -> str:
         """
@@ -191,33 +191,6 @@ class ContactGroup:
 
         # Generate SHA-256 hash
         return hashlib.sha256(content_string.encode("utf-8")).hexdigest()
-
-    def _normalize_string(self, value: str) -> str:
-        """
-        Normalize a string for matching key generation.
-
-        Args:
-            value: String to normalize
-
-        Returns:
-            Normalized lowercase string with special characters handled
-        """
-        if not value:
-            return ""
-
-        # Normalize unicode (decompose accents, etc.)
-        normalized = unicodedata.normalize("NFKD", value)
-
-        # Remove combining characters (accents)
-        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-
-        # Convert to lowercase
-        normalized = normalized.lower()
-
-        # Replace multiple spaces with single space and strip
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-
-        return normalized
 
     def is_user_group(self) -> bool:
         """

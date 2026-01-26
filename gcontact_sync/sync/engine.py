@@ -116,6 +116,36 @@ class SyncStats:
     filter_groups_account1: int = 0
     filter_groups_account2: int = 0
 
+    @property
+    def total_groups_created(self) -> int:
+        """Total groups created across both accounts."""
+        return self.groups_created_in_account1 + self.groups_created_in_account2
+
+    @property
+    def total_groups_updated(self) -> int:
+        """Total groups updated across both accounts."""
+        return self.groups_updated_in_account1 + self.groups_updated_in_account2
+
+    @property
+    def total_groups_deleted(self) -> int:
+        """Total groups deleted across both accounts."""
+        return self.groups_deleted_in_account1 + self.groups_deleted_in_account2
+
+    @property
+    def total_contacts_created(self) -> int:
+        """Total contacts created across both accounts."""
+        return self.created_in_account1 + self.created_in_account2
+
+    @property
+    def total_contacts_updated(self) -> int:
+        """Total contacts updated across both accounts."""
+        return self.updated_in_account1 + self.updated_in_account2
+
+    @property
+    def total_contacts_deleted(self) -> int:
+        """Total contacts deleted across both accounts."""
+        return self.deleted_in_account1 + self.deleted_in_account2
+
 
 @dataclass
 class SyncResult:
@@ -1069,8 +1099,6 @@ class SyncEngine:
             f"{len(index2)} unique keys in {self.account2_email}"
         )
 
-        mlog = getattr(self, "_matching_logger", None)
-
         # Build lookup by resource_name for fast access
         contacts1_by_resource: dict[str, Contact] = {
             c.resource_name: c for c in contacts1
@@ -1083,8 +1111,80 @@ class SyncEngine:
         matched_from_2: set[str] = set()  # resource_names matched from account 2
 
         # === PHASE 0: Use existing database mappings (resource-name based) ===
-        # This ensures already-paired contacts stay paired even if their
-        # matching keys change (e.g., name or email updates)
+        self._phase_0_database_matching(
+            contacts1_by_resource,
+            contacts2_by_resource,
+            matched_from_1,
+            matched_from_2,
+            result,
+        )
+
+        # === PHASE 1: Fast key-based matching for NEW contacts ===
+        self._phase_1_key_based_matching(
+            contacts1,
+            contacts2,
+            index1,
+            index2,
+            matched_from_1,
+            matched_from_2,
+            result,
+        )
+
+        # === PHASE 2: Multi-tier matching for unmatched contacts ===
+        self._phase_2_fuzzy_matching(
+            index1,
+            index2,
+            matched_from_1,
+            matched_from_2,
+            result,
+        )
+
+        # === PHASE 3: Handle remaining unmatched contacts ===
+        self._phase_3_unmatched_handling(
+            index1,
+            index2,
+            matched_from_1,
+            matched_from_2,
+            result,
+        )
+
+        # Handle deleted contacts
+        self._analyze_deletions(contacts1, contacts2, result)
+
+        summary = result.summary(self.account1_email, self.account2_email)
+        logger.info(f"Analysis complete: {summary}")
+
+        # Store sync tokens for next incremental sync
+        self._pending_sync_tokens = {
+            ACCOUNT_1: sync_token1,
+            ACCOUNT_2: sync_token2,
+        }
+
+        return result
+
+    def _phase_0_database_matching(
+        self,
+        contacts1_by_resource: dict[str, Contact],
+        contacts2_by_resource: dict[str, Contact],
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        result: SyncResult,
+    ) -> None:
+        """
+        Phase 0: Use existing database mappings for contact matching.
+
+        This ensures already-paired contacts stay paired even if their
+        matching keys change (e.g., name or email updates).
+
+        Args:
+            contacts1_by_resource: Account 1 contacts indexed by resource_name
+            contacts2_by_resource: Account 2 contacts indexed by resource_name
+            matched_from_1: Set to update with matched resource_names from account 1
+            matched_from_2: Set to update with matched resource_names from account 2
+            result: SyncResult to update with sync operations
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
         if mlog:
             mlog.info("=" * 60)
             mlog.info("PHASE 0: DATABASE MAPPING LOOKUP")
@@ -1113,8 +1213,8 @@ class SyncEngine:
 
                 if mlog:
                     mlog.info(f"EXISTING PAIR: {contact1.display_name}")
-                    mlog.info(f"  account1: {res1}")
-                    mlog.info(f"  account2: {res2}")
+                    mlog.info(f"  {self.account1_email}: {res1}")
+                    mlog.info(f"  {self.account2_email}: {res2}")
                     if current_key != old_matching_key:
                         mlog.info(f"  matching_key changed: {old_matching_key}")
                         mlog.info(f"    -> {current_key}")
@@ -1133,17 +1233,45 @@ class SyncEngine:
                 # Contact 2 was deleted - will be handled in deletion analysis
                 if mlog:
                     mlog.info(
-                        f"MAPPING ORPHANED (account2 deleted): {contact1.display_name}"
+                        f"MAPPING ORPHANED ({self.account2_email} deleted): "
+                        f"{contact1.display_name}"
                     )
 
             elif contact2 and not contact1:
                 # Contact 1 was deleted - will be handled in deletion analysis
                 if mlog:
                     mlog.info(
-                        f"MAPPING ORPHANED (account1 deleted): {contact2.display_name}"
+                        f"MAPPING ORPHANED ({self.account1_email} deleted): "
+                        f"{contact2.display_name}"
                     )
 
-        # === PHASE 1: Fast key-based matching for NEW contacts ===
+    def _phase_1_key_based_matching(
+        self,
+        contacts1: list[Contact],
+        contacts2: list[Contact],
+        index1: dict[str, Contact],
+        index2: dict[str, Contact],
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        result: SyncResult,
+    ) -> None:
+        """
+        Phase 1: Fast key-based matching for new contacts.
+
+        Step 1a: Single-key matching (fast path for primary key matches)
+        Step 1b: Multi-key matching (for contacts sharing ANY identifier)
+
+        Args:
+            contacts1: All contacts from account 1
+            contacts2: All contacts from account 2
+            index1: Account 1 contacts indexed by matching key
+            index2: Account 2 contacts indexed by matching key
+            matched_from_1: Set to update with matched resource_names from account 1
+            matched_from_2: Set to update with matched resource_names from account 2
+            result: SyncResult to update with sync operations
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
         if mlog:
             mlog.info("")
             mlog.info("=" * 60)
@@ -1170,8 +1298,6 @@ class SyncEngine:
                 self._analyze_contact_pair(key, contact1, contact2, result)
 
         # Step 1b: Multi-key matching (for contacts sharing ANY identifier)
-        # This catches cases where contacts share a non-primary identifier
-        # e.g., two contacts share an email that isn't alphabetically first
         if mlog:
             mlog.info("")
             mlog.info("PHASE 1b: MULTI-KEY MATCHING")
@@ -1223,7 +1349,26 @@ class SyncEngine:
                         self._analyze_contact_pair(primary_key, c1, c2, result)
                         break  # Only match one pair per contact
 
-        # === PHASE 2: Multi-tier matching for unmatched contacts ===
+    def _phase_2_fuzzy_matching(
+        self,
+        index1: dict[str, Contact],
+        index2: dict[str, Contact],
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        result: SyncResult,
+    ) -> None:
+        """
+        Phase 2: Multi-tier fuzzy/LLM matching for unmatched contacts.
+
+        Args:
+            index1: Account 1 contacts indexed by matching key
+            index2: Account 2 contacts indexed by matching key
+            matched_from_1: Set of matched resource_names from account 1
+            matched_from_2: Set of matched resource_names from account 2
+            result: SyncResult to update with sync operations
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
         unmatched1 = [
             c for c in index1.values() if c.resource_name not in matched_from_1
         ]
@@ -1235,8 +1380,8 @@ class SyncEngine:
             mlog.info("")
             mlog.info("=" * 60)
             mlog.info("PHASE 2: MULTI-TIER MATCHING")
-            mlog.info(f"  Unmatched in account1: {len(unmatched1)}")
-            mlog.info(f"  Unmatched in account2: {len(unmatched2)}")
+            mlog.info(f"  Unmatched in {self.account1_email}: {len(unmatched1)}")
+            mlog.info(f"  Unmatched in {self.account2_email}: {len(unmatched2)}")
             mlog.info("=" * 60)
 
         if unmatched1 and unmatched2:
@@ -1247,8 +1392,26 @@ class SyncEngine:
             if mlog:
                 mlog.info(f"  Multi-tier matches found: {newly_matched}")
 
-        # === PHASE 3: Handle remaining unmatched contacts ===
-        # Check for potential duplicates before creating
+    def _phase_3_unmatched_handling(
+        self,
+        index1: dict[str, Contact],
+        index2: dict[str, Contact],
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        result: SyncResult,
+    ) -> None:
+        """
+        Phase 3: Handle remaining unmatched contacts and detect duplicates.
+
+        Args:
+            index1: Account 1 contacts indexed by matching key
+            index2: Account 2 contacts indexed by matching key
+            matched_from_1: Set of matched resource_names from account 1
+            matched_from_2: Set of matched resource_names from account 2
+            result: SyncResult to update with sync operations
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
         if mlog:
             mlog.info("")
             mlog.info("=" * 60)
@@ -1288,10 +1451,22 @@ class SyncEngine:
             mlog.info("=" * 60)
             mlog.info("MATCHING SUMMARY")
             mlog.info(f"  Matched pairs: {len(result.matched_contacts)}")
-            mlog.info(f"  To create in account1: {len(result.to_create_in_account1)}")
-            mlog.info(f"  To create in account2: {len(result.to_create_in_account2)}")
-            mlog.info(f"  To update in account1: {len(result.to_update_in_account1)}")
-            mlog.info(f"  To update in account2: {len(result.to_update_in_account2)}")
+            mlog.info(
+                f"  To create in {self.account1_email}: "
+                f"{len(result.to_create_in_account1)}"
+            )
+            mlog.info(
+                f"  To create in {self.account2_email}: "
+                f"{len(result.to_create_in_account2)}"
+            )
+            mlog.info(
+                f"  To update in {self.account1_email}: "
+                f"{len(result.to_update_in_account1)}"
+            )
+            mlog.info(
+                f"  To update in {self.account2_email}: "
+                f"{len(result.to_update_in_account2)}"
+            )
             mlog.info(f"  Conflicts resolved: {len(result.conflicts)}")
             if result.potential_duplicates:
                 mlog.info(f"  Potential duplicates: {len(result.potential_duplicates)}")
@@ -1299,20 +1474,6 @@ class SyncEngine:
                 mlog.info(f"    Merged: {result.stats.duplicates_merged}")
                 mlog.info(f"    Reported: {result.stats.duplicates_reported}")
             mlog.info("=" * 60)
-
-        # Handle deleted contacts
-        self._analyze_deletions(contacts1, contacts2, result)
-
-        summary = result.summary(self.account1_email, self.account2_email)
-        logger.info(f"Analysis complete: {summary}")
-
-        # Store sync tokens for next incremental sync
-        self._pending_sync_tokens = {
-            ACCOUNT_1: sync_token1,
-            ACCOUNT_2: sync_token2,
-        }
-
-        return result
 
     def _multi_tier_match(
         self,
@@ -1660,6 +1821,66 @@ class SyncEngine:
         matched_from_2: set[str] = set()  # resource_names matched from account 2
 
         # === PHASE 0: Use existing database group mappings ===
+        self._group_phase_0_database_matching(
+            groups1_by_resource,
+            groups2_by_resource,
+            matched_from_1,
+            matched_from_2,
+            group_sync_mode,
+            result,
+        )
+
+        # === PHASE 1: Key-based matching for new groups ===
+        self._group_phase_1_key_based_matching(
+            index1,
+            index2,
+            matched_from_1,
+            matched_from_2,
+            group_sync_mode,
+            result,
+        )
+
+        # === BUILD MAPPINGS FOR "NONE" MODE ===
+        # In "none" mode, we don't create/update/delete groups, but we still need
+        # database mappings for membership mapping to work. Build mappings for all
+        # groups that exist in both accounts with the same name.
+        if group_sync_mode == "none":
+            self._build_group_mappings_from_existing(groups1, groups2)
+
+        logger.info(
+            f"Group analysis complete: "
+            f"matched={len(result.matched_groups)}, "
+            f"to_create_in_1={len(result.groups_to_create_in_account1)}, "
+            f"to_create_in_2={len(result.groups_to_create_in_account2)}"
+        )
+
+        # Return fetched groups for use in filter resolution
+        return groups1, groups2
+
+    def _group_phase_0_database_matching(
+        self,
+        groups1_by_resource: dict[str, ContactGroup],
+        groups2_by_resource: dict[str, ContactGroup],
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        group_sync_mode: str,
+        result: SyncResult,
+    ) -> None:
+        """
+        Phase 0: Use existing database group mappings for matching.
+
+        Ensures already-paired groups stay paired even if renamed.
+
+        Args:
+            groups1_by_resource: Account 1 groups indexed by resource_name
+            groups2_by_resource: Account 2 groups indexed by resource_name
+            matched_from_1: Set to update with matched resource_names from account 1
+            matched_from_2: Set to update with matched resource_names from account 2
+            group_sync_mode: Group sync mode from config ("all" or "none")
+            result: SyncResult to update with sync operations
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
         if mlog:
             mlog.info("")
             mlog.info("-" * 40)
@@ -1691,8 +1912,8 @@ class SyncEngine:
 
                 if mlog:
                     mlog.info(f"EXISTING GROUP PAIR: {group1.name}")
-                    mlog.info(f"  account1: {res1}")
-                    mlog.info(f"  account2: {res2}")
+                    mlog.info(f"  {self.account1_email}: {res1}")
+                    mlog.info(f"  {self.account2_email}: {res2}")
 
                 # Track as matched pair
                 result.matched_groups.append((group1, group2))
@@ -1709,15 +1930,16 @@ class SyncEngine:
                 if group_sync_mode != "none":
                     if mlog:
                         mlog.info(
-                            f"GROUP MAPPING ORPHANED (account2 deleted): {group1.name}"
+                            f"GROUP MAPPING ORPHANED ({self.account2_email} deleted): "
+                            f"{group1.name}"
                         )
                     result.groups_to_delete_in_account1.append(group1.resource_name)
                     self.database.delete_group_mapping(group_name)
                 else:
                     if mlog:
                         mlog.info(
-                            f"GROUP MAPPING ORPHANED (account2 deleted): {group1.name} "
-                            f"[SKIPPED - mode=none]"
+                            f"GROUP MAPPING ORPHANED ({self.account2_email} deleted): "
+                            f"{group1.name} [SKIPPED - mode=none]"
                         )
 
             elif group2 and not group1:
@@ -1726,18 +1948,42 @@ class SyncEngine:
                 if group_sync_mode != "none":
                     if mlog:
                         mlog.info(
-                            f"GROUP MAPPING ORPHANED (account1 deleted): {group2.name}"
+                            f"GROUP MAPPING ORPHANED ({self.account1_email} deleted): "
+                            f"{group2.name}"
                         )
                     result.groups_to_delete_in_account2.append(group2.resource_name)
                     self.database.delete_group_mapping(group_name)
                 else:
                     if mlog:
                         mlog.info(
-                            f"GROUP MAPPING ORPHANED (account1 deleted): {group2.name} "
-                            f"[SKIPPED - mode=none]"
+                            f"GROUP MAPPING ORPHANED ({self.account1_email} deleted): "
+                            f"{group2.name} [SKIPPED - mode=none]"
                         )
 
-        # === PHASE 1: Key-based matching for new groups ===
+    def _group_phase_1_key_based_matching(
+        self,
+        index1: dict[str, ContactGroup],
+        index2: dict[str, ContactGroup],
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        group_sync_mode: str,
+        result: SyncResult,
+    ) -> None:
+        """
+        Phase 1: Key-based matching for new groups.
+
+        Matches groups by normalized name that weren't matched via database mappings.
+
+        Args:
+            index1: Account 1 groups indexed by matching key
+            index2: Account 2 groups indexed by matching key
+            matched_from_1: Set to update with matched resource_names from account 1
+            matched_from_2: Set to update with matched resource_names from account 2
+            group_sync_mode: Group sync mode from config ("all" or "none")
+            result: SyncResult to update with sync operations
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
         if mlog:
             mlog.info("")
             mlog.info("-" * 40)
@@ -1764,8 +2010,8 @@ class SyncEngine:
 
                 if mlog:
                     mlog.info(f"MATCHED GROUP (by key): {group1.name}")
-                    mlog.info(f"  account1: {group1.resource_name}")
-                    mlog.info(f"  account2: {group2.resource_name}")
+                    mlog.info(f"  {self.account1_email}: {group1.resource_name}")
+                    mlog.info(f"  {self.account2_email}: {group2.resource_name}")
 
                 # Check if updates are needed (first sync of this pair)
                 # Skip updates if mode is "none"
@@ -1780,12 +2026,14 @@ class SyncEngine:
                 if group_sync_mode != "none":
                     result.groups_to_create_in_account2.append(group1)
                     if mlog:
-                        mlog.info(f"NEW GROUP (account1 only): {group1.name}")
+                        mlog.info(
+                            f"NEW GROUP ({self.account1_email} only): {group1.name}"
+                        )
                         mlog.info(f"  -> Will create in {self.account2_email}")
                 else:
                     if mlog:
                         mlog.info(
-                            f"NEW GROUP (account1 only): {group1.name} "
+                            f"NEW GROUP ({self.account1_email} only): {group1.name} "
                             f"[SKIPPED - mode=none]"
                         )
 
@@ -1795,12 +2043,14 @@ class SyncEngine:
                 if group_sync_mode != "none":
                     result.groups_to_create_in_account1.append(group2)
                     if mlog:
-                        mlog.info(f"NEW GROUP (account2 only): {group2.name}")
+                        mlog.info(
+                            f"NEW GROUP ({self.account2_email} only): {group2.name}"
+                        )
                         mlog.info(f"  -> Will create in {self.account1_email}")
                 else:
                     if mlog:
                         mlog.info(
-                            f"NEW GROUP (account2 only): {group2.name} "
+                            f"NEW GROUP ({self.account2_email} only): {group2.name} "
                             f"[SKIPPED - mode=none]"
                         )
 
@@ -1811,48 +2061,31 @@ class SyncEngine:
             mlog.info("GROUP MATCHING SUMMARY")
             mlog.info(f"  Matched group pairs: {len(result.matched_groups)}")
             mlog.info(
-                f"  Groups to create in account1: "
+                f"  Groups to create in {self.account1_email}: "
                 f"{len(result.groups_to_create_in_account1)}"
             )
             mlog.info(
-                f"  Groups to create in account2: "
+                f"  Groups to create in {self.account2_email}: "
                 f"{len(result.groups_to_create_in_account2)}"
             )
             mlog.info(
-                f"  Groups to update in account1: "
+                f"  Groups to update in {self.account1_email}: "
                 f"{len(result.groups_to_update_in_account1)}"
             )
             mlog.info(
-                f"  Groups to update in account2: "
+                f"  Groups to update in {self.account2_email}: "
                 f"{len(result.groups_to_update_in_account2)}"
             )
             mlog.info(
-                f"  Groups to delete in account1: "
+                f"  Groups to delete in {self.account1_email}: "
                 f"{len(result.groups_to_delete_in_account1)}"
             )
             mlog.info(
-                f"  Groups to delete in account2: "
+                f"  Groups to delete in {self.account2_email}: "
                 f"{len(result.groups_to_delete_in_account2)}"
             )
             mlog.info("-" * 40)
             mlog.info("")
-
-        # === BUILD MAPPINGS FOR "NONE" MODE ===
-        # In "none" mode, we don't create/update/delete groups, but we still need
-        # database mappings for membership mapping to work. Build mappings for all
-        # groups that exist in both accounts with the same name.
-        if group_sync_mode == "none":
-            self._build_group_mappings_from_existing(groups1, groups2)
-
-        logger.info(
-            f"Group analysis complete: "
-            f"matched={len(result.matched_groups)}, "
-            f"to_create_in_1={len(result.groups_to_create_in_account1)}, "
-            f"to_create_in_2={len(result.groups_to_create_in_account2)}"
-        )
-
-        # Return fetched groups for use in filter resolution
-        return groups1, groups2
 
     def _fetch_groups(self, api: PeopleAPI, account_id: str) -> list[ContactGroup]:
         """
@@ -2384,42 +2617,27 @@ class SyncEngine:
             # Update sync tokens
             self._update_sync_tokens()
 
-            # Calculate totals for logging
-            groups_created = (
-                result.stats.groups_created_in_account1
-                + result.stats.groups_created_in_account2
-            )
-            groups_updated = (
-                result.stats.groups_updated_in_account1
-                + result.stats.groups_updated_in_account2
-            )
-            groups_deleted = (
-                result.stats.groups_deleted_in_account1
-                + result.stats.groups_deleted_in_account2
-            )
-            contacts_created = (
-                result.stats.created_in_account1 + result.stats.created_in_account2
-            )
-            contacts_updated = (
-                result.stats.updated_in_account1 + result.stats.updated_in_account2
-            )
-            contacts_deleted = (
-                result.stats.deleted_in_account1 + result.stats.deleted_in_account2
-            )
-
             # Log summary including groups if any group operations occurred
-            if groups_created or groups_updated or groups_deleted:
+            stats = result.stats
+            if (
+                stats.total_groups_created
+                or stats.total_groups_updated
+                or stats.total_groups_deleted
+            ):
                 logger.info(
                     f"Sync complete: "
-                    f"groups (created={groups_created}, updated={groups_updated}, "
-                    f"deleted={groups_deleted}), "
-                    f"contacts (created={contacts_created}, "
-                    f"updated={contacts_updated}, deleted={contacts_deleted})"
+                    f"groups (created={stats.total_groups_created}, "
+                    f"updated={stats.total_groups_updated}, "
+                    f"deleted={stats.total_groups_deleted}), "
+                    f"contacts (created={stats.total_contacts_created}, "
+                    f"updated={stats.total_contacts_updated}, "
+                    f"deleted={stats.total_contacts_deleted})"
                 )
             else:
                 logger.info(
-                    f"Sync complete: created {contacts_created}, "
-                    f"updated {contacts_updated}, deleted {contacts_deleted}"
+                    f"Sync complete: created {stats.total_contacts_created}, "
+                    f"updated {stats.total_contacts_updated}, "
+                    f"deleted {stats.total_contacts_deleted}"
                 )
 
         except Exception as e:
