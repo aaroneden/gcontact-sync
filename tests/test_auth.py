@@ -15,11 +15,11 @@ import pytest
 from gcontact_sync.auth.google_auth import (
     ACCOUNT_1,
     ACCOUNT_2,
-    DEFAULT_CONFIG_DIR,
     SCOPES,
     AuthenticationError,
     GoogleAuth,
 )
+from gcontact_sync.utils import DEFAULT_CONFIG_DIR
 
 
 class TestGoogleAuthInitialization:

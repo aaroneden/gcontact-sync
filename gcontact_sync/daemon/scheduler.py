@@ -264,13 +264,13 @@ class DaemonScheduler:
             signal.signal(signal.SIGINT, self._original_sigint_handler)
         logger.debug("Signal handlers restored")
 
-    def _signal_handler(self, signum: int, frame: object) -> None:
+    def _signal_handler(self, signum: int, _frame: object) -> None:
         """
         Handle shutdown signals.
 
         Args:
             signum: Signal number received.
-            frame: Current stack frame (unused).
+            _frame: Current stack frame (unused).
         """
         signal_name = signal.Signals(signum).name
         logger.info(f"Received {signal_name}, initiating graceful shutdown...")

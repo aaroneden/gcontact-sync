@@ -9,14 +9,12 @@ Provides YAML-based configuration file loading with support for:
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-# Default configuration directory
-DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
+from gcontact_sync.utils import resolve_config_dir
 
 # Default configuration file name
 DEFAULT_CONFIG_FILE = "config.yaml"
@@ -64,16 +62,7 @@ class ConfigLoader:
                        Defaults to ~/.gcontact-sync/ or $GCONTACT_SYNC_CONFIG_DIR
             config_file: Name of the configuration file (default: config.yaml)
         """
-        # Use environment variable if set, otherwise default
-        if config_dir is not None:
-            self.config_dir = Path(config_dir)
-        else:
-            env_dir = os.environ.get("GCONTACT_SYNC_CONFIG_DIR")
-            if env_dir:
-                self.config_dir = Path(env_dir)
-            else:
-                self.config_dir = DEFAULT_CONFIG_DIR
-
+        self.config_dir = resolve_config_dir(config_dir)
         self.config_file = config_file
 
     def _get_config_path(self) -> Path:

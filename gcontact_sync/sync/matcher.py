@@ -14,12 +14,13 @@ This allows robust matching even when contacts have:
 
 import logging
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from rapidfuzz import fuzz
+
+from gcontact_sync.utils import normalize_string
 
 if TYPE_CHECKING:
     from gcontact_sync.storage.db import SyncDatabase
@@ -599,25 +600,7 @@ class ContactMatcher:
 
     def _normalize_name(self, name: str) -> str:
         """Normalize a name for comparison."""
-        if not name:
-            return ""
-
-        # Normalize unicode
-        normalized = unicodedata.normalize("NFKD", name)
-
-        # Remove combining characters (accents)
-        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-
-        # Lowercase
-        normalized = normalized.lower()
-
-        # Remove special characters but keep spaces
-        normalized = re.sub(r"[^a-z0-9\s]", "", normalized)
-
-        # Normalize whitespace
-        normalized = " ".join(normalized.split())
-
-        return normalized
+        return normalize_string(name, remove_spaces=False, strip_punctuation=True)
 
     def _normalize_organization(self, org: str) -> str:
         """

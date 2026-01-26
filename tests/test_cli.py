@@ -83,14 +83,14 @@ class TestCliGroup:
         assert result.exit_code == 0
         assert "gcontact-sync" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_cli_verbose_flag(self, mock_setup_logging):
         """Test that --verbose flag is passed to context."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--verbose", "--help"])
         assert result.exit_code == 0
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_cli_config_dir_option(self, mock_setup_logging):
         """Test that --config-dir option is handled."""
         runner = CliRunner()
@@ -110,8 +110,8 @@ class TestAuthCommand:
         assert result.exit_code == 0
         assert "Authenticate a Google account" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_already_authenticated(self, mock_setup_logging, mock_auth_class):
         """Test auth when already authenticated without --force."""
         mock_auth = MagicMock()
@@ -125,8 +125,8 @@ class TestAuthCommand:
             assert "already authenticated" in result.output
             mock_auth.authenticate.assert_not_called()
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_force_reauth(self, mock_setup_logging, mock_auth_class):
         """Test auth with --force flag forces re-authentication."""
         mock_auth = MagicMock()
@@ -143,8 +143,8 @@ class TestAuthCommand:
             )
             assert "Successfully authenticated" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_new_authentication(self, mock_setup_logging, mock_auth_class):
         """Test auth for new authentication."""
         mock_auth = MagicMock()
@@ -159,8 +159,8 @@ class TestAuthCommand:
             mock_auth.authenticate.assert_called_once()
             assert "Successfully authenticated" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_no_email_available(self, mock_setup_logging, mock_auth_class):
         """Test auth when email cannot be retrieved."""
         mock_auth = MagicMock()
@@ -174,8 +174,8 @@ class TestAuthCommand:
             assert result.exit_code == 0
             assert "Successfully authenticated account1" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_credentials_not_found(self, mock_setup_logging, mock_auth_class):
         """Test auth when credentials.json is not found."""
         mock_auth_class.side_effect = FileNotFoundError("credentials.json not found")
@@ -187,8 +187,8 @@ class TestAuthCommand:
             assert "Error:" in result.output
             assert "credentials.json" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_authentication_error(self, mock_setup_logging, mock_auth_class):
         """Test auth when authentication fails."""
         from gcontact_sync.auth.google_auth import AuthenticationError
@@ -204,8 +204,8 @@ class TestAuthCommand:
             assert result.exit_code == 1
             assert "Authentication failed" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_auth_unexpected_error(self, mock_setup_logging, mock_auth_class):
         """Test auth when unexpected error occurs."""
         mock_auth = MagicMock()
@@ -230,8 +230,8 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert "Show authentication and sync status" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_status_both_authenticated(self, mock_setup_logging, mock_auth_class):
         """Test status when both accounts are authenticated."""
         mock_auth = MagicMock()
@@ -253,8 +253,8 @@ class TestStatusCommand:
             assert "Authenticated" in result.output
             assert "Ready to sync" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_status_not_authenticated(self, mock_setup_logging, mock_auth_class):
         """Test status when accounts are not authenticated."""
         mock_auth = MagicMock()
@@ -276,8 +276,8 @@ class TestStatusCommand:
             assert "Not authenticated" in result.output
             assert "Authentication required" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_status_no_credentials(self, mock_setup_logging, mock_auth_class):
         """Test status when credentials.json doesn't exist."""
         mock_auth = MagicMock()
@@ -299,8 +299,8 @@ class TestStatusCommand:
             assert "Not found" in result.output
             assert "Setup required" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_status_with_sync_database(self, mock_setup_logging, mock_auth_class):
         """Test status with existing sync database."""
         mock_auth = MagicMock()
@@ -328,8 +328,8 @@ class TestStatusCommand:
             assert "Sync Status" in result.output
             assert "Contact mappings:" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_status_error_handling(self, mock_setup_logging, mock_auth_class):
         """Test status handles errors gracefully."""
         mock_auth_class.side_effect = RuntimeError("Config error")
@@ -354,8 +354,8 @@ class TestSyncCommand:
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_account1_not_authenticated(
         self,
         mock_setup_logging,
@@ -380,8 +380,8 @@ class TestSyncCommand:
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_account2_not_authenticated(
         self,
         mock_setup_logging,
@@ -403,12 +403,12 @@ class TestSyncCommand:
             assert result.exit_code == 1
             assert "account2 is not authenticated" in result.output
 
-    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_dry_run(
         self,
         mock_setup_logging,
@@ -454,12 +454,12 @@ class TestSyncCommand:
             assert "backup_enabled" in call_kwargs
             assert "backup_dir" in call_kwargs
 
-    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_full_sync(
         self,
         mock_setup_logging,
@@ -504,12 +504,12 @@ class TestSyncCommand:
             assert "backup_enabled" in call_kwargs
             assert "backup_dir" in call_kwargs
 
-    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_with_errors(
         self,
         mock_setup_logging,
@@ -558,8 +558,8 @@ class TestSyncCommand:
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_exception(
         self,
         mock_setup_logging,
@@ -584,12 +584,12 @@ class TestSyncCommand:
             assert result.exit_code == 1
             assert "Sync failed" in result.output
 
-    @patch("gcontact_sync.cli.ConfigLoader")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_strategy_account1(
         self,
         mock_setup_logging,
@@ -644,7 +644,7 @@ class TestResetCommand:
         assert result.exit_code == 0
         assert "Reset sync state" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_reset_no_database(self, mock_setup_logging):
         """Test reset when no database exists."""
         runner = CliRunner()
@@ -655,7 +655,7 @@ class TestResetCommand:
             assert result.exit_code == 0
             assert "No sync database found" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_reset_with_confirmation(self, mock_setup_logging):
         """Test reset with confirmation prompt."""
         runner = CliRunner()
@@ -672,7 +672,7 @@ class TestResetCommand:
             assert result.exit_code == 0
             assert "Sync state has been reset" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_reset_cancelled(self, mock_setup_logging):
         """Test reset when user cancels."""
         runner = CliRunner()
@@ -687,7 +687,7 @@ class TestResetCommand:
             result = runner.invoke(cli, ["reset"], input="n\n")
             assert result.exit_code == 1  # Aborted
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_reset_with_yes_flag(self, mock_setup_logging):
         """Test reset with --yes flag skips confirmation."""
         runner = CliRunner()
@@ -714,8 +714,8 @@ class TestClearAuthCommand:
         assert result.exit_code == 0
         assert "Clear stored authentication credentials" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_clear_auth_specific_account(self, mock_setup_logging, mock_auth_class):
         """Test clear-auth for specific account."""
         mock_auth = MagicMock()
@@ -731,8 +731,8 @@ class TestClearAuthCommand:
             mock_auth.clear_credentials.assert_called_once_with("account1")
             assert "Cleared credentials for account1" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_clear_auth_both_accounts(self, mock_setup_logging, mock_auth_class):
         """Test clear-auth for both accounts."""
         mock_auth = MagicMock()
@@ -746,8 +746,8 @@ class TestClearAuthCommand:
             assert mock_auth.clear_credentials.call_count == 2
             assert "Credentials cleared" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_clear_auth_no_credentials_found(self, mock_setup_logging, mock_auth_class):
         """Test clear-auth when no credentials exist."""
         mock_auth = MagicMock()
@@ -762,8 +762,8 @@ class TestClearAuthCommand:
             assert result.exit_code == 0
             assert "No credentials found for account1" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_clear_auth_with_confirmation(self, mock_setup_logging, mock_auth_class):
         """Test clear-auth with confirmation prompt."""
         mock_auth = MagicMock()
@@ -778,8 +778,8 @@ class TestClearAuthCommand:
             assert result.exit_code == 0
             assert "Cleared credentials" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_clear_auth_error(self, mock_setup_logging, mock_auth_class):
         """Test clear-auth handles errors gracefully."""
         mock_auth = MagicMock()
@@ -824,7 +824,7 @@ class TestRestoreCommand:
         assert "Restore contacts from a backup file" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_list_no_backups(self, mock_setup_logging, mock_backup_manager):
         """Test restore --list when no backups exist."""
         mock_bm = MagicMock()
@@ -838,7 +838,7 @@ class TestRestoreCommand:
             assert "No backups found" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_list_with_backups(self, mock_setup_logging, mock_backup_manager):
         """Test restore --list displays available backups."""
         from datetime import datetime
@@ -873,7 +873,7 @@ class TestRestoreCommand:
             assert "Total: 2 backup(s)" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_no_backup_file_shows_list(
         self, mock_setup_logging, mock_backup_manager
     ):
@@ -889,7 +889,7 @@ class TestRestoreCommand:
             assert "No backups found" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_dry_run(self, mock_setup_logging, mock_backup_manager):
         """Test restore with --dry-run flag."""
         from gcontact_sync.sync.contact import Contact
@@ -943,9 +943,9 @@ class TestRestoreCommand:
             assert "Dry run complete" in result.output
 
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_with_confirmation(
         self, mock_setup_logging, mock_backup_manager, mock_google_auth, mock_people_api
     ):
@@ -998,9 +998,9 @@ class TestRestoreCommand:
             assert "Restore complete!" in result.output
 
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_with_yes_flag(
         self, mock_setup_logging, mock_backup_manager, mock_google_auth, mock_people_api
     ):
@@ -1052,7 +1052,7 @@ class TestRestoreCommand:
             assert "Restore complete!" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_cancelled(self, mock_setup_logging, mock_backup_manager):
         """Test restore when user cancels."""
         mock_bm = MagicMock()
@@ -1076,7 +1076,7 @@ class TestRestoreCommand:
             assert result.exit_code == 1  # Aborted
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_invalid_backup_file(self, mock_setup_logging, mock_backup_manager):
         """Test restore with invalid backup file."""
         mock_bm = MagicMock()
@@ -1096,7 +1096,7 @@ class TestRestoreCommand:
             assert "Failed to load backup file" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_specific_account(self, mock_setup_logging, mock_backup_manager):
         """Test restore to specific account."""
         mock_bm = MagicMock()
@@ -1129,7 +1129,7 @@ class TestRestoreCommand:
             assert "Dry run complete" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_error_handling(self, mock_setup_logging, mock_backup_manager):
         """Test restore handles errors gracefully."""
         mock_backup_manager.side_effect = RuntimeError("Backup manager error")
@@ -1146,7 +1146,7 @@ class TestRestoreCommand:
             assert "Error:" in result.output
 
     @patch("gcontact_sync.backup.manager.BackupManager")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_restore_custom_backup_dir_from_config(
         self, mock_setup_logging, mock_backup_manager
     ):
@@ -1175,7 +1175,7 @@ class TestConfigIntegration:
         assert result.exit_code == 0
         assert "--config-file" in result.output or "-f" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_missing_config_file_handled_gracefully(self, mock_setup_logging):
         """Test that missing config file doesn't cause errors."""
         runner = CliRunner()
@@ -1184,9 +1184,9 @@ class TestConfigIntegration:
             result = runner.invoke(cli, ["--config-file", "nonexistent.yaml", "--help"])
             assert result.exit_code == 0
 
-    @patch("gcontact_sync.cli.setup_logging")
-    @patch("gcontact_sync.cli.ConfigLoader")
-    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
     def test_config_file_is_loaded(
         self, mock_auth, mock_config_loader, mock_setup_logging
     ):
@@ -1208,9 +1208,9 @@ class TestConfigIntegration:
             # Verify config was loaded
             mock_loader.load_from_file.assert_called_once()
 
-    @patch("gcontact_sync.cli.setup_logging")
-    @patch("gcontact_sync.cli.ConfigLoader")
-    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
     def test_invalid_config_file_shows_warning(
         self, mock_auth, mock_config_loader, mock_setup_logging
     ):
@@ -1233,8 +1233,8 @@ class TestConfigIntegration:
             # Warning should be shown but command continues
             assert "Warning" in result.output or "Invalid YAML" in result.output
 
-    @patch("gcontact_sync.cli.save_config_file")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.save_config_file")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_init_config_command_help(self, mock_setup_logging, mock_save):
         """Test that init-config command shows help."""
         runner = CliRunner()
@@ -1242,8 +1242,8 @@ class TestConfigIntegration:
         assert result.exit_code == 0
         assert "init-config" in result.output or "Initialize" in result.output
 
-    @patch("gcontact_sync.cli.save_config_file")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.save_config_file")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_init_config_creates_file(self, mock_setup_logging, mock_save):
         """Test that init-config command creates config file."""
         mock_save.return_value = (True, None)
@@ -1257,8 +1257,8 @@ class TestConfigIntegration:
             )
             mock_save.assert_called_once()
 
-    @patch("gcontact_sync.cli.save_config_file")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.save_config_file")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_init_config_with_force_flag(self, mock_setup_logging, mock_save):
         """Test that init-config with --force overwrites existing file."""
         mock_save.return_value = (True, None)
@@ -1271,8 +1271,8 @@ class TestConfigIntegration:
             call_args = mock_save.call_args
             assert call_args.kwargs.get("overwrite") is True
 
-    @patch("gcontact_sync.cli.save_config_file")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.save_config_file")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_init_config_error_handling(self, mock_setup_logging, mock_save):
         """Test that init-config handles errors gracefully."""
         mock_save.return_value = (False, "Permission denied")
@@ -1287,9 +1287,9 @@ class TestConfigIntegration:
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.ConfigLoader")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_sync_uses_config_values(
         self,
         mock_setup_logging,
@@ -1336,9 +1336,9 @@ class TestConfigIntegration:
     @patch("gcontact_sync.sync.engine.SyncEngine")
     @patch("gcontact_sync.storage.db.SyncDatabase")
     @patch("gcontact_sync.api.people_api.PeopleAPI")
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.ConfigLoader")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
+    @patch("gcontact_sync.cli.main.setup_logging")
     def test_cli_args_override_config_values(
         self,
         mock_setup_logging,
@@ -1383,9 +1383,9 @@ class TestConfigIntegration:
             call_kwargs = mock_engine.sync.call_args.kwargs
             assert call_kwargs.get("dry_run") is True
 
-    @patch("gcontact_sync.cli.setup_logging")
-    @patch("gcontact_sync.cli.ConfigLoader")
-    @patch("gcontact_sync.cli.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
+    @patch("gcontact_sync.cli.main.ConfigLoader")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
     def test_custom_config_file_path(
         self, mock_auth, mock_config_loader, mock_setup_logging
     ):
@@ -1465,7 +1465,7 @@ class TestDaemonCommand:
         assert "Uninstall the gcontact-sync system service" in result.output
         assert "--yes" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     @patch("gcontact_sync.daemon.parse_interval")
     def test_daemon_start_invalid_interval(
@@ -1484,8 +1484,8 @@ class TestDaemonCommand:
             assert "Error:" in result.output
             assert "Invalid interval format" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     @patch("gcontact_sync.daemon.parse_interval")
     def test_daemon_start_foreground_mode(
@@ -1514,8 +1514,8 @@ class TestDaemonCommand:
             assert "foreground mode" in result.output
             mock_scheduler.run.assert_called_once()
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     @patch("gcontact_sync.daemon.parse_interval")
     def test_daemon_start_with_custom_interval(
@@ -1549,8 +1549,8 @@ class TestDaemonCommand:
             call_kwargs = mock_scheduler_class.call_args.kwargs
             assert call_kwargs["interval"] == 1800
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     @patch("gcontact_sync.daemon.parse_interval")
     def test_daemon_start_no_initial_sync(
@@ -1582,8 +1582,8 @@ class TestDaemonCommand:
             call_kwargs = mock_scheduler_class.call_args.kwargs
             assert call_kwargs["run_immediately"] is False
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     @patch("gcontact_sync.daemon.parse_interval")
     def test_daemon_start_already_running(
@@ -1616,7 +1616,7 @@ class TestDaemonCommand:
             assert "Error:" in result.output
             assert "already running" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     def test_daemon_stop_no_daemon_running(
         self, mock_scheduler_class, mock_setup_logging
@@ -1630,7 +1630,7 @@ class TestDaemonCommand:
             assert result.exit_code == 0
             assert "No daemon is currently running" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     def test_daemon_stop_running_daemon(self, mock_scheduler_class, mock_setup_logging):
         """Test daemon stop with running daemon."""
@@ -1645,7 +1645,7 @@ class TestDaemonCommand:
             assert "PID: 12345" in result.output
             assert "Stop signal sent successfully" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     def test_daemon_stop_failed(self, mock_scheduler_class, mock_setup_logging):
         """Test daemon stop when stop signal fails."""
@@ -1658,7 +1658,7 @@ class TestDaemonCommand:
             assert result.exit_code == 1
             assert "Failed to send stop signal" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.PIDFileManager")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     def test_daemon_status_running(
@@ -1675,7 +1675,7 @@ class TestDaemonCommand:
             assert "Running" in result.output
             assert "Process ID: 12345" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.PIDFileManager")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     def test_daemon_status_stopped(
@@ -1696,7 +1696,7 @@ class TestDaemonCommand:
             assert "Stopped" in result.output
             assert "No daemon is currently running" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.PIDFileManager")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     def test_daemon_status_stale_pid(
@@ -1717,7 +1717,7 @@ class TestDaemonCommand:
             assert "Stale PID file exists" in result.output
             assert "99999" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     @patch("gcontact_sync.daemon.parse_interval")
@@ -1748,7 +1748,7 @@ class TestDaemonCommand:
             assert "installed successfully" in result.output
             mock_manager.install.assert_called_once()
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     def test_daemon_install_unsupported_platform(
@@ -1767,7 +1767,7 @@ class TestDaemonCommand:
             assert result.exit_code == 1
             assert "not supported" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     @patch("gcontact_sync.daemon.parse_interval")
@@ -1799,7 +1799,7 @@ class TestDaemonCommand:
             call_kwargs = mock_manager.install.call_args.kwargs
             assert call_kwargs["overwrite"] is True
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     @patch("gcontact_sync.daemon.parse_interval")
@@ -1826,7 +1826,7 @@ class TestDaemonCommand:
             assert "Installation failed" in result.output
             assert "Permission denied" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     def test_daemon_uninstall_not_installed(
@@ -1846,7 +1846,7 @@ class TestDaemonCommand:
             assert result.exit_code == 0
             assert "No daemon service is currently installed" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     def test_daemon_uninstall_success(
@@ -1871,7 +1871,7 @@ class TestDaemonCommand:
             assert "uninstalled successfully" in result.output
             mock_manager.uninstall.assert_called_once()
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     def test_daemon_uninstall_with_confirmation(
@@ -1895,7 +1895,7 @@ class TestDaemonCommand:
             assert result.exit_code == 0
             assert "uninstalled successfully" in result.output
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     def test_daemon_uninstall_cancelled(
@@ -1917,7 +1917,7 @@ class TestDaemonCommand:
             result = runner.invoke(cli, ["daemon", "uninstall"], input="n\n")
             assert result.exit_code == 1  # Aborted
 
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.get_platform")
     @patch("gcontact_sync.daemon.ServiceManager")
     def test_daemon_uninstall_failed(
@@ -1942,8 +1942,8 @@ class TestDaemonCommand:
             assert "Uninstallation failed" in result.output
             assert "Service is still running" in result.output
 
-    @patch("gcontact_sync.cli.GoogleAuth")
-    @patch("gcontact_sync.cli.setup_logging")
+    @patch("gcontact_sync.cli.main.GoogleAuth")
+    @patch("gcontact_sync.cli.main.setup_logging")
     @patch("gcontact_sync.daemon.DaemonScheduler")
     @patch("gcontact_sync.daemon.parse_interval")
     def test_daemon_start_unexpected_error(

@@ -33,11 +33,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from gcontact_sync.utils import resolve_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +59,6 @@ CONFIG_VERSION = "1.0"
 
 # Default sync config file name
 DEFAULT_SYNC_CONFIG_FILE = "sync_config.json"
-
-# Default configuration directory
-DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
 # Default sync label group name
 DEFAULT_SYNC_LABEL_GROUP_NAME = "Synced Contacts"
@@ -561,15 +559,7 @@ def load_config(config_dir: Path | str | None = None) -> SyncConfig:
         config = load_config()  # Uses env var path
     """
     # Resolve config directory path
-    if config_dir is not None:
-        resolved_dir = Path(config_dir).expanduser().resolve()
-    else:
-        # Check environment variable
-        env_dir = os.environ.get("GCONTACT_SYNC_CONFIG_DIR")
-        if env_dir:
-            resolved_dir = Path(env_dir).expanduser().resolve()
-        else:
-            resolved_dir = DEFAULT_CONFIG_DIR
+    resolved_dir = resolve_config_dir(config_dir)
 
     # Construct path to sync config file
     config_file_path = resolved_dir / DEFAULT_SYNC_CONFIG_FILE

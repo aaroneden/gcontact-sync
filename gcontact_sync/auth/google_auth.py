@@ -10,7 +10,6 @@ Provides OAuth 2.0 authentication with support for:
 
 import json
 import logging
-import os
 from pathlib import Path
 
 from google.auth.exceptions import RefreshError
@@ -18,15 +17,14 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
+from gcontact_sync.utils import resolve_config_dir
+
 # OAuth2 scopes required for Google Contacts access
 SCOPES = [
     "https://www.googleapis.com/auth/contacts",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",  # Required by Google when requesting userinfo.email
 ]
-
-# Default configuration directory
-DEFAULT_CONFIG_DIR = Path.home() / ".gcontact-sync"
 
 # Account identifiers
 ACCOUNT_1 = "account1"
@@ -81,16 +79,7 @@ class GoogleAuth:
                        Defaults to ~/.gcontact-sync/ or $GCONTACT_SYNC_CONFIG_DIR
             auth_timeout: Timeout in seconds for network requests (default: 10)
         """
-        # Use environment variable if set, otherwise default
-        if config_dir is not None:
-            self.config_dir = Path(config_dir)
-        else:
-            env_dir = os.environ.get("GCONTACT_SYNC_CONFIG_DIR")
-            if env_dir:
-                self.config_dir = Path(env_dir)
-            else:
-                self.config_dir = DEFAULT_CONFIG_DIR
-
+        self.config_dir = resolve_config_dir(config_dir)
         self.credentials_path = self.config_dir / "credentials.json"
         self.auth_timeout = auth_timeout
 
