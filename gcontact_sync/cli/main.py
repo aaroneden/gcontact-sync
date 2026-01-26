@@ -735,11 +735,7 @@ def sync_command(
                 click.echo(click.style("\nSync completed successfully!", fg="green"))
                 stats = result.stats
                 # Log summary including groups if any group operations occurred
-                if (
-                    stats.total_groups_created
-                    or stats.total_groups_updated
-                    or stats.total_groups_deleted
-                ):
+                if stats.has_group_changes:
                     logger.info(
                         f"Sync completed: "
                         f"groups (created={stats.total_groups_created}, "

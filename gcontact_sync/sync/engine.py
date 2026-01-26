@@ -28,6 +28,7 @@ from gcontact_sync.sync.conflict import (
 from gcontact_sync.sync.contact import Contact
 from gcontact_sync.sync.group import ContactGroup
 from gcontact_sync.sync.photo import PhotoError, download_photo, process_photo
+from gcontact_sync.utils import normalize_string
 from gcontact_sync.utils.logging import setup_matching_logger
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,15 @@ class SyncStats:
     def total_contacts_deleted(self) -> int:
         """Total contacts deleted across both accounts."""
         return self.deleted_in_account1 + self.deleted_in_account2
+
+    @property
+    def has_group_changes(self) -> bool:
+        """Check if any group changes occurred."""
+        return bool(
+            self.total_groups_created
+            or self.total_groups_updated
+            or self.total_groups_deleted
+        )
 
 
 @dataclass
@@ -2235,25 +2245,7 @@ class SyncEngine:
         Returns:
             Normalized lowercase string with special characters handled.
         """
-        import re
-        import unicodedata
-
-        if not name:
-            return ""
-
-        # Normalize unicode (decompose accents, etc.)
-        normalized = unicodedata.normalize("NFKD", name)
-
-        # Remove combining characters (accents)
-        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-
-        # Convert to lowercase
-        normalized = normalized.lower()
-
-        # Replace multiple spaces with single space and strip
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-
-        return normalized
+        return normalize_string(name, remove_spaces=False, strip_punctuation=False)
 
     def _filter_contacts_by_groups(
         self,
@@ -2619,11 +2611,7 @@ class SyncEngine:
 
             # Log summary including groups if any group operations occurred
             stats = result.stats
-            if (
-                stats.total_groups_created
-                or stats.total_groups_updated
-                or stats.total_groups_deleted
-            ):
+            if stats.has_group_changes:
                 logger.info(
                     f"Sync complete: "
                     f"groups (created={stats.total_groups_created}, "
