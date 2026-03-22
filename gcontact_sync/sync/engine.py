@@ -1440,6 +1440,8 @@ class SyncEngine:
                     contact,
                     source_account=1,
                     identifier_to_matched=identifier_to_matched,
+                    target_index=index2,
+                    target_matched=matched_from_2,
                     result=result,
                     mlog=mlog,
                 )
@@ -1451,6 +1453,8 @@ class SyncEngine:
                     contact,
                     source_account=2,
                     identifier_to_matched=identifier_to_matched,
+                    target_index=index1,
+                    target_matched=matched_from_1,
                     result=result,
                     mlog=mlog,
                 )
@@ -1582,6 +1586,8 @@ class SyncEngine:
         contact: Contact,
         source_account: int,
         identifier_to_matched: dict[str, tuple[Contact, Contact]],
+        target_index: dict[str, Contact],
+        target_matched: set[str],
         result: SyncResult,
         mlog: logging.Logger | None,
     ) -> None:
@@ -1592,6 +1598,8 @@ class SyncEngine:
             contact: The unmatched contact
             source_account: Which account the contact is from (1 or 2)
             identifier_to_matched: Index of identifiers to matched pairs
+            target_index: Contact index for the target account
+            target_matched: Set of matched resource_names in target account
             result: SyncResult to update
             mlog: Optional matching logger
         """
@@ -1676,8 +1684,87 @@ class SyncEngine:
                     mlog.info(f"POTENTIAL DUPLICATE (reported): {contact.display_name}")
                     mlog.info("  Creating anyway, flagged for review")
         else:
-            # No duplicate detected - check filter before creating
-            if source_account == 1:
+            # No duplicate detected via identifier_to_matched index.
+            # GUARD: Check if target account already has this contact
+            # (prevents re-creating ghost copies from same-account duplicates)
+            target_has_contact = False
+            matching_key = contact.matching_key()
+
+            # Check 1: Does the target index already have a contact with
+            # the same matching key?
+            if matching_key in target_index:
+                target_contact = target_index[matching_key]
+                target_has_contact = True
+                if mlog:
+                    mlog.info(
+                        f"GUARD: {contact.display_name} already exists in "
+                        f"target account (matching_key={matching_key}, "
+                        f"target={target_contact.resource_name})"
+                    )
+
+            # Check 2: Does any contact in the target account share an
+            # email or phone with this contact? (catches cases where
+            # matching_key differs due to different primary email)
+            if not target_has_contact:
+                contact_emails = {
+                    self.matcher._normalize_email(e)
+                    for e in contact.emails
+                    if e
+                }
+                contact_phones = {
+                    self.matcher._normalize_phone(p)
+                    for p in contact.phones
+                    if p and self.matcher._is_valid_phone(
+                        self.matcher._normalize_phone(p)
+                    )
+                }
+                for _t_key, t_contact in target_index.items():
+                    if target_has_contact:
+                        break
+                    t_emails = {
+                        self.matcher._normalize_email(e)
+                        for e in t_contact.emails
+                        if e
+                    }
+                    if contact_emails & t_emails:
+                        target_has_contact = True
+                        if mlog:
+                            shared = contact_emails & t_emails
+                            mlog.info(
+                                f"GUARD: {contact.display_name} shares "
+                                f"email(s) {shared} with target contact "
+                                f"{t_contact.display_name} "
+                                f"({t_contact.resource_name})"
+                            )
+                        break
+                    t_phones = {
+                        self.matcher._normalize_phone(p)
+                        for p in t_contact.phones
+                        if p and self.matcher._is_valid_phone(
+                            self.matcher._normalize_phone(p)
+                        )
+                    }
+                    if contact_phones & t_phones:
+                        target_has_contact = True
+                        if mlog:
+                            shared = contact_phones & t_phones
+                            mlog.info(
+                                f"GUARD: {contact.display_name} shares "
+                                f"phone(s) {shared} with target contact "
+                                f"{t_contact.display_name} "
+                                f"({t_contact.resource_name})"
+                            )
+                        break
+
+            if target_has_contact:
+                # Skip creation — target already has this contact
+                result.stats.potential_duplicates_found += 1
+                if mlog:
+                    mlog.info(
+                        f"SKIPPING CREATE: {contact.display_name} "
+                        f"(already exists in target account)"
+                    )
+            elif source_account == 1:
                 if self._is_contact_in_filter(contact, self._allowed_groups_1):
                     result.to_create_in_account2.append(contact)
                     if mlog:
@@ -3401,6 +3488,69 @@ class SyncEngine:
                 )
                 preserve_source_groups = account_config.preserve_source_groups
 
+            # GUARD (Fix 2): Deduplicate the create list itself.
+            # Even after Phase 3 guards, the create list could contain
+            # multiple contacts that resolve to the same person (e.g.,
+            # same-account duplicates with slightly different matching keys
+            # but shared emails). Deduplicate by email/phone/matching_key.
+            seen_keys: set[str] = set()
+            seen_emails: set[str] = set()
+            seen_phones: set[str] = set()
+            deduplicated_contacts: list[Contact] = []
+
+            for contact in contacts:
+                mk = contact.matching_key()
+                # Check if we've already seen this matching key
+                if mk in seen_keys:
+                    logger.info(
+                        f"GUARD: Skipping duplicate in create batch: "
+                        f"{contact.display_name} (matching_key={mk})"
+                    )
+                    continue
+
+                # Check if any email overlaps with an already-queued contact
+                c_emails = {
+                    e.lower().strip() for e in contact.emails if e
+                }
+                if c_emails & seen_emails:
+                    logger.info(
+                        f"GUARD: Skipping duplicate in create batch: "
+                        f"{contact.display_name} (shared emails: "
+                        f"{c_emails & seen_emails})"
+                    )
+                    continue
+
+                # Check if any phone overlaps
+                c_phones = {
+                    self.matcher._normalize_phone(p)
+                    for p in contact.phones
+                    if p
+                }
+                c_phones = {
+                    p for p in c_phones
+                    if self.matcher._is_valid_phone(p)
+                }
+                if c_phones & seen_phones:
+                    logger.info(
+                        f"GUARD: Skipping duplicate in create batch: "
+                        f"{contact.display_name} (shared phones: "
+                        f"{c_phones & seen_phones})"
+                    )
+                    continue
+
+                seen_keys.add(mk)
+                seen_emails.update(c_emails)
+                seen_phones.update(c_phones)
+                deduplicated_contacts.append(contact)
+
+            if len(deduplicated_contacts) < len(contacts):
+                skipped = len(contacts) - len(deduplicated_contacts)
+                logger.info(
+                    f"GUARD: Removed {skipped} duplicate(s) from "
+                    f"create batch for {account_label}"
+                )
+                contacts = deduplicated_contacts
+
             contacts_with_mapped_memberships = []
             for contact in contacts:
                 # Only map source memberships if preserve_source_groups is True
@@ -3456,16 +3606,24 @@ class SyncEngine:
                 content_hash = original.content_hash()
 
                 if account == 1:
+                    # Creating in account 1 (source is from account 2)
+                    # Save BOTH resource names so Phase 0 can pair them on next sync
                     self.database.upsert_contact_mapping(
                         matching_key=matching_key,
                         account1_resource_name=created_contact.resource_name,
                         account1_etag=created_contact.etag,
+                        account2_resource_name=original.resource_name,
+                        account2_etag=original.etag,
                         last_synced_hash=content_hash,
                     )
                     result.stats.created_in_account1 += 1
                 else:
+                    # Creating in account 2 (source is from account 1)
+                    # Save BOTH resource names so Phase 0 can pair them on next sync
                     self.database.upsert_contact_mapping(
                         matching_key=matching_key,
+                        account1_resource_name=original.resource_name,
+                        account1_etag=original.etag,
                         account2_resource_name=created_contact.resource_name,
                         account2_etag=created_contact.etag,
                         last_synced_hash=content_hash,
