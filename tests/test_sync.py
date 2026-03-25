@@ -7092,6 +7092,114 @@ class TestPreserveSourceGroups:
 
 
 # ==============================================================================
+# Duplicate Prevention - Contact Mapping Tests
+# ==============================================================================
+
+
+class TestContactMappingSavesBothResourceNames:
+    """Tests ensuring contact mappings save both source and destination resource names.
+
+    This prevents duplicate contact creation on subsequent syncs by ensuring
+    Phase 0 database matching can find both sides of the contact pair.
+    """
+
+    def test_execute_creates_in_account2_saves_both_resource_names(
+        self, sync_engine, mock_api1, mock_api2, mock_database
+    ):
+        """Test creating in account2 saves BOTH account1 and account2 resource names.
+
+        Bug: When a contact is created in account 2 (destination), only the
+        account2_resource_name was being saved to the mapping. The source
+        contact's account1_resource_name was NOT saved.
+
+        Impact: On the next sync, Phase 0 database lookup would fail because
+        account1_resource_name was NULL, causing the contact to fall through
+        to Phase 1/2/3 matching where it could be created again as a duplicate.
+        """
+        # Source contact from account 1
+        source_contact = Contact(
+            resource_name="people/source_from_account1",
+            etag="source_etag",
+            display_name="Abi Adeoti",
+            emails=["abi@example.com"],
+        )
+        # Newly created contact in account 2
+        created_contact = Contact(
+            resource_name="people/created_in_account2",
+            etag="created_etag",
+            display_name="Abi Adeoti",
+            emails=["abi@example.com"],
+        )
+
+        result = SyncResult()
+        result.to_create_in_account2.append(source_contact)
+
+        mock_api2.batch_create_contacts.return_value = [created_contact]
+
+        sync_engine.execute(result)
+
+        # Verify upsert_contact_mapping was called with BOTH resource names
+        mock_database.upsert_contact_mapping.assert_called()
+        call_kwargs = mock_database.upsert_contact_mapping.call_args[1]
+
+        # The bug: only account2_resource_name was saved, not account1_resource_name
+        assert (
+            call_kwargs.get("account1_resource_name") == "people/source_from_account1"
+        ), (
+            "Source contact's resource_name (account1) must be saved to prevent "
+            "duplicate creation on next sync"
+        )
+        assert (
+            call_kwargs.get("account2_resource_name") == "people/created_in_account2"
+        ), "Created contact's resource_name (account2) must be saved"
+
+    def test_execute_creates_in_account1_saves_both_resource_names(
+        self, sync_engine, mock_api1, mock_api2, mock_database
+    ):
+        """Test creating in account1 saves BOTH account1 and account2 resource names.
+
+        Same bug as above but for the reverse direction - creating in account 1
+        from a source contact in account 2.
+        """
+        # Source contact from account 2
+        source_contact = Contact(
+            resource_name="people/source_from_account2",
+            etag="source_etag",
+            display_name="Abi Adeoti",
+            emails=["abi@example.com"],
+        )
+        # Newly created contact in account 1
+        created_contact = Contact(
+            resource_name="people/created_in_account1",
+            etag="created_etag",
+            display_name="Abi Adeoti",
+            emails=["abi@example.com"],
+        )
+
+        result = SyncResult()
+        result.to_create_in_account1.append(source_contact)
+
+        mock_api1.batch_create_contacts.return_value = [created_contact]
+
+        sync_engine.execute(result)
+
+        # Verify upsert_contact_mapping was called with BOTH resource names
+        mock_database.upsert_contact_mapping.assert_called()
+        call_kwargs = mock_database.upsert_contact_mapping.call_args[1]
+
+        # The bug: only account1_resource_name was saved, not account2_resource_name
+        assert (
+            call_kwargs.get("account1_resource_name") == "people/created_in_account1"
+        ), "Created contact's resource_name (account1) must be saved"
+        assert (
+            call_kwargs.get("account2_resource_name") == "people/source_from_account2"
+        ), (
+            "Source contact's resource_name (account2) must be saved to prevent "
+            "duplicate creation on next sync"
+        )
+
+
+# ==============================================================================
 # Integration Tests for Target Groups and Group Sync Mode
 # ==============================================================================
 
@@ -7378,3 +7486,448 @@ class TestGroupSyncModeIntegration:
 
         # Contact should be queued
         assert len(result.to_create_in_account2) == 1
+
+
+# ==============================================================================
+# Fix 1 & Fix 2: Duplicate Guard Tests
+# ==============================================================================
+
+
+class TestDuplicateGuards:
+    """Tests for duplicate prevention guards in Phase 3 and _execute_creates."""
+
+    @pytest.fixture
+    def sync_engine(self, mock_api1, mock_api2, mock_database):
+        engine = SyncEngine(api1=mock_api1, api2=mock_api2, database=mock_database)
+        # These are normally set during analyze(); initialize for unit tests
+        engine._allowed_groups_1 = frozenset()
+        engine._allowed_groups_2 = frozenset()
+        return engine
+
+    @pytest.fixture
+    def mock_api1(self):
+        api = MagicMock(spec=PeopleAPI)
+        api.batch_create_contacts.return_value = []
+        return api
+
+    @pytest.fixture
+    def mock_api2(self):
+        api = MagicMock(spec=PeopleAPI)
+        api.batch_create_contacts.return_value = []
+        return api
+
+    @pytest.fixture
+    def mock_database(self):
+        db = MagicMock(spec=SyncDatabase)
+        db.get_all_contact_mappings.return_value = []
+        return db
+
+    # --- Fix 1: _handle_unmatched_contact guard tests ---
+
+    def test_guard_blocks_create_when_target_has_same_matching_key(
+        self, sync_engine
+    ):
+        """Guard should block creation when target already has a contact
+        with the same matching key."""
+        # Contact in account 1 (unmatched)
+        contact = Contact(
+            "people/c1", "e1", "John Doe", emails=["john@example.com"]
+        )
+        # Same contact already in account 2 (target)
+        target_contact = Contact(
+            "people/c2", "e2", "John Doe", emails=["john@example.com"]
+        )
+        target_index = {target_contact.matching_key(): target_contact}
+        target_matched = set()
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=1,
+            identifier_to_matched={},
+            target_index=target_index,
+            target_matched=target_matched,
+            result=result,
+            mlog=None,
+        )
+
+        # Should NOT be queued for creation
+        assert len(result.to_create_in_account2) == 0
+        assert result.stats.potential_duplicates_found == 1
+
+    def test_guard_blocks_create_when_target_shares_email(self, sync_engine):
+        """Guard should block creation when target has a contact sharing
+        an email, even if matching_key differs."""
+        # Unmatched contact in account 1
+        contact = Contact(
+            "people/c1", "e1", "John A Doe",
+            emails=["john@example.com", "johnd@work.com"],
+        )
+        # Target contact with different name but same email
+        target_contact = Contact(
+            "people/c2", "e2", "Johnny Doe",
+            emails=["john@example.com"],
+        )
+        # Different matching keys (different names)
+        assert contact.matching_key() != target_contact.matching_key()
+
+        target_index = {target_contact.matching_key(): target_contact}
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=1,
+            identifier_to_matched={},
+            target_index=target_index,
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        assert len(result.to_create_in_account2) == 0
+        assert result.stats.potential_duplicates_found == 1
+
+    def test_guard_blocks_create_when_target_shares_phone(self, sync_engine):
+        """Guard should block creation when target has a contact sharing
+        a phone number."""
+        contact = Contact(
+            "people/c1", "e1", "Jane Smith", phones=["555-123-4567"]
+        )
+        target_contact = Contact(
+            "people/c2", "e2", "Jane B Smith", phones=["5551234567"]
+        )
+        target_index = {target_contact.matching_key(): target_contact}
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=1,
+            identifier_to_matched={},
+            target_index=target_index,
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        assert len(result.to_create_in_account2) == 0
+        assert result.stats.potential_duplicates_found == 1
+
+    def test_guard_allows_create_for_genuinely_new_contact(self, sync_engine):
+        """Guard must NOT block creation of a genuinely new contact
+        that doesn't exist in the target."""
+        contact = Contact(
+            "people/c1", "e1", "Alice Wonderland",
+            emails=["alice@example.com"],
+        )
+        # Target has completely different contacts
+        other_contact = Contact(
+            "people/c2", "e2", "Bob Builder",
+            emails=["bob@example.com"],
+        )
+        target_index = {other_contact.matching_key(): other_contact}
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=1,
+            identifier_to_matched={},
+            target_index=target_index,
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        # MUST be queued for creation
+        assert len(result.to_create_in_account2) == 1
+        assert result.to_create_in_account2[0] == contact
+        assert result.stats.potential_duplicates_found == 0
+
+    def test_guard_allows_create_when_target_is_empty(self, sync_engine):
+        """Guard must NOT block creation when target account is empty."""
+        contact = Contact(
+            "people/c1", "e1", "New Person",
+            emails=["new@example.com"],
+        )
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=1,
+            identifier_to_matched={},
+            target_index={},
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        assert len(result.to_create_in_account2) == 1
+
+    def test_guard_allows_create_for_name_only_different_people(
+        self, sync_engine
+    ):
+        """Guard must NOT block creation when contacts share a common
+        name but have different emails (different people)."""
+        contact = Contact(
+            "people/c1", "e1", "John Smith",
+            emails=["john.smith1@example.com"],
+        )
+        target_contact = Contact(
+            "people/c2", "e2", "John Smith",
+            emails=["john.smith2@other.com"],
+        )
+        target_index = {target_contact.matching_key(): target_contact}
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=1,
+            identifier_to_matched={},
+            target_index=target_index,
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        # Different emails = different people, should create
+        assert len(result.to_create_in_account2) == 1
+
+    def test_guard_works_for_account2_to_account1(self, sync_engine):
+        """Guard should also work when source is account 2."""
+        contact = Contact(
+            "people/c2", "e2", "Jane Doe", emails=["jane@example.com"]
+        )
+        target_contact = Contact(
+            "people/c1", "e1", "Jane Doe", emails=["jane@example.com"]
+        )
+        target_index = {target_contact.matching_key(): target_contact}
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=2,
+            identifier_to_matched={},
+            target_index=target_index,
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        assert len(result.to_create_in_account1) == 0
+        assert result.stats.potential_duplicates_found == 1
+
+    def test_guard_allows_account2_to_account1_for_new_contact(
+        self, sync_engine
+    ):
+        """Guard must allow creation from account 2 to 1 for new contacts."""
+        contact = Contact(
+            "people/c2", "e2", "New Contact",
+            emails=["newcontact@example.com"],
+        )
+        result = SyncResult()
+
+        sync_engine._handle_unmatched_contact(
+            contact,
+            source_account=2,
+            identifier_to_matched={},
+            target_index={},
+            target_matched=set(),
+            result=result,
+            mlog=None,
+        )
+
+        assert len(result.to_create_in_account1) == 1
+
+    # --- Fix 2: _execute_creates batch deduplication tests ---
+
+    def test_batch_dedup_removes_duplicate_matching_keys(
+        self, sync_engine, mock_api2, mock_database
+    ):
+        """Batch dedup should remove contacts with the same matching key."""
+        contact1 = Contact(
+            "people/c1", "e1", "John Doe", emails=["john@example.com"]
+        )
+        # Same person, different resource name (same-account duplicate)
+        contact2 = Contact(
+            "people/c3", "e3", "John Doe", emails=["john@example.com"]
+        )
+        created1 = Contact(
+            "people/new1", "en1", "John Doe", emails=["john@example.com"]
+        )
+
+        result = SyncResult()
+        result.to_create_in_account2 = [contact1, contact2]
+
+        mock_api2.batch_create_contacts.return_value = [created1]
+
+        sync_engine._execute_creates([contact1, contact2], mock_api2, 2, result)
+
+        # Should only create one
+        call_args = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(call_args) == 1
+
+    def test_batch_dedup_removes_shared_email_duplicates(
+        self, sync_engine, mock_api2, mock_database
+    ):
+        """Batch dedup should remove contacts sharing an email."""
+        contact1 = Contact(
+            "people/c1", "e1", "John Doe",
+            emails=["john@example.com"],
+        )
+        # Different name but same email
+        contact2 = Contact(
+            "people/c3", "e3", "Johnny Doe",
+            emails=["john@example.com", "extra@example.com"],
+        )
+        created1 = Contact(
+            "people/new1", "en1", "John Doe", emails=["john@example.com"]
+        )
+
+        result = SyncResult()
+        mock_api2.batch_create_contacts.return_value = [created1]
+
+        sync_engine._execute_creates([contact1, contact2], mock_api2, 2, result)
+
+        call_args = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(call_args) == 1
+
+    def test_batch_dedup_keeps_distinct_contacts(
+        self, sync_engine, mock_api2, mock_database
+    ):
+        """Batch dedup must NOT remove genuinely different contacts."""
+        contact1 = Contact(
+            "people/c1", "e1", "Alice Wonder",
+            emails=["alice@example.com"],
+        )
+        contact2 = Contact(
+            "people/c2", "e2", "Bob Builder",
+            emails=["bob@example.com"],
+        )
+        contact3 = Contact(
+            "people/c3", "e3", "Charlie Brown",
+            emails=["charlie@example.com"],
+        )
+        created1 = Contact(
+            "people/n1", "en1", "Alice Wonder", emails=["alice@example.com"]
+        )
+        created2 = Contact(
+            "people/n2", "en2", "Bob Builder", emails=["bob@example.com"]
+        )
+        created3 = Contact(
+            "people/n3", "en3", "Charlie Brown",
+            emails=["charlie@example.com"],
+        )
+
+        result = SyncResult()
+        mock_api2.batch_create_contacts.return_value = [
+            created1, created2, created3
+        ]
+
+        sync_engine._execute_creates(
+            [contact1, contact2, contact3], mock_api2, 2, result
+        )
+
+        # All three should be created
+        call_args = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(call_args) == 3
+        assert result.stats.created_in_account2 == 3
+
+    def test_batch_dedup_removes_shared_phone_duplicates(
+        self, sync_engine, mock_api2, mock_database
+    ):
+        """Batch dedup should remove contacts sharing a phone number."""
+        contact1 = Contact(
+            "people/c1", "e1", "Jane Smith",
+            phones=["555-123-4567"],
+        )
+        contact2 = Contact(
+            "people/c3", "e3", "Jane B Smith",
+            phones=["5551234567"],
+        )
+        created1 = Contact(
+            "people/new1", "en1", "Jane Smith", phones=["555-123-4567"]
+        )
+
+        result = SyncResult()
+        mock_api2.batch_create_contacts.return_value = [created1]
+
+        sync_engine._execute_creates([contact1, contact2], mock_api2, 2, result)
+
+        call_args = mock_api2.batch_create_contacts.call_args[0][0]
+        assert len(call_args) == 1
+
+    # --- End-to-end: Phase 3 + execute together ---
+
+    def test_phase3_does_not_block_legitimate_sync(
+        self, sync_engine
+    ):
+        """End-to-end: a contact in account 1 with no match in account 2
+        should be queued for creation (not blocked by guard)."""
+        contact1 = Contact(
+            "people/c1", "e1", "Unique Person",
+            emails=["unique@example.com"],
+        )
+        # Account 2 has a different contact
+        contact2 = Contact(
+            "people/c2", "e2", "Other Person",
+            emails=["other@example.com"],
+        )
+        index1 = {contact1.matching_key(): contact1}
+        index2 = {contact2.matching_key(): contact2}
+
+        result = SyncResult()
+
+        # Neither is matched
+        sync_engine._phase_3_unmatched_handling(
+            index1, index2,
+            matched_from_1=set(),
+            matched_from_2=set(),
+            result=result,
+        )
+
+        # Both should be queued for creation in the other account
+        assert len(result.to_create_in_account2) == 1
+        assert result.to_create_in_account2[0] == contact1
+        assert len(result.to_create_in_account1) == 1
+        assert result.to_create_in_account1[0] == contact2
+
+    def test_phase3_blocks_ghost_copy_from_same_account_duplicate(
+        self, sync_engine
+    ):
+        """End-to-end: when account 1 has two copies of a contact and
+        account 2 already has the contact, the 'ghost' copy in account 1
+        should NOT cause a second creation in account 2."""
+        # The "good" copy in account 1 (will be matched)
+        good_copy = Contact(
+            "people/c1a", "e1a", "Aaron Eden",
+            emails=["aaron@example.com"],
+        )
+        # The "ghost" copy in account 1 (different resource, same person)
+        ghost_copy = Contact(
+            "people/c1b", "e1b", "Aaron Eden",
+            emails=["aaron@example.com"],
+        )
+        # The contact in account 2 (already matched to good_copy)
+        acct2_contact = Contact(
+            "people/c2", "e2", "Aaron Eden",
+            emails=["aaron@example.com"],
+        )
+
+        # Index has both copies from account 1 — but _build_contact_index
+        # would normally keep only one. We simulate the ghost being
+        # unmatched by having only the ghost in the index (good_copy was
+        # already matched).
+        index1 = {ghost_copy.matching_key(): ghost_copy}
+        index2 = {acct2_contact.matching_key(): acct2_contact}
+
+        result = SyncResult()
+        result.matched_contacts = [(good_copy, acct2_contact)]
+
+        sync_engine._phase_3_unmatched_handling(
+            index1, index2,
+            matched_from_1={good_copy.resource_name},
+            matched_from_2={acct2_contact.resource_name},
+            result=result,
+        )
+
+        # Ghost should NOT be created in account 2 — target already has it
+        assert len(result.to_create_in_account2) == 0
