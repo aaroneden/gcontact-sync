@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **iCloud Duplicate Contact Removal**: New utility to detect and remove duplicate contacts from the macOS/iCloud address book
+  - Located at `scripts/remove_icloud_duplicates.py`
+  - Uses macOS Contacts framework (via pyobjc) to access local contacts
+  - Automatically merges unique data (emails, phones, addresses, birthday) from duplicates into the kept contact before deletion
+  - Supports `--dry-run`, `--verbose`, `--yes`, and `--no-merge` flags
+  - Processes groups individually to handle CoreData errors gracefully
+
+### Fixed
+
+- **Duplicate Contacts No Longer Created During Sync**: Resolved a persistent bug where the sync engine would repeatedly create duplicate contacts (e.g., Michael Hruska, Aaron Eden, abackos) on every sync run
+  - **Root cause**: When multiple copies of the same contact existed within one account, the sync engine would silently drop all but one during indexing — but the dropped copies weren't marked as "already handled," causing the other account's matching contact to appear unmatched and trigger a new copy
+  - Same-account duplicates are now tracked during indexing and excluded from the create pipeline
+  - Added pre-create guard that checks if a contact with the same name, email, or phone already exists in the target account before creating
+  - Added batch deduplication to prevent same-batch duplicate creates
+  - Verified: scheduled sync now runs with 0 new contacts created ([PR #12](https://github.com/aaroneden/gcontact-sync/pull/12))
+
+---
+
+## [Previous Unreleased]
+
+### Added
+
 - **Target Groups Feature**: Configure how synced contacts are assigned to groups in destination accounts
   - `target_group`: Assign all incoming synced contacts to a specific group (e.g., "Brain Bridge" or "Personal")
   - `preserve_source_groups`: Control whether source group memberships are mapped to destination (default: false)
