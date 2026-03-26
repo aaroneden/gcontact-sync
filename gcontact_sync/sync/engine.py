@@ -1101,13 +1101,22 @@ class SyncEngine:
         result.stats.contacts_filtered_out_account2 = 0
 
         # Build indexes by matching key (for fast first-pass matching)
-        index1 = self._build_contact_index(contacts1, self.account1_email)
-        index2 = self._build_contact_index(contacts2, self.account2_email)
+        # Dropped contacts are same-account duplicates that were removed
+        # from the index — they must be excluded from unmatched processing
+        # to prevent the self-reinforcing duplicate creation loop.
+        index1, dropped1 = self._build_contact_index(contacts1, self.account1_email)
+        index2, dropped2 = self._build_contact_index(contacts2, self.account2_email)
 
         logger.debug(
             f"Built indexes: {len(index1)} unique keys in {self.account1_email}, "
             f"{len(index2)} unique keys in {self.account2_email}"
         )
+        if dropped1 or dropped2:
+            logger.info(
+                f"Dropped same-account duplicates: "
+                f"{len(dropped1)} in {self.account1_email}, "
+                f"{len(dropped2)} in {self.account2_email}"
+            )
 
         # Build lookup by resource_name for fast access
         contacts1_by_resource: dict[str, Contact] = {
@@ -1117,8 +1126,10 @@ class SyncEngine:
             c.resource_name: c for c in contacts2
         }
 
-        matched_from_1: set[str] = set()  # resource_names matched from account 1
-        matched_from_2: set[str] = set()  # resource_names matched from account 2
+        # Pre-seed matched sets with dropped duplicates so they are
+        # excluded from Phase 3 unmatched handling
+        matched_from_1: set[str] = set(dropped1)
+        matched_from_2: set[str] = set(dropped2)
 
         # === PHASE 0: Use existing database mappings (resource-name based) ===
         self._phase_0_database_matching(
@@ -2803,20 +2814,25 @@ class SyncEngine:
 
     def _build_contact_index(
         self, contacts: list[Contact], account_label: str = "unknown"
-    ) -> dict[str, Contact]:
+    ) -> tuple[dict[str, Contact], set[str]]:
         """
         Build an index of contacts by matching key.
 
         Filters out invalid contacts (those without name or email).
+        When multiple contacts share the same matching key (same-account
+        duplicates), only the best copy is kept in the index. The
+        resource_names of dropped duplicates are returned so callers can
+        exclude them from unmatched processing.
 
         Args:
             contacts: List of contacts to index
             account_label: Label for the account (for logging)
 
         Returns:
-            Dictionary mapping matching keys to contacts
+            Tuple of (index dict, set of dropped resource_names)
         """
         index: dict[str, Contact] = {}
+        dropped: set[str] = set()
         mlog = getattr(self, "_matching_logger", None)
 
         if mlog:
@@ -2870,6 +2886,7 @@ class SyncEngine:
                                 f"  over: {existing.display_name} "
                                 f"(modified: {existing.last_modified})"
                             )
+                        dropped.add(existing.resource_name)
                         index[key] = contact
                     else:
                         if mlog:
@@ -2882,6 +2899,7 @@ class SyncEngine:
                                 f"  over: {contact.display_name} "
                                 f"(modified: {contact.last_modified})"
                             )
+                        dropped.add(contact.resource_name)
                 # Or keep the one with more data
                 elif len(contact.emails) > len(existing.emails):
                     if mlog:
@@ -2893,6 +2911,7 @@ class SyncEngine:
                             f"  over: {existing.display_name} "
                             f"({len(existing.emails)} emails)"
                         )
+                    dropped.add(existing.resource_name)
                     index[key] = contact
                 else:
                     if mlog:
@@ -2900,10 +2919,17 @@ class SyncEngine:
                             f"DUPLICATE KEY - keeping existing: {existing.display_name}"
                         )
                         mlog.info(f"  (same or more data than {contact.display_name})")
+                    dropped.add(contact.resource_name)
             else:
                 index[key] = contact
                 if mlog:
                     mlog.debug(f"  -> INDEXED with key: {key}")
+
+        if dropped and mlog:
+            mlog.info(
+                f"Dropped {len(dropped)} same-account duplicates "
+                f"for {account_label}"
+            )
 
         if mlog:
             mlog.info(
@@ -2911,7 +2937,7 @@ class SyncEngine:
             )
             mlog.info("")
 
-        return index
+        return index, dropped
 
     def _build_multi_key_index(
         self, contacts: list[Contact], account_label: str = "unknown"
