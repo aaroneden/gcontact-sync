@@ -72,6 +72,7 @@ dev = [
     "radon>=6.0.1",
     "pylint>=4.0.4",
     "vulture>=2.14",
+    "pyobjc-framework-contacts>=12.1",
 ]
 
 [tool.hatch.build.targets.wheel]
