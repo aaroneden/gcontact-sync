@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from gcontact_sync.api.people_api import PeopleAPIError
+from gcontact_sync.api.people_api import ContactNotFoundError, PeopleAPIError
 from gcontact_sync.storage.db import SyncDatabase
 from gcontact_sync.sync.contact import Contact
 from gcontact_sync.sync.engine import SyncEngine
@@ -72,7 +72,7 @@ class FakePeopleAPI:
         for contact in self.full_contacts:
             if contact.resource_name == resource_name:
                 return contact
-        raise PeopleAPIError(f"Contact not found: {resource_name}")
+        raise ContactNotFoundError(f"Contact not found: {resource_name}")
 
     def list_contact_groups(self, **kwargs):
         return [], None
@@ -114,7 +114,9 @@ class TestOrphanedMappingVerification:
     def test_unchanged_partner_is_not_treated_as_deleted(self, database):
         """The production loop: yesterday's created copy echoes back in the
         account2 delta; its account1 partner is unchanged (absent from the
-        delta) but still exists. The engine must NOT queue a duplicate."""
+        delta) but still exists. The engine must NOT queue a duplicate.
+        Because the fetched side is unchanged since the last sync, the pair
+        is kept without even needing a get_contact verification call."""
         partner_a = make_contact("people/PARTNER_A")
         survivor_b = make_contact("people/SURVIVOR_B")
 
@@ -139,12 +141,72 @@ class TestOrphanedMappingVerification:
         assert result.to_create_in_account2 == []
         assert result.to_delete_in_account1 == []
         assert result.to_delete_in_account2 == []
-        assert partner_a.resource_name in api1.get_contact_calls
+        assert api1.get_contact_calls == []
+        assert api1.full_fetches == 0
 
-    def test_truly_deleted_partner_drops_stale_mapping(self, database):
-        """If the mapped partner genuinely no longer exists (404), the stale
-        mapping must be removed so matching can re-pair against the real
-        surviving twin instead of resurrecting the deleted copy."""
+    def test_changed_contact_verifies_partner_and_queues_update(self, database):
+        """A genuinely edited contact (hash differs from the mapping) must
+        fetch its absent partner directly and queue an update for it - not
+        a create."""
+        partner_a = make_contact("people/PARTNER_A")
+        edited_b = make_contact("people/EDITED_B")
+        edited_b.notes = "edited since last sync"
+
+        database.upsert_contact_mapping(
+            matching_key=partner_a.matching_key(),
+            account1_resource_name=partner_a.resource_name,
+            account2_resource_name=edited_b.resource_name,
+            account1_etag=partner_a.etag,
+            account2_etag=edited_b.etag,
+            last_synced_hash=partner_a.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1", full_contacts=[partner_a], delta_contacts=[])
+        api2 = FakePeopleAPI("a2", full_contacts=[edited_b], delta_contacts=[edited_b])
+        engine = build_engine(api1, api2, database)
+
+        result = analyze_with_sync(engine)
+
+        assert partner_a.resource_name in api1.get_contact_calls
+        assert result.to_create_in_account1 == []
+        assert result.to_create_in_account2 == []
+        assert len(result.to_update_in_account1) == 1
+
+    def test_tombstone_present_side_is_left_to_deletion_analysis(self, database):
+        """A deletion tombstone arriving in the delta must not be paired
+        with its live partner (that would push emptied fields onto it);
+        deletion analysis alone handles it."""
+        partner_a = make_contact("people/PARTNER_A")
+        tombstone_b = make_contact("people/TOMBSTONE_B")
+        tombstone_b.deleted = True
+        tombstone_b.emails = []
+        tombstone_b.display_name = ""
+
+        database.upsert_contact_mapping(
+            matching_key=partner_a.matching_key(),
+            account1_resource_name=partner_a.resource_name,
+            account2_resource_name=tombstone_b.resource_name,
+            account1_etag=partner_a.etag,
+            account2_etag="etag-tombstone",
+            last_synced_hash=partner_a.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1", full_contacts=[partner_a], delta_contacts=[])
+        api2 = FakePeopleAPI("a2", full_contacts=[], delta_contacts=[tombstone_b])
+        engine = build_engine(api1, api2, database)
+
+        result = analyze_with_sync(engine)
+
+        assert result.to_update_in_account1 == []
+        assert result.to_update_in_account2 == []
+        assert result.to_create_in_account1 == []
+        assert result.to_create_in_account2 == []
+        assert result.to_delete_in_account1 == [partner_a.resource_name]
+
+    def test_full_sync_absence_is_authoritative_no_get_needed(self, database):
+        """Under a full sync, a partner absent from the fetch is genuinely
+        gone: the stale mapping is dropped without a get_contact call and
+        the survivor re-pairs by key against its real twin."""
         twin_a = make_contact("people/TWIN_A")
         survivor_b = make_contact("people/SURVIVOR_B")
 
@@ -155,6 +217,41 @@ class TestOrphanedMappingVerification:
             account1_etag="etag-gone",
             account2_etag=survivor_b.etag,
             last_synced_hash=survivor_b.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1", full_contacts=[twin_a], delta_contacts=[])
+        api2 = FakePeopleAPI(
+            "a2", full_contacts=[survivor_b], delta_contacts=[survivor_b]
+        )
+        engine = build_engine(api1, api2, database)
+
+        result = engine.sync(dry_run=True, full_sync=True, backup_enabled=False)
+
+        assert api1.get_contact_calls == []
+        assert result.to_create_in_account1 == []
+        assert result.to_create_in_account2 == []
+        mapping = database.get_contact_mapping(survivor_b.matching_key())
+        assert mapping is None or mapping.get("account1_resource_name") != (
+            "people/GONE_A"
+        )
+
+    def test_truly_deleted_partner_drops_stale_mapping(self, database):
+        """If a changed contact's mapped partner genuinely no longer exists
+        (404), the stale mapping must be removed so matching can re-pair
+        against the real surviving twin instead of resurrecting the deleted
+        copy. (An UNCHANGED survivor skips verification entirely - stale
+        mappings are cleaned up lazily, on the survivor's next edit.)"""
+        twin_a = make_contact("people/TWIN_A")
+        survivor_b = make_contact("people/SURVIVOR_B")
+        survivor_b.notes = "edited since last sync"
+
+        database.upsert_contact_mapping(
+            matching_key=survivor_b.matching_key(),
+            account1_resource_name="people/GONE_A",
+            account2_resource_name=survivor_b.resource_name,
+            account1_etag="etag-gone",
+            account2_etag=survivor_b.etag,
+            last_synced_hash=make_contact("people/SURVIVOR_B").content_hash(),
         )
 
         api1 = FakePeopleAPI("a1", full_contacts=[twin_a], delta_contacts=[])
@@ -257,3 +354,68 @@ class TestFullSyncEscalation:
         assert not result.has_changes()
         assert api1.full_fetches == 0
         assert api2.full_fetches == 0
+
+
+# ==============================================================================
+# _reanalyze_full: incremental-pass deletions must survive the full re-analysis
+# ==============================================================================
+
+
+class TestReanalyzeFullCarryOver:
+    def _engine_with_patched_analyze(self, database, full_result):
+        api1 = FakePeopleAPI("a1")
+        api2 = FakePeopleAPI("a2")
+        engine = build_engine(api1, api2, database)
+        engine.analyze = lambda full_sync=False: full_result  # type: ignore[method-assign]
+        engine._pending_key_updates = []
+        return engine
+
+    def test_contact_and_group_deletions_carry_over(self, database):
+        from gcontact_sync.sync.engine import SyncResult
+
+        incremental = SyncResult()
+        incremental.to_delete_in_account1.append("people/DEL_A")
+        incremental.to_delete_in_account2.append("people/DEL_B")
+        incremental.groups_to_delete_in_account1.append("contactGroups/G_A")
+        incremental.groups_to_delete_in_account2.append("contactGroups/G_B")
+
+        engine = self._engine_with_patched_analyze(database, SyncResult())
+        merged = engine._reanalyze_full(incremental)
+
+        assert merged.to_delete_in_account1 == ["people/DEL_A"]
+        assert merged.to_delete_in_account2 == ["people/DEL_B"]
+        assert merged.groups_to_delete_in_account1 == ["contactGroups/G_A"]
+        assert merged.groups_to_delete_in_account2 == ["contactGroups/G_B"]
+
+    def test_creates_of_pending_deleted_sources_are_dropped(self, database):
+        from gcontact_sync.sync.contact import Contact as C
+        from gcontact_sync.sync.engine import SyncResult
+        from gcontact_sync.sync.group import ContactGroup
+
+        pending_delete_b = make_contact("people/DEL_B")
+        survivor_group_a = ContactGroup(
+            resource_name="contactGroups/G_A",
+            etag="e",
+            name="Orphaned Group",
+            group_type="USER_CONTACT_GROUP",
+        )
+
+        full_result = SyncResult()
+        full_result.to_create_in_account1.append(pending_delete_b)
+        full_result.groups_to_create_in_account2.append(survivor_group_a)
+        full_result.to_create_in_account2.append(
+            C(resource_name="people/KEEP_A", etag="e", display_name="Keep Me")
+        )
+
+        incremental = SyncResult()
+        incremental.to_delete_in_account2.append(pending_delete_b.resource_name)
+        incremental.groups_to_delete_in_account1.append(survivor_group_a.resource_name)
+
+        engine = self._engine_with_patched_analyze(database, full_result)
+        merged = engine._reanalyze_full(incremental)
+
+        assert merged.to_create_in_account1 == []
+        assert merged.groups_to_create_in_account2 == []
+        assert [c.resource_name for c in merged.to_create_in_account2] == [
+            "people/KEEP_A"
+        ]

@@ -72,6 +72,12 @@ class RateLimitError(PeopleAPIError):
     pass
 
 
+class ContactNotFoundError(PeopleAPIError):
+    """Raised when a requested contact does not exist (HTTP 404)."""
+
+    pass
+
+
 class PeopleAPI:
     """
     Google People API wrapper for contact operations.
@@ -207,6 +213,14 @@ class PeopleAPI:
                     delay = min(delay * 2, self.max_retry_delay)
                     continue
 
+                # Not found - signal with a typed error so callers can
+                # distinguish "gone" from transient failures
+                if status_code == 404:
+                    logger.debug(f"{operation_name} returned 404 (not found)")
+                    raise ContactNotFoundError(
+                        f"{operation_name} failed: not found"
+                    ) from e
+
                 # Other errors - don't retry
                 logger.error(f"{operation_name} failed with status {status_code}: {e}")
                 raise PeopleAPIError(f"{operation_name} failed: {e}") from e
@@ -327,7 +341,7 @@ class PeopleAPI:
             return Contact.from_api_response(response)
         except HttpError as e:
             if e.resp.status == 404:
-                raise PeopleAPIError(f"Contact not found: {resource_name}") from e
+                raise ContactNotFoundError(f"Contact not found: {resource_name}") from e
             raise
 
     def create_contact(self, contact: Contact) -> Contact:
