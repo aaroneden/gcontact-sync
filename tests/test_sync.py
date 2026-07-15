@@ -7524,15 +7524,11 @@ class TestDuplicateGuards:
 
     # --- Fix 1: _handle_unmatched_contact guard tests ---
 
-    def test_guard_blocks_create_when_target_has_same_matching_key(
-        self, sync_engine
-    ):
+    def test_guard_blocks_create_when_target_has_same_matching_key(self, sync_engine):
         """Guard should block creation when target already has a contact
         with the same matching key."""
         # Contact in account 1 (unmatched)
-        contact = Contact(
-            "people/c1", "e1", "John Doe", emails=["john@example.com"]
-        )
+        contact = Contact("people/c1", "e1", "John Doe", emails=["john@example.com"])
         # Same contact already in account 2 (target)
         target_contact = Contact(
             "people/c2", "e2", "John Doe", emails=["john@example.com"]
@@ -7560,12 +7556,16 @@ class TestDuplicateGuards:
         an email, even if matching_key differs."""
         # Unmatched contact in account 1
         contact = Contact(
-            "people/c1", "e1", "John A Doe",
+            "people/c1",
+            "e1",
+            "John A Doe",
             emails=["john@example.com", "johnd@work.com"],
         )
         # Target contact with different name but same email
         target_contact = Contact(
-            "people/c2", "e2", "Johnny Doe",
+            "people/c2",
+            "e2",
+            "Johnny Doe",
             emails=["john@example.com"],
         )
         # Different matching keys (different names)
@@ -7590,9 +7590,7 @@ class TestDuplicateGuards:
     def test_guard_blocks_create_when_target_shares_phone(self, sync_engine):
         """Guard should block creation when target has a contact sharing
         a phone number."""
-        contact = Contact(
-            "people/c1", "e1", "Jane Smith", phones=["555-123-4567"]
-        )
+        contact = Contact("people/c1", "e1", "Jane Smith", phones=["555-123-4567"])
         target_contact = Contact(
             "people/c2", "e2", "Jane B Smith", phones=["5551234567"]
         )
@@ -7616,12 +7614,16 @@ class TestDuplicateGuards:
         """Guard must NOT block creation of a genuinely new contact
         that doesn't exist in the target."""
         contact = Contact(
-            "people/c1", "e1", "Alice Wonderland",
+            "people/c1",
+            "e1",
+            "Alice Wonderland",
             emails=["alice@example.com"],
         )
         # Target has completely different contacts
         other_contact = Contact(
-            "people/c2", "e2", "Bob Builder",
+            "people/c2",
+            "e2",
+            "Bob Builder",
             emails=["bob@example.com"],
         )
         target_index = {other_contact.matching_key(): other_contact}
@@ -7645,7 +7647,9 @@ class TestDuplicateGuards:
     def test_guard_allows_create_when_target_is_empty(self, sync_engine):
         """Guard must NOT block creation when target account is empty."""
         contact = Contact(
-            "people/c1", "e1", "New Person",
+            "people/c1",
+            "e1",
+            "New Person",
             emails=["new@example.com"],
         )
         result = SyncResult()
@@ -7662,17 +7666,19 @@ class TestDuplicateGuards:
 
         assert len(result.to_create_in_account2) == 1
 
-    def test_guard_allows_create_for_name_only_different_people(
-        self, sync_engine
-    ):
+    def test_guard_allows_create_for_name_only_different_people(self, sync_engine):
         """Guard must NOT block creation when contacts share a common
         name but have different emails (different people)."""
         contact = Contact(
-            "people/c1", "e1", "John Smith",
+            "people/c1",
+            "e1",
+            "John Smith",
             emails=["john.smith1@example.com"],
         )
         target_contact = Contact(
-            "people/c2", "e2", "John Smith",
+            "people/c2",
+            "e2",
+            "John Smith",
             emails=["john.smith2@other.com"],
         )
         target_index = {target_contact.matching_key(): target_contact}
@@ -7693,9 +7699,7 @@ class TestDuplicateGuards:
 
     def test_guard_works_for_account2_to_account1(self, sync_engine):
         """Guard should also work when source is account 2."""
-        contact = Contact(
-            "people/c2", "e2", "Jane Doe", emails=["jane@example.com"]
-        )
+        contact = Contact("people/c2", "e2", "Jane Doe", emails=["jane@example.com"])
         target_contact = Contact(
             "people/c1", "e1", "Jane Doe", emails=["jane@example.com"]
         )
@@ -7715,12 +7719,12 @@ class TestDuplicateGuards:
         assert len(result.to_create_in_account1) == 0
         assert result.stats.potential_duplicates_found == 1
 
-    def test_guard_allows_account2_to_account1_for_new_contact(
-        self, sync_engine
-    ):
+    def test_guard_allows_account2_to_account1_for_new_contact(self, sync_engine):
         """Guard must allow creation from account 2 to 1 for new contacts."""
         contact = Contact(
-            "people/c2", "e2", "New Contact",
+            "people/c2",
+            "e2",
+            "New Contact",
             emails=["newcontact@example.com"],
         )
         result = SyncResult()
@@ -7743,13 +7747,9 @@ class TestDuplicateGuards:
         self, sync_engine, mock_api2, mock_database
     ):
         """Batch dedup should remove contacts with the same matching key."""
-        contact1 = Contact(
-            "people/c1", "e1", "John Doe", emails=["john@example.com"]
-        )
+        contact1 = Contact("people/c1", "e1", "John Doe", emails=["john@example.com"])
         # Same person, different resource name (same-account duplicate)
-        contact2 = Contact(
-            "people/c3", "e3", "John Doe", emails=["john@example.com"]
-        )
+        contact2 = Contact("people/c3", "e3", "John Doe", emails=["john@example.com"])
         created1 = Contact(
             "people/new1", "en1", "John Doe", emails=["john@example.com"]
         )
@@ -7770,12 +7770,16 @@ class TestDuplicateGuards:
     ):
         """Batch dedup should remove contacts sharing an email."""
         contact1 = Contact(
-            "people/c1", "e1", "John Doe",
+            "people/c1",
+            "e1",
+            "John Doe",
             emails=["john@example.com"],
         )
         # Different name but same email
         contact2 = Contact(
-            "people/c3", "e3", "Johnny Doe",
+            "people/c3",
+            "e3",
+            "Johnny Doe",
             emails=["john@example.com", "extra@example.com"],
         )
         created1 = Contact(
@@ -7795,15 +7799,21 @@ class TestDuplicateGuards:
     ):
         """Batch dedup must NOT remove genuinely different contacts."""
         contact1 = Contact(
-            "people/c1", "e1", "Alice Wonder",
+            "people/c1",
+            "e1",
+            "Alice Wonder",
             emails=["alice@example.com"],
         )
         contact2 = Contact(
-            "people/c2", "e2", "Bob Builder",
+            "people/c2",
+            "e2",
+            "Bob Builder",
             emails=["bob@example.com"],
         )
         contact3 = Contact(
-            "people/c3", "e3", "Charlie Brown",
+            "people/c3",
+            "e3",
+            "Charlie Brown",
             emails=["charlie@example.com"],
         )
         created1 = Contact(
@@ -7813,14 +7823,14 @@ class TestDuplicateGuards:
             "people/n2", "en2", "Bob Builder", emails=["bob@example.com"]
         )
         created3 = Contact(
-            "people/n3", "en3", "Charlie Brown",
+            "people/n3",
+            "en3",
+            "Charlie Brown",
             emails=["charlie@example.com"],
         )
 
         result = SyncResult()
-        mock_api2.batch_create_contacts.return_value = [
-            created1, created2, created3
-        ]
+        mock_api2.batch_create_contacts.return_value = [created1, created2, created3]
 
         sync_engine._execute_creates(
             [contact1, contact2, contact3], mock_api2, 2, result
@@ -7836,16 +7846,18 @@ class TestDuplicateGuards:
     ):
         """Batch dedup should remove contacts sharing a phone number."""
         contact1 = Contact(
-            "people/c1", "e1", "Jane Smith",
+            "people/c1",
+            "e1",
+            "Jane Smith",
             phones=["555-123-4567"],
         )
         contact2 = Contact(
-            "people/c3", "e3", "Jane B Smith",
+            "people/c3",
+            "e3",
+            "Jane B Smith",
             phones=["5551234567"],
         )
-        created1 = Contact(
-            "people/new1", "en1", "Jane Smith", phones=["555-123-4567"]
-        )
+        created1 = Contact("people/new1", "en1", "Jane Smith", phones=["555-123-4567"])
 
         result = SyncResult()
         mock_api2.batch_create_contacts.return_value = [created1]
@@ -7857,18 +7869,20 @@ class TestDuplicateGuards:
 
     # --- End-to-end: Phase 3 + execute together ---
 
-    def test_phase3_does_not_block_legitimate_sync(
-        self, sync_engine
-    ):
+    def test_phase3_does_not_block_legitimate_sync(self, sync_engine):
         """End-to-end: a contact in account 1 with no match in account 2
         should be queued for creation (not blocked by guard)."""
         contact1 = Contact(
-            "people/c1", "e1", "Unique Person",
+            "people/c1",
+            "e1",
+            "Unique Person",
             emails=["unique@example.com"],
         )
         # Account 2 has a different contact
         contact2 = Contact(
-            "people/c2", "e2", "Other Person",
+            "people/c2",
+            "e2",
+            "Other Person",
             emails=["other@example.com"],
         )
         index1 = {contact1.matching_key(): contact1}
@@ -7878,7 +7892,8 @@ class TestDuplicateGuards:
 
         # Neither is matched
         sync_engine._phase_3_unmatched_handling(
-            index1, index2,
+            index1,
+            index2,
             matched_from_1=set(),
             matched_from_2=set(),
             result=result,
@@ -7890,25 +7905,29 @@ class TestDuplicateGuards:
         assert len(result.to_create_in_account1) == 1
         assert result.to_create_in_account1[0] == contact2
 
-    def test_phase3_blocks_ghost_copy_from_same_account_duplicate(
-        self, sync_engine
-    ):
+    def test_phase3_blocks_ghost_copy_from_same_account_duplicate(self, sync_engine):
         """End-to-end: when account 1 has two copies of a contact and
         account 2 already has the contact, the 'ghost' copy in account 1
         should NOT cause a second creation in account 2."""
         # The "good" copy in account 1 (will be matched)
         good_copy = Contact(
-            "people/c1a", "e1a", "Aaron Eden",
+            "people/c1a",
+            "e1a",
+            "Aaron Eden",
             emails=["aaron@example.com"],
         )
         # The "ghost" copy in account 1 (different resource, same person)
         ghost_copy = Contact(
-            "people/c1b", "e1b", "Aaron Eden",
+            "people/c1b",
+            "e1b",
+            "Aaron Eden",
             emails=["aaron@example.com"],
         )
         # The contact in account 2 (already matched to good_copy)
         acct2_contact = Contact(
-            "people/c2", "e2", "Aaron Eden",
+            "people/c2",
+            "e2",
+            "Aaron Eden",
             emails=["aaron@example.com"],
         )
 
@@ -7923,7 +7942,8 @@ class TestDuplicateGuards:
         result.matched_contacts = [(good_copy, acct2_contact)]
 
         sync_engine._phase_3_unmatched_handling(
-            index1, index2,
+            index1,
+            index2,
             matched_from_1={good_copy.resource_name},
             matched_from_2={acct2_contact.resource_name},
             result=result,

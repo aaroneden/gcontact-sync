@@ -4,11 +4,14 @@ SQLite database module for sync state management.
 Provides persistent storage for sync tokens, contact mappings, and sync state.
 """
 
+import logging
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # SQL Schema for sync state and contact mapping tables
 SCHEMA = """
@@ -309,11 +312,28 @@ class SyncDatabase:
         with self.connection() as conn:
             # Check if mapping exists
             cursor = conn.execute(
-                "SELECT id FROM contact_mapping WHERE matching_key = ?", (matching_key,)
+                "SELECT id, account1_resource_name, account2_resource_name "
+                "FROM contact_mapping WHERE matching_key = ?",
+                (matching_key,),
             )
             existing = cursor.fetchone()
 
             if existing:
+                # The mapping table is keyed on matching_key, so an upsert
+                # that changes resource names silently unpairs the previous
+                # pair. That should no longer happen in normal operation -
+                # make it loud if it does.
+                for column, new_value in (
+                    ("account1_resource_name", account1_resource_name),
+                    ("account2_resource_name", account2_resource_name),
+                ):
+                    old_value = existing[column]
+                    if new_value and old_value and new_value != old_value:
+                        logger.warning(
+                            f"Mapping '{matching_key}' {column} changing "
+                            f"from {old_value} to {new_value}; the previous "
+                            f"contact is no longer tracked by this mapping"
+                        )
                 # Update existing mapping
                 updates: list[str] = []
                 params: list[str | datetime] = []

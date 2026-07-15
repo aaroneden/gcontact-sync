@@ -69,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Incremental Sync Duplicate Creation Loop**: Fixed the root cause of recurring duplicate contacts that ping-ponged between accounts on every daemon run
+  - A mapped contact absent from an incremental fetch was treated as deleted, so its surviving partner was re-created in the other account each run
+  - Phase 0 matching now verifies a missing partner with a direct `people.get` before deciding: still exists → pair stays matched; genuinely gone (404) → the stale mapping is removed; transient error → the pair is safely skipped for that run
+  - Contact creations are never decided from an incremental delta anymore: if an incremental analysis queues creates, the engine re-analyzes with full account state first (deletions detected from the delta are preserved)
+  - The daemon now honors the `full` setting from `config.yaml` instead of always forcing incremental sync
+  - Mapping updates that re-point an existing pair to different contacts now log a warning for visibility
 - **Daemon Now Loads Sync Configuration**: Fixed critical bug where the daemon scheduler was not loading `sync_config.json`
   - Previously, daemon syncs ignored group filtering settings, causing contacts from all groups to sync
   - This could result in mass duplicate contact creation when group filtering was expected
