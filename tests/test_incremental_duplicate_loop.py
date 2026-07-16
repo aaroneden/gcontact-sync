@@ -419,3 +419,79 @@ class TestReanalyzeFullCarryOver:
         assert [c.resource_name for c in merged.to_create_in_account2] == [
             "people/KEEP_A"
         ]
+
+
+class TestPhase0TombstoneAndDeadMappings:
+    def test_both_present_tombstone_pair_queues_no_update(self, database):
+        """When a live contact and its partner's tombstone both arrive in
+        the deltas, the pair must not be analyzed for updates (that would
+        push the tombstone's emptied fields onto the live side); deletion
+        analysis alone propagates the delete."""
+        live_a = make_contact("people/LIVE_A")
+        tombstone_b = make_contact("people/TOMBSTONE_B")
+        tombstone_b.deleted = True
+        tombstone_b.emails = []
+        tombstone_b.display_name = ""
+
+        database.upsert_contact_mapping(
+            matching_key=live_a.matching_key(),
+            account1_resource_name=live_a.resource_name,
+            account2_resource_name=tombstone_b.resource_name,
+            account1_etag=live_a.etag,
+            account2_etag="etag-tombstone",
+            last_synced_hash=live_a.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1", full_contacts=[live_a], delta_contacts=[live_a])
+        api2 = FakePeopleAPI("a2", full_contacts=[], delta_contacts=[tombstone_b])
+        engine = build_engine(api1, api2, database)
+
+        result = analyze_with_sync(engine)
+
+        assert result.to_update_in_account1 == []
+        assert result.to_update_in_account2 == []
+        assert result.to_create_in_account1 == []
+        assert result.to_create_in_account2 == []
+        assert result.to_delete_in_account1 == [live_a.resource_name]
+
+    def test_full_sync_removes_mapping_when_both_sides_gone(self, database):
+        """A mapping whose contacts are absent from BOTH full fetches is
+        dead and must be removed (full-state absence is authoritative)."""
+        ghost = make_contact("people/GHOST")
+        database.upsert_contact_mapping(
+            matching_key=ghost.matching_key(),
+            account1_resource_name="people/GONE_A",
+            account2_resource_name="people/GONE_B",
+            account1_etag="e1",
+            account2_etag="e2",
+            last_synced_hash=ghost.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1")
+        api2 = FakePeopleAPI("a2")
+        engine = build_engine(api1, api2, database)
+
+        engine.sync(dry_run=True, full_sync=True, backup_enabled=False)
+
+        assert database.get_contact_mapping(ghost.matching_key()) is None
+
+    def test_incremental_leaves_both_absent_mapping_alone(self, database):
+        """Under incremental sync, both sides absent just means both are
+        unchanged - the mapping must survive."""
+        ghost = make_contact("people/GHOST")
+        database.upsert_contact_mapping(
+            matching_key=ghost.matching_key(),
+            account1_resource_name="people/QUIET_A",
+            account2_resource_name="people/QUIET_B",
+            account1_etag="e1",
+            account2_etag="e2",
+            last_synced_hash=ghost.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1")
+        api2 = FakePeopleAPI("a2")
+        engine = build_engine(api1, api2, database)
+
+        engine.sync(dry_run=True, full_sync=False, backup_enabled=False)
+
+        assert database.get_contact_mapping(ghost.matching_key()) is not None

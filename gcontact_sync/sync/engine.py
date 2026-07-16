@@ -1346,6 +1346,22 @@ class SyncEngine:
                     fetched_full_state=full_sync,
                 )
 
+            elif full_sync:
+                # Neither side present in a FULL fetch: both contacts are
+                # gone, the mapping is dead - remove it so it cannot
+                # mis-associate a future contact that reuses the key.
+                # (Under incremental sync, both-absent just means both
+                # unchanged - leave the mapping alone.)
+                matching_key = mapping.get("matching_key")
+                if matching_key:
+                    logger.info(
+                        f"Both sides of mapping '{matching_key}' absent from "
+                        f"full fetch; removing dead mapping"
+                    )
+                    if mlog:
+                        mlog.info(f"MAPPING DEAD (both sides gone): {matching_key}")
+                    self.database.delete_contact_mapping(matching_key)
+
     def _confirm_existing_pair(
         self,
         contact1: Contact,
@@ -1374,6 +1390,18 @@ class SyncEngine:
 
         matched_from_1.add(contact1.resource_name)
         matched_from_2.add(contact2.resource_name)
+
+        if contact1.deleted or contact2.deleted:
+            # One side is a deletion tombstone: analyzing the pair would
+            # queue an update pushing its emptied fields onto the live
+            # partner. Keep both marked as matched (so nothing is created)
+            # and let deletion analysis propagate the delete.
+            if mlog:
+                mlog.info(
+                    f"EXISTING PAIR (tombstone, left to deletion analysis): "
+                    f"{contact1.display_name or contact2.display_name}"
+                )
+            return
 
         # Use current matching key (may have changed if contact was renamed)
         current_key = contact1.matching_key()
