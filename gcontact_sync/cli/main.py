@@ -1828,10 +1828,11 @@ def daemon_start_command(
                     config=sync_config,
                 )
 
-                # Run sync
+                # Run sync (honor the config file's `full` setting, matching
+                # the behavior of the standalone `sync` command)
                 result = engine.sync(
                     dry_run=False,
-                    full_sync=False,
+                    full_sync=config.get("full", False),
                     backup_enabled=backup_enabled,
                     backup_dir=backup_dir,
                     backup_retention_count=backup_retention_count,

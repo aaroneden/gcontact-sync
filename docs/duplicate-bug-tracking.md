@@ -66,3 +66,40 @@ After creating contacts in `_execute_creates`, scan the target account for pre-e
 3. Run a second sync immediately - should show 0 creates
 4. Re-enable daemon and check logs after next scheduled run
 5. Run `scripts/remove_duplicates.py --dry-run` after a few days - should find 0 duplicates
+
+## Resolution (2026-07-15)
+
+**Status:** Actual root cause found, reproduced, and fixed (branch `fix/incremental-duplicate-loop`).
+
+The March fixes reduced but did not stop the loop because they all operated on the
+*fetched* contact set, which under incremental sync is only the delta of changed
+contacts. The real root cause had two halves:
+
+1. **Absence conflated with deletion.** Phase 0 required both sides of a stored
+   mapping to be present in the fetch. An unchanged partner (absent from the
+   delta) was logged as `MAPPING ORPHANED (... deleted)` and its survivor fell
+   through to unmatched handling, where the pre-create guards (Fix 1) could not
+   see the existing twin either - it was not in the delta.
+2. **Self-echo.** Sync tokens are captured during analyze, before execute
+   mutates, so each run's own creations returned as "changes" in the next run's
+   delta, re-arming the loop daily and alternating accounts (see the Aaron Eden
+   sequence Jul 8-10 2026 in the matching logs).
+
+Reproduced deterministically with a unit test before fixing
+(`tests/test_incremental_duplicate_loop.py`).
+
+**Fix layers:**
+1. Phase 0 verifies a missing partner via direct `people.get` before deciding
+   (exists = still paired; 404 = drop stale mapping; transient error = skip pair).
+2. Creates are never decided from a delta: incremental analyses that queue
+   creates are re-run with full account state (delta-detected deletions preserved).
+3. Daemon honors `full: true` from config.yaml (was hard-coded to incremental).
+4. `upsert_contact_mapping` warns when re-pointing an existing pair.
+
+**Post-merge checklist:**
+1. Merge PR, pull master in the daemon checkout, restart the daemon
+   (`launchctl` job `com.gcontact-sync`, runs from the repo `.venv`).
+2. Clean up accumulated duplicates: `scripts/remove_duplicates.py` on both accounts.
+3. Verify: two consecutive syncs with 0 creates; matching log should show
+   `EXISTING PAIR (partner verified via direct fetch)` instead of
+   `MAPPING ORPHANED`, and no `ESCALATION` lines on quiet runs.

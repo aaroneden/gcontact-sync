@@ -15,7 +15,11 @@ if TYPE_CHECKING:
     from gcontact_sync.config import SyncConfig
     from gcontact_sync.sync.matcher import MatchConfig
 
-from gcontact_sync.api.people_api import PeopleAPI, PeopleAPIError
+from gcontact_sync.api.people_api import (
+    ContactNotFoundError,
+    PeopleAPI,
+    PeopleAPIError,
+)
 from gcontact_sync.auth.google_auth import ACCOUNT_1, ACCOUNT_2
 from gcontact_sync.backup.manager import BackupManager
 from gcontact_sync.storage.db import SyncDatabase
@@ -973,9 +977,94 @@ class SyncEngine:
         # Analyze what needs to be synced
         result = self.analyze(full_sync=full_sync)
 
+        # Never create contacts based on an incremental (delta) view: the
+        # delta omits unchanged contacts, so the create guards cannot see an
+        # already-existing twin in the target account. Re-analyze with full
+        # account state before any create is executed.
+        if not full_sync and (
+            result.to_create_in_account1 or result.to_create_in_account2
+        ):
+            pending = len(result.to_create_in_account1) + len(
+                result.to_create_in_account2
+            )
+            logger.info(
+                f"Incremental analysis queued {pending} contact creation(s); "
+                f"re-analyzing with full sync to verify against complete "
+                f"account state"
+            )
+            self._matching_logger.info(
+                f"ESCALATION: {pending} create(s) queued from incremental "
+                f"delta - re-running analysis with full account state"
+            )
+            result = self._reanalyze_full(result)
+
         # Apply changes if not dry run
         if not dry_run and result.has_changes():
             self.execute(result)
+
+        return result
+
+    def _reanalyze_full(self, incremental_result: SyncResult) -> SyncResult:
+        """
+        Re-run analysis with full account state, preserving deletions.
+
+        Deletion tombstones (contact.deleted) only appear in incremental
+        deltas - a full fetch has none - so deletions detected by the
+        incremental pass are carried over, and any create whose source
+        contact is pending deletion is dropped to avoid resurrecting it.
+
+        Args:
+            incremental_result: Result of the incremental analysis pass
+
+        Returns:
+            SyncResult based on full account state
+        """
+        # Key updates from the incremental pass are superseded by the
+        # full re-analysis, which recomputes them from complete state
+        self._pending_key_updates = []
+
+        result = self.analyze(full_sync=True)
+
+        # A full fetch carries no tombstones, so the full re-analysis queues
+        # no contact deletions of its own; the incremental pass is the sole
+        # source. The same applies to group deletions: the incremental pass
+        # already removed the orphaned group mappings from the DB, so the
+        # full pass cannot re-detect them.
+        result.to_delete_in_account1.extend(incremental_result.to_delete_in_account1)
+        result.to_delete_in_account2.extend(incremental_result.to_delete_in_account2)
+        result.groups_to_delete_in_account1.extend(
+            incremental_result.groups_to_delete_in_account1
+        )
+        result.groups_to_delete_in_account2.extend(
+            incremental_result.groups_to_delete_in_account2
+        )
+
+        # The full pass sees the surviving side of each orphaned group as
+        # unmatched (its mapping was already removed) and re-queues it for
+        # creation in the other account - drop those, the survivor is
+        # pending deletion, not propagation.
+        deleting_groups_1 = set(result.groups_to_delete_in_account1)
+        deleting_groups_2 = set(result.groups_to_delete_in_account2)
+        result.groups_to_create_in_account2 = [
+            g
+            for g in result.groups_to_create_in_account2
+            if g.resource_name not in deleting_groups_1
+        ]
+        result.groups_to_create_in_account1 = [
+            g
+            for g in result.groups_to_create_in_account1
+            if g.resource_name not in deleting_groups_2
+        ]
+
+        # to_create_in_account1 sources live in account 2 and vice versa
+        deleting_2 = set(result.to_delete_in_account2)
+        deleting_1 = set(result.to_delete_in_account1)
+        result.to_create_in_account1 = [
+            c for c in result.to_create_in_account1 if c.resource_name not in deleting_2
+        ]
+        result.to_create_in_account2 = [
+            c for c in result.to_create_in_account2 if c.resource_name not in deleting_1
+        ]
 
         return result
 
@@ -1138,6 +1227,7 @@ class SyncEngine:
             matched_from_1,
             matched_from_2,
             result,
+            full_sync=full_sync,
         )
 
         # === PHASE 1: Fast key-based matching for NEW contacts ===
@@ -1190,6 +1280,7 @@ class SyncEngine:
         matched_from_1: set[str],
         matched_from_2: set[str],
         result: SyncResult,
+        full_sync: bool = False,
     ) -> None:
         """
         Phase 0: Use existing database mappings for contact matching.
@@ -1203,6 +1294,7 @@ class SyncEngine:
             matched_from_1: Set to update with matched resource_names from account 1
             matched_from_2: Set to update with matched resource_names from account 2
             result: SyncResult to update with sync operations
+            full_sync: True if the fetched contacts cover full account state
         """
         mlog = getattr(self, "_matching_logger", None)
 
@@ -1218,53 +1310,264 @@ class SyncEngine:
         for mapping in existing_mappings:
             res1 = mapping.get("account1_resource_name")
             res2 = mapping.get("account2_resource_name")
-            old_matching_key = mapping.get("matching_key")
-            last_synced_hash = mapping.get("last_synced_hash")
 
             contact1 = contacts1_by_resource.get(res1) if res1 else None
             contact2 = contacts2_by_resource.get(res2) if res2 else None
 
             if contact1 and contact2:
-                # Both contacts still exist - they remain paired
-                matched_from_1.add(contact1.resource_name)
-                matched_from_2.add(contact2.resource_name)
-
-                # Use current matching key (may have changed if contact was renamed)
-                current_key = contact1.matching_key()
-
-                if mlog:
-                    mlog.info(f"EXISTING PAIR: {contact1.display_name}")
-                    mlog.info(f"  {self.account1_email}: {res1}")
-                    mlog.info(f"  {self.account2_email}: {res2}")
-                    if current_key != old_matching_key:
-                        mlog.info(f"  matching_key changed: {old_matching_key}")
-                        mlog.info(f"    -> {current_key}")
-
-                # Analyze the pair (check for updates needed)
-                self._analyze_existing_pair_with_mapping(
-                    current_key,
+                self._confirm_existing_pair(
                     contact1,
                     contact2,
-                    last_synced_hash,
-                    old_matching_key,
+                    mapping,
+                    matched_from_1,
+                    matched_from_2,
                     result,
                 )
 
             elif contact1 and not contact2:
-                # Contact 2 was deleted - will be handled in deletion analysis
-                if mlog:
-                    mlog.info(
-                        f"MAPPING ORPHANED ({self.account2_email} deleted): "
-                        f"{contact1.display_name}"
-                    )
+                self._resolve_one_sided_mapping(
+                    present_contact=contact1,
+                    present_account=1,
+                    mapping=mapping,
+                    matched_from_1=matched_from_1,
+                    matched_from_2=matched_from_2,
+                    result=result,
+                    fetched_full_state=full_sync,
+                )
 
             elif contact2 and not contact1:
-                # Contact 1 was deleted - will be handled in deletion analysis
-                if mlog:
-                    mlog.info(
-                        f"MAPPING ORPHANED ({self.account1_email} deleted): "
-                        f"{contact2.display_name}"
+                self._resolve_one_sided_mapping(
+                    present_contact=contact2,
+                    present_account=2,
+                    mapping=mapping,
+                    matched_from_1=matched_from_1,
+                    matched_from_2=matched_from_2,
+                    result=result,
+                    fetched_full_state=full_sync,
+                )
+
+            elif full_sync:
+                # Neither side present in a FULL fetch: both contacts are
+                # gone, the mapping is dead - remove it so it cannot
+                # mis-associate a future contact that reuses the key.
+                # (Under incremental sync, both-absent just means both
+                # unchanged - leave the mapping alone.)
+                matching_key = mapping.get("matching_key")
+                if matching_key:
+                    logger.info(
+                        f"Both sides of mapping '{matching_key}' absent from "
+                        f"full fetch; removing dead mapping"
                     )
+                    if mlog:
+                        mlog.info(f"MAPPING DEAD (both sides gone): {matching_key}")
+                    self.database.delete_contact_mapping(matching_key)
+
+    def _confirm_existing_pair(
+        self,
+        contact1: Contact,
+        contact2: Contact,
+        mapping: dict,
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        result: SyncResult,
+        verified_via_get: bool = False,
+    ) -> None:
+        """
+        Mark a mapped pair as matched and analyze it for pending updates.
+
+        Args:
+            contact1: Account 1 side of the pair
+            contact2: Account 2 side of the pair
+            mapping: The stored contact mapping row
+            matched_from_1: Set of matched account 1 resource names to update
+            matched_from_2: Set of matched account 2 resource names to update
+            result: SyncResult to update with sync operations
+            verified_via_get: True if one side was fetched directly rather
+                than arriving in the contact list
+        """
+        mlog = getattr(self, "_matching_logger", None)
+        old_matching_key = mapping.get("matching_key")
+
+        matched_from_1.add(contact1.resource_name)
+        matched_from_2.add(contact2.resource_name)
+
+        if contact1.deleted or contact2.deleted:
+            # One side is a deletion tombstone: analyzing the pair would
+            # queue an update pushing its emptied fields onto the live
+            # partner. Keep both marked as matched (so nothing is created)
+            # and let deletion analysis propagate the delete.
+            if mlog:
+                mlog.info(
+                    f"EXISTING PAIR (tombstone, left to deletion analysis): "
+                    f"{contact1.display_name or contact2.display_name}"
+                )
+            return
+
+        # Use current matching key (may have changed if contact was renamed)
+        current_key = contact1.matching_key()
+
+        if mlog:
+            suffix = " (partner verified via direct fetch)" if verified_via_get else ""
+            mlog.info(f"EXISTING PAIR{suffix}: {contact1.display_name}")
+            mlog.info(f"  {self.account1_email}: {contact1.resource_name}")
+            mlog.info(f"  {self.account2_email}: {contact2.resource_name}")
+            if current_key != old_matching_key:
+                mlog.info(f"  matching_key changed: {old_matching_key}")
+                mlog.info(f"    -> {current_key}")
+
+        # Analyze the pair (check for updates needed)
+        self._analyze_existing_pair_with_mapping(
+            current_key,
+            contact1,
+            contact2,
+            mapping.get("last_synced_hash"),
+            old_matching_key,
+            result,
+        )
+
+    def _resolve_one_sided_mapping(
+        self,
+        present_contact: Contact,
+        present_account: int,
+        mapping: dict,
+        matched_from_1: set[str],
+        matched_from_2: set[str],
+        result: SyncResult,
+        fetched_full_state: bool,
+    ) -> None:
+        """
+        Resolve a mapped pair where only one side appeared in the fetch.
+
+        Under incremental sync, absence from the fetched contacts usually
+        means the contact is UNCHANGED (not part of the delta), not deleted.
+        Treating it as deleted caused the surviving side to be re-created in
+        the other account on every run. Verify the missing side with a
+        direct get before deciding.
+
+        Args:
+            present_contact: The side of the pair that was fetched
+            present_account: Account number (1 or 2) the fetched side lives in
+            mapping: The stored contact mapping row
+            matched_from_1: Set of matched account 1 resource names to update
+            matched_from_2: Set of matched account 2 resource names to update
+            result: SyncResult to update with sync operations
+            fetched_full_state: True if the fetch covered full account state,
+                in which case absence IS authoritative
+        """
+        mlog = getattr(self, "_matching_logger", None)
+
+        if present_contact.deleted:
+            # Deletion tombstone: pairing it would push its emptied fields
+            # onto the live partner. Deletion analysis owns tombstones.
+            return
+
+        if present_account == 1:
+            missing_resource = mapping.get("account2_resource_name")
+            api, missing_email = self.api2, self.account2_email
+        else:
+            missing_resource = mapping.get("account1_resource_name")
+            api, missing_email = self.api1, self.account1_email
+
+        old_matching_key = mapping.get("matching_key")
+        last_synced_hash = mapping.get("last_synced_hash")
+
+        if not missing_resource:
+            # Mapping never recorded the other side; let key matching decide
+            return
+
+        if fetched_full_state:
+            # Full fetch: absence is authoritative - the partner is gone.
+            # Drop the stale mapping so the survivor can re-pair by key.
+            # Deletion propagation is handled by the deleted-flag path in
+            # _analyze_deletions, never inferred from absence here.
+            logger.info(
+                f"Mapped partner {missing_resource} absent from full fetch of "
+                f"{missing_email}; removing stale mapping for "
+                f"'{present_contact.display_name}'"
+            )
+            if mlog:
+                mlog.info(
+                    f"MAPPING STALE ({missing_email} contact gone): "
+                    f"{present_contact.display_name} - mapping removed"
+                )
+            if old_matching_key:
+                self.database.delete_contact_mapping(old_matching_key)
+            return
+
+        if last_synced_hash and present_contact.content_hash() == last_synced_hash:
+            # The fetched side is unchanged since the last sync (typically
+            # the echo of our own write) and the partner, being absent from
+            # the delta, is unchanged too. Nothing to sync - keep the pair
+            # without spending an API call.
+            matched_from_1.add(
+                present_contact.resource_name
+                if present_account == 1
+                else missing_resource
+            )
+            matched_from_2.add(
+                present_contact.resource_name
+                if present_account == 2
+                else missing_resource
+            )
+            if mlog:
+                mlog.info(
+                    f"EXISTING PAIR (unchanged, partner not in delta): "
+                    f"{present_contact.display_name}"
+                )
+            return
+
+        try:
+            partner = api.get_contact(missing_resource)
+        except ContactNotFoundError:
+            # Partner genuinely deleted: drop the stale mapping so the
+            # survivor can re-pair by key against remaining contacts.
+            logger.info(
+                f"Mapped partner {missing_resource} no longer exists in "
+                f"{missing_email}; removing stale mapping for "
+                f"'{present_contact.display_name}'"
+            )
+            if mlog:
+                mlog.info(
+                    f"MAPPING STALE ({missing_email} contact gone): "
+                    f"{present_contact.display_name} - mapping removed"
+                )
+            if old_matching_key:
+                self.database.delete_contact_mapping(old_matching_key)
+            return
+        except Exception as e:
+            # Any other failure (API error, network, parse) fails safe:
+            # exclude the survivor from unmatched handling so nothing is
+            # created or deleted this run.
+            logger.warning(
+                f"Could not verify mapped partner {missing_resource} in "
+                f"{missing_email}: {e}; skipping pair this run"
+            )
+            if mlog:
+                mlog.info(
+                    f"MAPPING UNVERIFIED (skipped this run): "
+                    f"{present_contact.display_name}"
+                )
+            if present_account == 1:
+                matched_from_1.add(present_contact.resource_name)
+            else:
+                matched_from_2.add(present_contact.resource_name)
+            return
+
+        # Partner still exists - the pair remains paired
+        if present_account == 1:
+            contact1, contact2 = present_contact, partner
+        else:
+            contact1, contact2 = partner, present_contact
+
+        self._confirm_existing_pair(
+            contact1,
+            contact2,
+            mapping,
+            matched_from_1,
+            matched_from_2,
+            result,
+            verified_via_get=True,
+        )
 
     def _phase_1_key_based_matching(
         self,
@@ -1718,24 +2021,19 @@ class SyncEngine:
             # matching_key differs due to different primary email)
             if not target_has_contact:
                 contact_emails = {
-                    self.matcher._normalize_email(e)
-                    for e in contact.emails
-                    if e
+                    self.matcher._normalize_email(e) for e in contact.emails if e
                 }
                 contact_phones = {
                     self.matcher._normalize_phone(p)
                     for p in contact.phones
-                    if p and self.matcher._is_valid_phone(
-                        self.matcher._normalize_phone(p)
-                    )
+                    if p
+                    and self.matcher._is_valid_phone(self.matcher._normalize_phone(p))
                 }
                 for _t_key, t_contact in target_index.items():
                     if target_has_contact:
                         break
                     t_emails = {
-                        self.matcher._normalize_email(e)
-                        for e in t_contact.emails
-                        if e
+                        self.matcher._normalize_email(e) for e in t_contact.emails if e
                     }
                     if contact_emails & t_emails:
                         target_has_contact = True
@@ -1751,7 +2049,8 @@ class SyncEngine:
                     t_phones = {
                         self.matcher._normalize_phone(p)
                         for p in t_contact.phones
-                        if p and self.matcher._is_valid_phone(
+                        if p
+                        and self.matcher._is_valid_phone(
                             self.matcher._normalize_phone(p)
                         )
                     }
@@ -2927,8 +3226,7 @@ class SyncEngine:
 
         if dropped and mlog:
             mlog.info(
-                f"Dropped {len(dropped)} same-account duplicates "
-                f"for {account_label}"
+                f"Dropped {len(dropped)} same-account duplicates for {account_label}"
             )
 
         if mlog:
@@ -3535,9 +3833,7 @@ class SyncEngine:
                     continue
 
                 # Check if any email overlaps with an already-queued contact
-                c_emails = {
-                    e.lower().strip() for e in contact.emails if e
-                }
+                c_emails = {e.lower().strip() for e in contact.emails if e}
                 if c_emails & seen_emails:
                     logger.info(
                         f"GUARD: Skipping duplicate in create batch: "
@@ -3548,14 +3844,9 @@ class SyncEngine:
 
                 # Check if any phone overlaps
                 c_phones = {
-                    self.matcher._normalize_phone(p)
-                    for p in contact.phones
-                    if p
+                    self.matcher._normalize_phone(p) for p in contact.phones if p
                 }
-                c_phones = {
-                    p for p in c_phones
-                    if self.matcher._is_valid_phone(p)
-                }
+                c_phones = {p for p in c_phones if self.matcher._is_valid_phone(p)}
                 if c_phones & seen_phones:
                     logger.info(
                         f"GUARD: Skipping duplicate in create batch: "
