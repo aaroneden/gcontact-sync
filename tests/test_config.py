@@ -565,7 +565,7 @@ class TestConfigValidation:
 
     def test_validate_llm_model_valid(self, loader):
         """Test validating llm_model with valid string values."""
-        config = {"llm_model": "claude-haiku-4-5-20250514"}
+        config = {"llm_model": "claude-haiku-4-5-20251001"}
         loader.validate(config)  # Should not raise
 
     def test_validate_llm_model_wrong_type(self, loader):
@@ -668,7 +668,7 @@ class TestConfigValidation:
             "uncertain_threshold": 0.7,
             "llm_batch_size": 20,
             # LLM options (Tier 1/2)
-            "llm_model": "claude-haiku-4-5-20250514",
+            "llm_model": "claude-haiku-4-5-20251001",
             "llm_max_tokens": 500,
             "llm_batch_max_tokens": 2000,
             # Auth options (Tier 2)

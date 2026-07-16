@@ -1001,6 +1001,11 @@ class SyncEngine:
         # Apply changes if not dry run
         if not dry_run and result.has_changes():
             self.execute(result)
+        elif not dry_run:
+            # Quiet run: still persist the sync tokens captured during
+            # analysis, otherwise incremental mode never engages after a
+            # reset (tokens were only ever written inside execute)
+            self._update_sync_tokens()
 
         return result
 

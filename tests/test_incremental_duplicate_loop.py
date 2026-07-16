@@ -562,3 +562,37 @@ class TestUpdateChurnFixes:
         assert mapping["account1_resource_name"] == older.resource_name
         assert mapping["account2_resource_name"] == newer.resource_name
         assert mapping["last_synced_hash"] == newer.content_hash()
+
+
+class TestQuietRunTokenPersistence:
+    def test_quiet_sync_persists_sync_tokens(self, database):
+        """A run with no changes must still store the sync tokens captured
+        during analysis, or incremental mode never engages after a reset."""
+        database.update_sync_state("account1", sync_token=None)
+        database.update_sync_state("account2", sync_token=None)
+        twin_a = make_contact("people/TWIN_A")
+        twin_b = make_contact("people/TWIN_B")
+
+        api1 = FakePeopleAPI("a1", full_contacts=[twin_a], delta_contacts=[])
+        api2 = FakePeopleAPI("a2", full_contacts=[twin_b], delta_contacts=[])
+        engine = build_engine(api1, api2, database)
+
+        result = engine.sync(dry_run=False, full_sync=True, backup_enabled=False)
+
+        assert not result.has_changes()
+        state1 = database.get_sync_state("account1")
+        state2 = database.get_sync_state("account2")
+        assert state1 and state1["sync_token"] == "token-a1-full"
+        assert state2 and state2["sync_token"] == "token-a2-full"
+
+    def test_dry_run_does_not_persist_sync_tokens(self, database):
+        """Dry runs must not advance sync tokens."""
+        twin_a = make_contact("people/TWIN_A")
+        api1 = FakePeopleAPI("a1", full_contacts=[twin_a], delta_contacts=[])
+        api2 = FakePeopleAPI("a2", full_contacts=[], delta_contacts=[])
+        engine = build_engine(api1, api2, database)
+
+        engine.sync(dry_run=True, full_sync=True, backup_enabled=False)
+
+        state1 = database.get_sync_state("account1")
+        assert state1 is None or state1.get("sync_token") != "token-a1-full"
