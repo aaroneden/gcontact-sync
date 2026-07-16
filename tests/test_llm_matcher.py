@@ -628,7 +628,7 @@ class TestLLMMatcherCaching:
             is_match=True,
             confidence=0.92,
             reasoning="Same person from cache",
-            model_used="claude-haiku-4-5-20250514",
+            model_used="claude-haiku-4-5-20251001",
         )
 
         # Create matcher with database - should NOT call API
@@ -752,7 +752,7 @@ class TestLLMMatcherCaching:
         """Test that the default model is Haiku."""
         from gcontact_sync.sync.llm_matcher import DEFAULT_LLM_MODEL
 
-        assert DEFAULT_LLM_MODEL == "claude-haiku-4-5-20250514"
+        assert DEFAULT_LLM_MODEL == "claude-haiku-4-5-20251001"
 
     def test_api_call_uses_default_model(self, contact1, contact2):
         """Test that API calls use the default model."""

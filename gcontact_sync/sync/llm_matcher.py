@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Default LLM configuration
-DEFAULT_LLM_MODEL = "claude-haiku-4-5-20250514"
+DEFAULT_LLM_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_LLM_MAX_TOKENS = 500
 DEFAULT_LLM_BATCH_MAX_TOKENS = 2000
 
@@ -65,7 +65,7 @@ class LLMMatcher:
         Args:
             api_key: Anthropic API key. If not provided, uses ANTHROPIC_API_KEY env var.
             database: Optional SyncDatabase for caching LLM decisions.
-            model: Claude model to use for matching (default: claude-haiku-4-5-20250514)
+            model: Claude model to use for matching (default: claude-haiku-4-5-20251001)
             max_tokens: Max tokens for single match responses (default: 500)
             batch_max_tokens: Max tokens for batch match responses (default: 2000)
         """

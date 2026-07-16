@@ -652,7 +652,7 @@ def sync_command(
             llm_batch_size=config.get("llm_batch_size", 20),
             use_organization_matching=config.get("use_organization_matching", True),
             anthropic_api_key=anthropic_api_key,
-            llm_model=config.get("llm_model", "claude-haiku-4-5-20250514"),
+            llm_model=config.get("llm_model", "claude-haiku-4-5-20251001"),
             llm_max_tokens=config.get("llm_max_tokens", 500),
             llm_batch_max_tokens=config.get("llm_batch_max_tokens", 2000),
         )
@@ -1788,7 +1788,7 @@ def daemon_start_command(
                         "use_organization_matching", True
                     ),
                     anthropic_api_key=anthropic_api_key,
-                    llm_model=config.get("llm_model", "claude-haiku-4-5-20250514"),
+                    llm_model=config.get("llm_model", "claude-haiku-4-5-20251001"),
                     llm_max_tokens=config.get("llm_max_tokens", 500),
                     llm_batch_max_tokens=config.get("llm_batch_max_tokens", 2000),
                 )

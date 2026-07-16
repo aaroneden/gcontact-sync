@@ -584,7 +584,7 @@ class TestLLMMatchAttemptOperations:
             is_match=True,
             confidence=0.85,
             reasoning="Same person, nickname variation",
-            model_used="claude-haiku-4-5-20250514",
+            model_used="claude-haiku-4-5-20251001",
         )
 
         result = db.get_llm_match_attempt("people/123", "people/456")
@@ -598,7 +598,7 @@ class TestLLMMatchAttemptOperations:
         assert result["is_match"] == 1  # SQLite stores bool as int
         assert result["confidence"] == 0.85
         assert result["reasoning"] == "Same person, nickname variation"
-        assert result["model_used"] == "claude-haiku-4-5-20250514"
+        assert result["model_used"] == "claude-haiku-4-5-20251001"
 
     def test_upsert_llm_match_attempt_updates_existing(self, db):
         """Test that upsert_llm_match_attempt updates an existing entry."""
@@ -612,7 +612,7 @@ class TestLLMMatchAttemptOperations:
             is_match=False,
             confidence=0.3,
             reasoning="Different people",
-            model_used="claude-haiku-4-5-20250514",
+            model_used="claude-haiku-4-5-20251001",
         )
 
         # Update with new decision
@@ -626,7 +626,7 @@ class TestLLMMatchAttemptOperations:
             is_match=True,
             confidence=0.9,
             reasoning="Actually same person after data update",
-            model_used="claude-haiku-4-5-20250514",
+            model_used="claude-haiku-4-5-20251001",
         )
 
         result = db.get_llm_match_attempt("people/123", "people/456")
@@ -647,7 +647,7 @@ class TestLLMMatchAttemptOperations:
             is_match=False,
             confidence=0.2,
             reasoning="Different people",
-            model_used="claude-haiku-4-5-20250514",
+            model_used="claude-haiku-4-5-20251001",
         )
 
         # Query with reversed order

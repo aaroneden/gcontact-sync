@@ -102,7 +102,7 @@ class MatchConfig:
 
     # LLM API configuration
     anthropic_api_key: str | None = None
-    llm_model: str = "claude-haiku-4-5-20250514"
+    llm_model: str = "claude-haiku-4-5-20251001"
     llm_max_tokens: int = 500
     llm_batch_max_tokens: int = 2000
 
