@@ -77,6 +77,17 @@ class FakePeopleAPI:
     def list_contact_groups(self, **kwargs):
         return [], None
 
+    def batch_update_contacts(self, contacts_with_resources, batch_size=None):
+        return [
+            Contact(
+                resource_name=resource_name,
+                etag=f"etag-updated-{resource_name.split('/')[-1]}",
+                display_name=contact.display_name,
+                emails=list(contact.emails),
+            )
+            for resource_name, contact in contacts_with_resources
+        ]
+
 
 @pytest.fixture
 def database(tmp_path: Path) -> SyncDatabase:
@@ -495,3 +506,59 @@ class TestPhase0TombstoneAndDeadMappings:
         engine.sync(dry_run=True, full_sync=False, backup_enabled=False)
 
         assert database.get_contact_mapping(ghost.matching_key()) is not None
+
+
+class TestUpdateChurnFixes:
+    def test_content_hash_ignores_duplicate_entries(self):
+        """Duplicate email/phone entries within a contact (merge artifacts,
+        provider-injected profile emails) are not content differences."""
+        a = make_contact("people/A")
+        b = make_contact("people/B")
+        a.emails = ["x@y.com", "z@y.com"]
+        b.emails = ["x@y.com", "z@y.com", "x@y.com", "x@y.com"]
+        a.phones = ["+1 520-360-7193"]
+        b.phones = ["+1 520-360-7193", "+1 520-360-7193"]
+
+        assert a.content_hash() == b.content_hash()
+
+    def test_full_sync_keeps_hash_only_mapping_rows(self, database):
+        """Rows with NO recorded resource names (hash-only rows written by
+        the update path for key-matched pairs) are not 'dead' and must
+        survive a full sync."""
+        ghost = make_contact("people/GHOST")
+        database.upsert_contact_mapping(
+            matching_key=ghost.matching_key(),
+            last_synced_hash=ghost.content_hash(),
+        )
+
+        api1 = FakePeopleAPI("a1")
+        api2 = FakePeopleAPI("a2")
+        engine = build_engine(api1, api2, database)
+
+        engine.sync(dry_run=True, full_sync=True, backup_enabled=False)
+
+        assert database.get_contact_mapping(ghost.matching_key()) is not None
+
+    def test_update_persists_both_resource_names(self, database):
+        """A pair matched by key (no prior mapping) that triggers an update
+        must persist a complete mapping - both resource names and the
+        synced hash - so later runs pair it via Phase 0 instead of
+        re-resolving the conflict forever."""
+        newer = make_contact("people/NEWER_B")
+        newer.notes = "the newer content"
+        newer.last_modified = datetime(2026, 7, 15, tzinfo=timezone.utc)
+        older = make_contact("people/OLDER_A")
+        older.last_modified = datetime(2026, 7, 1, tzinfo=timezone.utc)
+
+        api1 = FakePeopleAPI("a1", full_contacts=[older], delta_contacts=[older])
+        api2 = FakePeopleAPI("a2", full_contacts=[newer], delta_contacts=[newer])
+        engine = build_engine(api1, api2, database)
+
+        result = engine.sync(dry_run=False, full_sync=True, backup_enabled=False)
+
+        assert result.stats.updated_in_account1 == 1
+        mapping = database.get_contact_mapping(newer.matching_key())
+        assert mapping is not None
+        assert mapping["account1_resource_name"] == older.resource_name
+        assert mapping["account2_resource_name"] == newer.resource_name
+        assert mapping["last_synced_hash"] == newer.content_hash()

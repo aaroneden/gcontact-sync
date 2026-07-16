@@ -366,7 +366,10 @@ class Contact:
             SHA-256 hash string of contact content
 
         Note:
-            Lists are sorted before hashing to ensure consistent ordering.
+            Lists are deduplicated and sorted before hashing: ordering and
+            duplicate multiplicity (merge artifacts, provider-injected
+            profile emails) are not content differences and must not
+            trigger updates.
             Photos are excluded because: (1) photo_data isn't populated during
             contact listing (too expensive), and (2) photos are compared separately
             via photo_url in _analyze_photo_change.
@@ -380,9 +383,9 @@ class Contact:
             f"display_name:{self.display_name}",
             f"given_name:{self.given_name or ''}",
             f"family_name:{self.family_name or ''}",
-            f"emails:{','.join(sorted(self.emails))}",
-            f"phones:{','.join(sorted(self._normalize_phones()))}",
-            f"organizations:{','.join(sorted(self.organizations))}",
+            f"emails:{','.join(sorted(set(self.emails)))}",
+            f"phones:{','.join(sorted(set(self._normalize_phones())))}",
+            f"organizations:{','.join(sorted(set(self.organizations)))}",
             f"notes:{self.notes or ''}",
         ]
 

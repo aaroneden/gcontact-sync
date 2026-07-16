@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Update Ping-Pong on Contacts with Duplicate Field Entries**: Fixed an endless update loop for contacts whose copies differ only in duplicate email/phone entries (Google merge artifacts, provider-injected profile emails)
+  - `content_hash` now deduplicates emails, phones, and organizations before hashing - duplicate multiplicity is not a content difference
+  - Updates for pairs matched by key now persist BOTH resource names into the mapping (previously a hash-only row was written that Phase 0 could never pair, so every run re-resolved the conflict and flipped an update)
+  - The full-sync dead-mapping cleanup no longer removes hash-only mapping rows (no recorded resource names)
 - **Duplicate Contacts No Longer Created During Sync**: Resolved a persistent bug where the sync engine would repeatedly create duplicate contacts (e.g., Michael Hruska, Aaron Eden, abackos) on every sync run
   - **Root cause**: When multiple copies of the same contact existed within one account, the sync engine would silently drop all but one during indexing — but the dropped copies weren't marked as "already handled," causing the other account's matching contact to appear unmatched and trigger a new copy
   - Same-account duplicates are now tracked during indexing and excluded from the create pipeline

@@ -1346,12 +1346,14 @@ class SyncEngine:
                     fetched_full_state=full_sync,
                 )
 
-            elif full_sync:
-                # Neither side present in a FULL fetch: both contacts are
-                # gone, the mapping is dead - remove it so it cannot
+            elif full_sync and (res1 or res2):
+                # A RECORDED side is absent from a FULL fetch: the contacts
+                # are gone, the mapping is dead - remove it so it cannot
                 # mis-associate a future contact that reuses the key.
-                # (Under incremental sync, both-absent just means both
-                # unchanged - leave the mapping alone.)
+                # (Rows with NO recorded resource names are hash-only rows
+                # written by the update path for key-matched pairs - they
+                # are not dead; and under incremental sync, both-absent
+                # just means both unchanged - leave those alone.)
                 matching_key = mapping.get("matching_key")
                 if matching_key:
                     logger.info(
@@ -4087,9 +4089,27 @@ class SyncEngine:
                     matching_key = source_contact.matching_key()
                     content_hash = source_contact.content_hash()
 
+                    # The original source contact (source_contact here is the
+                    # update payload, which carries the TARGET's resource name)
+                    original_source = next(
+                        src for res, src in updates if res == resource_name
+                    )
+
+                    # Store BOTH resource names: pairs matched by key (no
+                    # prior mapping) would otherwise leave a hash-only row
+                    # that Phase 0 can never pair by resource on later runs.
+                    # Auto-merge payloads carry the target's resource name on
+                    # both sides - skip the cross-account column for those.
+                    other_resource = (
+                        original_source.resource_name
+                        if original_source.resource_name != resource_name
+                        else None
+                    )
                     if account == 1:
                         self.database.upsert_contact_mapping(
                             matching_key=matching_key,
+                            account1_resource_name=resource_name,
+                            account2_resource_name=other_resource,
                             account1_etag=updated_contact.etag,
                             last_synced_hash=content_hash,
                         )
@@ -4097,17 +4117,14 @@ class SyncEngine:
                     else:
                         self.database.upsert_contact_mapping(
                             matching_key=matching_key,
+                            account1_resource_name=other_resource,
+                            account2_resource_name=resource_name,
                             account2_etag=updated_contact.etag,
                             last_synced_hash=content_hash,
                         )
                         result.stats.updated_in_account2 += 1
 
                     # Sync photo after updating contact
-                    # Note: We need the original source contact from the updates list
-                    # to get the photo_url
-                    original_source = next(
-                        src for res, src in updates if res == resource_name
-                    )
                     self._sync_photo_for_contact(
                         source_contact=original_source,
                         dest_resource_name=resource_name,
