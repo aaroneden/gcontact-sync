@@ -81,9 +81,15 @@ def find_duplicates(contacts: list[Contact]) -> dict[tuple, list[Contact]]:
     by_signature: dict[tuple, list[Contact]] = defaultdict(list)
 
     for contact in contacts:
+        # Defensive: never consider deletion tombstones (full fetches don't
+        # return them, but don't rely on that implicitly)
+        if contact.deleted:
+            continue
         sig = get_contact_signature(contact)
-        # Skip contacts with empty signatures (no name, email, or phone)
-        if not sig[0] and not sig[1] and not sig[2]:
+        # Require at least one strong identifier (email or phone). A bare
+        # name match can collide across genuinely different people (two
+        # distinct "John Smith" contacts) and must never trigger deletion.
+        if not sig[1] and not sig[2]:
             continue
         by_signature[sig].append(contact)
 
